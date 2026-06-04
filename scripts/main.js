@@ -218,6 +218,14 @@ const editorDomDragState = {
   pointerId: null,
   view: null
 };
+const canvasSegmentEditState = {
+  tool: null,
+  edit: null,
+  pointerId: null,
+  clientX: null,
+  clientY: null,
+  ignoreClickUntil: 0
+};
 
 const hiddenEditWalls = new Map();
 const rectangleCanvasClickViews = new WeakSet();
@@ -516,7 +524,7 @@ function patchWallsLayer() {
     });
     if (isAnyEditorToolActive() && isControlInteraction(event) && loadShapeAtInteractionPoint(event)) {
       consumeCanvasInteraction(event);
-      resetCanvasCursor(event);
+      resetEditorCursor(event);
       return;
     }
 
@@ -543,7 +551,7 @@ function patchWallsLayer() {
       if (ellipseState.draggingHandle === null) {
         if (ellipseState.placed) {
           consumeCanvasInteraction(event);
-          resetCanvasCursor();
+          resetEditorCursor(event);
           drawEllipsePreview();
           return;
         }
@@ -584,7 +592,7 @@ function patchWallsLayer() {
         rectangleState.hoveredVertex = null;
         rectangleState.lastSideEditAction = Date.now();
         rectangleState.suppressNextSideEditClick = true;
-        scheduleCanvasInteractionReset(event);
+        scheduleEditorInteractionReset(event);
         return;
       }
 
@@ -599,7 +607,7 @@ function patchWallsLayer() {
       if (rectangleState.draggingHandle === null) {
         if (rectangleState.placed) {
           consumeCanvasInteraction(event);
-          resetCanvasCursor(event);
+          resetEditorCursor(event);
           drawRectanglePreview();
           return;
         }
@@ -622,7 +630,7 @@ function patchWallsLayer() {
     if (cubicState.draggingHandle === null) {
       if (cubicState.placed) {
         consumeCanvasInteraction(event);
-        resetCanvasCursor(event);
+        resetEditorCursor(event);
         drawCubicPreview();
         return;
       }
@@ -727,7 +735,7 @@ function patchWallsLayer() {
       rectangleState.hoveredVertex = null;
       rectangleState.initializing = false;
       event.interactionData.clearPreviewContainer = false;
-      resetCanvasCursor(event);
+      resetEditorCursor(event);
       commitEditorOperation(rectangleState);
       drawRectanglePreview();
       return;
@@ -773,7 +781,7 @@ function patchWallsLayer() {
       rectangleState.hoveredVertex = null;
       rectangleState.initializing = false;
       event.interactionData.clearPreviewContainer = false;
-      resetCanvasCursor();
+      resetEditorCursor(event);
       cancelEditorOperation(rectangleState);
       drawRectanglePreview();
       return;
@@ -842,7 +850,7 @@ function patchWallObjectInteractions(WallClass) {
         && isControlInteraction(event)
         && loadShapeFromExistingWall(this)) {
         consumeCanvasInteraction(event);
-        resetCanvasCursor(event);
+        resetEditorCursor(event);
         return;
       }
 
@@ -886,6 +894,11 @@ function registerRectangleCanvasClickHandler() {
   const view = canvas?.app?.view;
   if (!view || rectangleCanvasClickViews.has(view)) return;
 
+  view.addEventListener("pointerdown", handleCanvasSegmentEditPointerDown, {capture: true});
+  view.addEventListener("pointerup", handleCanvasSegmentEditPointerUp, {capture: true});
+  view.addEventListener("pointercancel", handleCanvasSegmentEditPointerCancel, {capture: true});
+  view.addEventListener("mousedown", handleEditorCanvasMouseEvent, {capture: true});
+  view.addEventListener("mouseup", handleEditorCanvasMouseEvent, {capture: true});
   view.addEventListener("click", handleRectangleCanvasClick, {capture: true});
   rectangleCanvasClickViews.add(view);
   debugShapeSelection("registered rectangle canvas click handler", {
@@ -897,13 +910,118 @@ function registerRectangleCanvasClickHandler() {
   });
 }
 
+function handleCanvasSegmentEditPointerDown(event) {
+  if (Number.isFinite(event.button) && event.button !== 0) return;
+  if (isControlInteraction(event)) return;
+
+  const pending = getActiveCanvasSegmentEdit(event);
+  if (!pending) {
+    if (!isPlacedEditorActive()) return;
+    debugShapeSelection("editor canvas pointerdown blocked", {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      activeTool: game.activeTool
+    });
+    consumeCanvasInteraction(event);
+    scheduleEditorInteractionReset(event);
+    return;
+  }
+
+  debugShapeSelection(`${pending.tool} canvas segment pointerdown`, {
+    clientX: event.clientX,
+    clientY: event.clientY,
+    altKey: !!event.altKey,
+    edit: pending.edit
+  });
+  consumeCanvasInteraction(event);
+  canvasSegmentEditState.tool = pending.tool;
+  canvasSegmentEditState.edit = pending.edit;
+  canvasSegmentEditState.pointerId = event.pointerId;
+  canvasSegmentEditState.clientX = event.clientX;
+  canvasSegmentEditState.clientY = event.clientY;
+  scheduleEditorInteractionReset(event);
+}
+
+function handleCanvasSegmentEditPointerUp(event) {
+  if (!isPendingCanvasSegmentEditEvent(event)) {
+    if (Number.isFinite(event.button) && event.button !== 0) return;
+    if (!isPlacedEditorActive()) return;
+    consumeCanvasInteraction(event);
+    scheduleEditorInteractionReset(event);
+    return;
+  }
+  consumeCanvasInteraction(event);
+  const pending = consumePendingCanvasSegmentEdit(event);
+  if (pending) {
+    debugShapeSelection(`${pending.tool} canvas segment pointerup commit pending`, {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      altKey: !!event.altKey,
+      edit: pending.edit
+    });
+    commitCanvasSegmentEdit(pending.tool, pending.edit, event);
+    canvasSegmentEditState.ignoreClickUntil = Date.now() + 500;
+  } else {
+    clearPendingCanvasSegmentEdit();
+  }
+  scheduleEditorInteractionReset(event);
+}
+
+function handleCanvasSegmentEditPointerCancel(event) {
+  if (!isPendingCanvasSegmentEditEvent(event)) {
+    if (!isPlacedEditorActive()) return;
+    consumeCanvasInteraction(event);
+    scheduleEditorInteractionReset(event);
+    return;
+  }
+  consumeCanvasInteraction(event);
+  clearPendingCanvasSegmentEdit();
+  scheduleEditorInteractionReset(event);
+}
+
+function handleEditorCanvasMouseEvent(event) {
+  if (Number.isFinite(event.button) && event.button !== 0) return;
+  if (isControlInteraction(event) || !isPlacedEditorActive()) return;
+
+  consumeCanvasInteraction(event);
+  scheduleEditorInteractionReset(event);
+}
+
 function handleRectangleCanvasClick(event) {
   if (Number.isFinite(event.button) && event.button !== 0) return;
+  if (shouldIgnoreCanvasSegmentClick()) {
+    consumeCanvasInteraction(event);
+    scheduleEditorInteractionReset(event);
+    return;
+  }
 
   if (isControlInteraction(event) && loadShapeFromCanvasClick(event)) {
-    event.preventDefault?.();
-    event.stopPropagation?.();
-    scheduleCanvasInteractionReset(event);
+    consumeCanvasInteraction(event);
+    scheduleEditorInteractionReset(event);
+    return;
+  }
+
+  const pending = consumePendingCanvasSegmentEdit(event);
+  if (pending) {
+    debugShapeSelection(`${pending.tool} canvas segment click commit pending`, {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      altKey: !!event.altKey,
+      edit: pending.edit
+    });
+    consumeCanvasInteraction(event);
+    commitCanvasSegmentEdit(pending.tool, pending.edit, event);
+    return;
+  }
+
+  if (isPlacedEditorActive()) {
+    debugShapeSelection("editor canvas click blocked", {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      activeTool: game.activeTool
+    });
+    consumeCanvasInteraction(event);
+    scheduleEditorInteractionReset(event);
     return;
   }
 
@@ -913,9 +1031,8 @@ function handleRectangleCanvasClick(event) {
         clientX: event.clientX,
         clientY: event.clientY
       });
-      event.preventDefault?.();
-      event.stopPropagation?.();
-      scheduleCanvasInteractionReset(event);
+      consumeCanvasInteraction(event);
+      scheduleEditorInteractionReset(event);
       return;
     }
 
@@ -928,8 +1045,7 @@ function handleRectangleCanvasClick(event) {
     });
     if (!edit) return;
 
-    event.preventDefault?.();
-    event.stopPropagation?.();
+    consumeCanvasInteraction(event);
     commitCubicSegmentEdit(edit, event);
     return;
   }
@@ -940,9 +1056,8 @@ function handleRectangleCanvasClick(event) {
         clientX: event.clientX,
         clientY: event.clientY
       });
-      event.preventDefault?.();
-      event.stopPropagation?.();
-      scheduleCanvasInteractionReset(event);
+      consumeCanvasInteraction(event);
+      scheduleEditorInteractionReset(event);
       return;
     }
 
@@ -955,8 +1070,7 @@ function handleRectangleCanvasClick(event) {
     });
     if (!edit) return;
 
-    event.preventDefault?.();
-    event.stopPropagation?.();
+    consumeCanvasInteraction(event);
     commitEllipseSegmentEdit(edit, event);
     return;
   }
@@ -972,9 +1086,71 @@ function handleRectangleCanvasClick(event) {
   });
   if (!edit) return;
 
-  event.preventDefault?.();
-  event.stopPropagation?.();
+  consumeCanvasInteraction(event);
   commitRectangleSideEdit(edit, event);
+}
+
+function getActiveCanvasSegmentEdit(event) {
+  if (isCubicToolActive() && cubicState.placed && !isCubicSegmentClickSuppressed()) {
+    const edit = getCubicSegmentEditFromEvent(event);
+    if (edit) return {tool: "cubic", edit};
+  }
+
+  if (isEllipseToolActive() && ellipseState.placed && !isEllipseSegmentClickSuppressed()) {
+    const edit = getEllipseSegmentEditFromEvent(event);
+    if (edit) return {tool: "ellipse", edit};
+  }
+
+  if (isRectangleToolActive() && rectangleState.placed) {
+    const edit = getRectangleSideEditFromEvent(event);
+    if (edit) return {tool: "rectangle", edit};
+  }
+
+  return null;
+}
+
+function isPendingCanvasSegmentEditEvent(event) {
+  return !!canvasSegmentEditState.edit
+    && (canvasSegmentEditState.pointerId === null || canvasSegmentEditState.pointerId === event.pointerId);
+}
+
+function consumePendingCanvasSegmentEdit(event) {
+  if (!canvasSegmentEditState.edit) return null;
+  if (canvasSegmentEditState.clientX !== null && canvasSegmentEditState.clientY !== null) {
+    const distance = Math.hypot(event.clientX - canvasSegmentEditState.clientX, event.clientY - canvasSegmentEditState.clientY);
+    if (distance > 8) {
+      clearPendingCanvasSegmentEdit();
+      return null;
+    }
+  }
+
+  const pending = {
+    tool: canvasSegmentEditState.tool,
+    edit: canvasSegmentEditState.edit
+  };
+  clearPendingCanvasSegmentEdit();
+  return pending;
+}
+
+function clearPendingCanvasSegmentEdit() {
+  canvasSegmentEditState.tool = null;
+  canvasSegmentEditState.edit = null;
+  canvasSegmentEditState.pointerId = null;
+  canvasSegmentEditState.clientX = null;
+  canvasSegmentEditState.clientY = null;
+}
+
+function shouldIgnoreCanvasSegmentClick() {
+  if (Date.now() >= canvasSegmentEditState.ignoreClickUntil) return false;
+  canvasSegmentEditState.ignoreClickUntil = 0;
+  return true;
+}
+
+function commitCanvasSegmentEdit(tool, edit, event=null) {
+  if (tool === "cubic") return commitCubicSegmentEdit(edit, event);
+  if (tool === "ellipse") return commitEllipseSegmentEdit(edit, event);
+  if (tool === "rectangle") return commitRectangleSideEdit(edit, event);
+  return false;
 }
 
 function loadShapeFromCanvasClick(event) {
@@ -1075,7 +1251,7 @@ function commitRectangleSideEdit(edit, event=null) {
   rectangleState.lastSideEditAction = Date.now();
   rectangleState.suppressNextSideEditClick = false;
   debugInteractionManagers("after rectangle canvas click commit", event, {edit});
-  scheduleCanvasInteractionReset(event);
+  scheduleEditorInteractionReset(event);
   return true;
 }
 
@@ -1088,7 +1264,7 @@ function commitCubicSegmentEdit(edit, event=null) {
   cubicState.lastSegmentEditAction = Date.now();
   cubicState.suppressNextSegmentEditClick = false;
   debugInteractionManagers("after cubic canvas click commit", event, {edit});
-  scheduleCanvasInteractionReset(event);
+  scheduleEditorInteractionReset(event);
   return true;
 }
 
@@ -1098,11 +1274,14 @@ function markSuppressCubicSegmentClick() {
 }
 
 function shouldSuppressCubicSegmentClick() {
-  if (!cubicState.suppressNextSegmentEditClick) return false;
-
-  const elapsed = Date.now() - cubicState.lastSegmentEditAction;
+  const suppressed = isCubicSegmentClickSuppressed();
   cubicState.suppressNextSegmentEditClick = false;
-  return elapsed < 1000;
+  return suppressed;
+}
+
+function isCubicSegmentClickSuppressed() {
+  if (!cubicState.suppressNextSegmentEditClick) return false;
+  return (Date.now() - cubicState.lastSegmentEditAction) < 1000;
 }
 
 function commitEllipseSegmentEdit(edit, event=null) {
@@ -1115,7 +1294,7 @@ function commitEllipseSegmentEdit(edit, event=null) {
   ellipseState.lastSegmentEditAction = Date.now();
   ellipseState.suppressNextSegmentEditClick = false;
   debugInteractionManagers("after ellipse canvas click commit", event, {edit});
-  scheduleCanvasInteractionReset(event);
+  scheduleEditorInteractionReset(event);
   return true;
 }
 
@@ -1125,11 +1304,14 @@ function markSuppressEllipseSegmentClick() {
 }
 
 function shouldSuppressEllipseSegmentClick() {
-  if (!ellipseState.suppressNextSegmentEditClick) return false;
-
-  const elapsed = Date.now() - ellipseState.lastSegmentEditAction;
+  const suppressed = isEllipseSegmentClickSuppressed();
   ellipseState.suppressNextSegmentEditClick = false;
-  return elapsed < 1000;
+  return suppressed;
+}
+
+function isEllipseSegmentClickSuppressed() {
+  if (!ellipseState.suppressNextSegmentEditClick) return false;
+  return (Date.now() - ellipseState.lastSegmentEditAction) < 1000;
 }
 
 function registerEditorDomDragHandler() {
@@ -1168,7 +1350,7 @@ function handleEditorDomPointerDown(event) {
     rectangleState.draggingHandle = null;
     rectangleState.lastSideEditAction = Date.now();
     rectangleState.suppressNextSideEditClick = false;
-    scheduleCanvasInteractionReset(event);
+    scheduleEditorInteractionReset(event);
     return;
   }
 
@@ -1302,7 +1484,7 @@ function finalizeEditorDomDrag(event=null, cancelled=false) {
   editorDomDragState.startEditorPoint = null;
   editorDomDragState.pointerId = null;
   editorDomDragState.view = null;
-  scheduleCanvasInteractionReset(event);
+  scheduleEditorInteractionReset(event);
 }
 
 function getEditorDomDragHit(event) {
@@ -1426,6 +1608,12 @@ function isAnyEditorToolActive() {
   return isCubicToolActive() || isEllipseToolActive() || isRectangleToolActive();
 }
 
+function isPlacedEditorActive() {
+  return (isCubicToolActive() && cubicState.placed)
+    || (isEllipseToolActive() && ellipseState.placed)
+    || (isRectangleToolActive() && rectangleState.placed);
+}
+
 function registerEditorDragFallback() {
   window.addEventListener("pointerup", (event) => {
     scheduleEditorDragFallback(event, false);
@@ -1485,7 +1673,7 @@ function finalizeActiveEditorDrag(event=null, cancelled=false) {
     drawCubicPreview();
   }
 
-  scheduleCanvasInteractionReset(event);
+  scheduleEditorInteractionReset(event);
 }
 
 function debugShapeSelection(message, data=null) {
@@ -1758,6 +1946,12 @@ function resetCanvasCursor(event=null) {
   if (document.body?.style) document.body.style.cursor = "";
 }
 
+function resetEditorCursor(event=null) {
+  clearMouseInteractionManagerDragState(event, {includeCanvas: false});
+  if (canvas?.app?.view?.style) canvas.app.view.style.cursor = "";
+  if (document.body?.style) document.body.style.cursor = "";
+}
+
 function scheduleCanvasInteractionReset(event=null) {
   debugInteractionManagers("schedule interaction reset start", event);
   resetCanvasCursor(event);
@@ -1776,11 +1970,30 @@ function scheduleCanvasInteractionReset(event=null) {
   }, 50);
 }
 
-function clearMouseInteractionManagerDragState(event=null) {
-  for (const {manager} of getCanvasInteractionManagers(event)) {
+function scheduleEditorInteractionReset(event=null) {
+  debugInteractionManagers("schedule editor interaction reset start", event);
+  resetEditorCursor(event);
+  debugInteractionManagers("after immediate editor interaction reset", event);
+  globalThis.queueMicrotask?.(() => {
+    resetEditorCursor(event);
+    debugInteractionManagers("after microtask editor interaction reset", event);
+  });
+  setTimeout(() => {
+    resetEditorCursor(event);
+    debugInteractionManagers("after timeout 0 editor interaction reset", event);
+  }, 0);
+}
+
+function clearMouseInteractionManagerDragState(event=null, {includeCanvas=true}={}) {
+  for (const {label, manager} of getCanvasInteractionManagers(event)) {
+    if (!includeCanvas && label === "canvas") continue;
     manager.cursor = null;
     manager._dragging = false;
     manager.dragging = false;
+    manager._dragLeft = false;
+    manager._dragRight = false;
+    manager._dragged = false;
+    manager._pendingDrag = false;
     const noneState = manager.constructor?.INTERACTION_STATES?.NONE;
     if (Number.isFinite(noneState)) manager.state = noneState;
   }
@@ -2425,7 +2638,7 @@ function getEllipseVertexAt(point) {
 
 function getEllipseVertexHitRadius() {
   const style = getPreviewStyle();
-  return getScaledRadius(style.splitVertexSize + style.outlineWidth + 8);
+  return getSplitVertexHitRadius(style);
 }
 
 function updateEllipseInitialHandles(event) {
@@ -2950,7 +3163,7 @@ function handleRectanglePreviewPointerTap(event) {
   rectangleState.draggingVertex = null;
   rectangleState.lastSideEditAction = Date.now();
   rectangleState.suppressNextSideEditClick = false;
-  scheduleCanvasInteractionReset(event);
+  scheduleEditorInteractionReset(event);
 }
 
 function handleRectanglePreviewPointerGate(event) {
@@ -2994,7 +3207,11 @@ function drawRectangleBoundsGuide(graphics, bounds, style) {
 
 function getRectangleVertexHitRadius() {
   const style = getPreviewStyle();
-  return getScaledRadius(style.splitVertexSize + style.outlineWidth + 8);
+  return getSplitVertexHitRadius(style);
+}
+
+function getSplitVertexHitRadius(style=getPreviewStyle()) {
+  return getScaledRadius(style.splitVertexSize + style.outlineWidth + 2);
 }
 
 function getRectangleCornerHitRadius(style=getPreviewStyle()) {
