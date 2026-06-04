@@ -11,6 +11,14 @@ Optional dependencies:
 
 - [lib - ColorSettings](https://github.com/ardittristan/VTTColorSettings) (`colorsettings`) is recommended for color picker controls in the module settings. Indy Walls still works without it and falls back to plain hex text fields.
 
+
+<img width="400" height="225" alt="bezier_curve" src="https://github.com/user-attachments/assets/4c8295a9-1e42-4efa-97ee-6d15f98051c8" />
+<img width="400" height="224" alt="ellipse" src="https://github.com/user-attachments/assets/c4fa0adb-aec6-4cc9-92df-7700c468da0d" />
+<img width="400" height="225" alt="polyline" src="https://github.com/user-attachments/assets/efb88217-17f6-4259-9e51-882b3a8df768" />
+<img width="400" height="224" alt="rectangle" src="https://github.com/user-attachments/assets/6af3209e-2880-4f2b-8e6f-e941afcc151a" />
+
+
+
 ## Features
 
 ### Quick Wall Type Changes
