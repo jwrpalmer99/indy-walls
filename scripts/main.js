@@ -784,7 +784,7 @@ function patchWallObjectInteractions(WallClass) {
     return;
   }
 
-  for (const method of ["_onDragLeftStart", "_onDragLeftMove", "_onDragLeftDrop", "_onDragLeftCancel", "_onClickLeft"]) {
+  for (const method of ["_onDragLeftStart", "_onClickLeft"]) {
     const original = WallClass.prototype[method];
     WallClass.prototype[method] = function(event) {
       const editorActive = isAnyEditorToolActive();
@@ -808,16 +808,12 @@ function patchWallObjectInteractions(WallClass) {
 
       if (!editorActive) return original?.call(this, event);
 
-      consumeCanvasInteraction(event);
       if (method === "_onDragLeftStart" && shouldRouteWallObjectDragStartToEditor(event)) {
+        consumeCanvasInteraction(event);
         return canvas?.walls?._onDragLeftStart?.(event);
       }
-      if ((method === "_onDragLeftMove" || method === "_onDragLeftDrop" || method === "_onDragLeftCancel")
-        && hasActiveEditorDrag()) {
-        return canvas?.walls?.[method]?.(event);
-      }
-      resetCanvasCursor();
-      return;
+
+      return original?.call(this, event);
     };
   }
 
@@ -839,13 +835,6 @@ function shouldRouteWallObjectDragStartToEditor(event) {
     || getRectangleHandleAt(point) !== null
     || getRectangleVertexAt(point) !== null
     || getRectangleSideAt(point) !== null;
-}
-
-function hasActiveEditorDrag() {
-  return cubicState.draggingHandle !== null
-    || ellipseState.draggingHandle !== null
-    || rectangleState.draggingHandle !== null
-    || !!rectangleState.draggingVertex;
 }
 
 function isAnyEditorToolActive() {
