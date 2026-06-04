@@ -106,6 +106,8 @@ const cubicState = {
   initializing: false,
   initialOrigin: null,
   draggingHandle: null,
+  lastSegmentEditAction: 0,
+  suppressNextSegmentEditClick: false,
   curveId: null,
   wallIds: [],
   replacingWallIds: new Set(),
@@ -114,6 +116,7 @@ const cubicState = {
   pendingUndoSnapshot: null,
   wallTypeTool: "walls",
   segments: DEFAULT_CUBIC_SEGMENTS,
+  segmentGaps: [],
   graphics: null,
   handles: [
     {x: 0, y: 0},
@@ -473,9 +476,6 @@ async function updateSelectedWalls(toolName) {
   });
 
   await canvas.scene.updateEmbeddedDocuments("Wall", updates);
-  ui.notifications.info(game.i18n.format("indy-walls.Notifications.WallTypesUpdated", {
-    count: selectedWalls.length
-  }));
 }
 
 function registerWallTypeControlShortcuts() {
@@ -630,12 +630,14 @@ function patchWallsLayer() {
       cubicState.placed = false;
       cubicState.initializing = true;
       cubicState.draggingHandle = 3;
+      cubicState.segmentGaps = [];
       setHandle(0, point);
       setHandle(1, point);
       setHandle(2, point);
       setHandle(3, point);
     } else {
       beginEditorOperation(cubicState);
+      markSuppressCubicSegmentClick();
     }
 
     drawCubicPreview();
@@ -735,6 +737,7 @@ function patchWallsLayer() {
     cubicState.initializing = false;
     event.interactionData.clearPreviewContainer = false;
     commitEditorOperation(cubicState);
+    markSuppressCubicSegmentClick();
     drawCubicPreview();
   };
 
@@ -780,6 +783,7 @@ function patchWallsLayer() {
     cubicState.initializing = false;
     event.interactionData.clearPreviewContainer = false;
     cancelEditorOperation(cubicState);
+    markSuppressCubicSegmentClick();
     drawCubicPreview();
   };
 
@@ -863,7 +867,9 @@ function shouldRouteWallObjectDragStartToEditor(event) {
   const point = getInteractionPoint(event) ?? event.interactionData?.origin;
   if (!point) return false;
 
-  if (isCubicToolActive()) return !cubicState.placed || getCubicHandleAt(point) !== null;
+  if (isCubicToolActive()) return !cubicState.placed
+    || getCubicHandleAt(point) !== null
+    || getCubicSegmentAt(point) !== null;
   if (isEllipseToolActive()) return !ellipseState.placed
     || getEllipseHandleAt(point) !== null
     || getEllipseVertexAt(point) !== null
@@ -898,6 +904,33 @@ function handleRectangleCanvasClick(event) {
     event.preventDefault?.();
     event.stopPropagation?.();
     scheduleCanvasInteractionReset(event);
+    return;
+  }
+
+  if (isCubicToolActive() && cubicState.placed) {
+    if (shouldSuppressCubicSegmentClick()) {
+      debugShapeSelection("cubic canvas click suppressed after drag", {
+        clientX: event.clientX,
+        clientY: event.clientY
+      });
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      scheduleCanvasInteractionReset(event);
+      return;
+    }
+
+    const edit = getCubicSegmentEditFromEvent(event);
+    debugShapeSelection("cubic canvas click", {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      altKey: !!event.altKey,
+      edit
+    });
+    if (!edit) return;
+
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    commitCubicSegmentEdit(edit, event);
     return;
   }
 
@@ -969,6 +1002,20 @@ function getRectangleSideEditFromEvent(event) {
   };
 }
 
+function getCubicSegmentEditFromEvent(event) {
+  if (!isCubicToolActive() || !cubicState.placed) return null;
+  for (const point of getCanvasClickCandidatePoints(event)) {
+    const segment = getCubicSegmentAt({x: point.x, y: point.y});
+    if (!segment) continue;
+    return {
+      point: {x: point.x, y: point.y},
+      segment,
+      remove: isAltInteraction(event)
+    };
+  }
+  return null;
+}
+
 function getEllipseSegmentEditFromEvent(event) {
   if (!isEllipseToolActive() || !ellipseState.placed) return null;
   for (const point of getCanvasClickCandidatePoints(event)) {
@@ -1030,6 +1077,32 @@ function commitRectangleSideEdit(edit, event=null) {
   debugInteractionManagers("after rectangle canvas click commit", event, {edit});
   scheduleCanvasInteractionReset(event);
   return true;
+}
+
+function commitCubicSegmentEdit(edit, event=null) {
+  if (!isCubicToolActive() || !cubicState.placed) return false;
+  debugInteractionManagers("before cubic canvas click commit", event, {edit});
+  if (!editCubicSegmentWithUndo(edit.segment.index, edit.remove)) return false;
+
+  cubicState.draggingHandle = null;
+  cubicState.lastSegmentEditAction = Date.now();
+  cubicState.suppressNextSegmentEditClick = false;
+  debugInteractionManagers("after cubic canvas click commit", event, {edit});
+  scheduleCanvasInteractionReset(event);
+  return true;
+}
+
+function markSuppressCubicSegmentClick() {
+  cubicState.lastSegmentEditAction = Date.now();
+  cubicState.suppressNextSegmentEditClick = true;
+}
+
+function shouldSuppressCubicSegmentClick() {
+  if (!cubicState.suppressNextSegmentEditClick) return false;
+
+  const elapsed = Date.now() - cubicState.lastSegmentEditAction;
+  cubicState.suppressNextSegmentEditClick = false;
+  return elapsed < 1000;
 }
 
 function commitEllipseSegmentEdit(edit, event=null) {
@@ -1113,7 +1186,10 @@ function handleEditorDomPointerDown(event) {
   editorDomDragState.pointerId = event.pointerId;
   editorDomDragState.view = canvas?.app?.view ?? null;
 
-  if (hit.tool === CUBIC_TOOL) cubicState.draggingHandle = hit.handle;
+  if (hit.tool === CUBIC_TOOL) {
+    cubicState.draggingHandle = hit.handle;
+    markSuppressCubicSegmentClick();
+  }
   else if (hit.tool === ELLIPSE_TOOL) {
     ellipseState.draggingHandle = hit.handle;
     ellipseState.draggingVertex = hit.vertex;
@@ -1193,6 +1269,7 @@ function finalizeEditorDomDrag(event=null, cancelled=false) {
     cubicState.initializing = false;
     if (cancelled) cancelEditorOperation(cubicState);
     else commitEditorOperation(cubicState);
+    markSuppressCubicSegmentClick();
     drawCubicPreview();
   } else if (editorDomDragState.tool === ELLIPSE_TOOL) {
     const wasVertexDrag = !!editorDomDragState.vertex;
@@ -2016,6 +2093,7 @@ function getEditorSnapshot(state) {
       placed: cubicState.placed,
       handles: clonePoints(cubicState.handles),
       segments: cubicState.segments,
+      segmentGaps: [...cubicState.segmentGaps],
       wallTypeTool: cubicState.wallTypeTool
     };
   }
@@ -2047,6 +2125,7 @@ function restoreEditorSnapshot(state, snapshot) {
     cubicState.placed = snapshot.placed;
     cubicState.handles = clonePoints(snapshot.handles);
     cubicState.segments = snapshot.segments;
+    cubicState.segmentGaps = reconcileCubicSegmentGaps(snapshot.segmentGaps, cubicState.segments);
     cubicState.wallTypeTool = snapshot.wallTypeTool;
     cubicState.draggingHandle = null;
     cubicState.initializing = false;
@@ -2185,6 +2264,7 @@ function getCubicHandleAt(point) {
 function changeCubicSegments(delta) {
   if (!isCubicToolActive()) return;
   cubicState.segments = clamp(cubicState.segments + delta, 2, 64);
+  cubicState.segmentGaps = reconcileCubicSegmentGaps(cubicState.segmentGaps, cubicState.segments);
   drawCubicPreview();
 }
 
@@ -2206,10 +2286,20 @@ function drawCubicPreview() {
 
   const style = getPreviewStyle();
   const points = getCubicPoints(cubicState.segments);
+  const segments = getCubicSegments();
+  const allSegments = getAllCubicSegments();
+  const gaps = getCubicSegmentGaps();
   graphics.lineStyle(getScaledRadius(style.wallWidth), style.wallColor, 0.9);
-  graphics.moveTo(points[0].x, points[0].y);
-  for (let i = 1; i < points.length; i++) {
-    graphics.lineTo(points[i].x, points[i].y);
+  for (const {a, b} of segments) {
+    graphics.moveTo(a.x, a.y);
+    graphics.lineTo(b.x, b.y);
+  }
+
+  for (const segment of allSegments) {
+    if (!gaps.includes(segment.index)) continue;
+    graphics.lineStyle(getScaledRadius(Math.max(style.guideWidth, 1)), style.outlineColor, 0.22);
+    graphics.moveTo(segment.a.x, segment.a.y);
+    graphics.lineTo(segment.b.x, segment.b.y);
   }
 
   const [start, controlA, controlB, end] = cubicState.handles;
@@ -2240,6 +2330,75 @@ function getCubicPoints(segments) {
     });
   }
   return points;
+}
+
+function getAllCubicSegments() {
+  const points = getCubicPoints(cubicState.segments);
+  const segments = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    segments.push({index: i, a: points[i], b: points[i + 1]});
+  }
+  return segments;
+}
+
+function getCubicSegments() {
+  const gaps = getCubicSegmentGaps();
+  return getAllCubicSegments().filter((segment) => !gaps.includes(segment.index));
+}
+
+function getCubicSegmentGaps() {
+  const gaps = reconcileCubicSegmentGaps(cubicState.segmentGaps, cubicState.segments);
+  cubicState.segmentGaps = gaps;
+  return gaps;
+}
+
+function reconcileCubicSegmentGaps(source, segmentCount) {
+  if (!Array.isArray(source)) return [];
+  return [...new Set(source
+    .map((index) => Number(index))
+    .filter((index) => Number.isInteger(index) && index >= 0 && index < segmentCount))]
+    .sort((a, b) => a - b);
+}
+
+function getCubicSegmentAt(point) {
+  if (!cubicState.placed) return null;
+  const style = getPreviewStyle();
+  const tolerance = getScaledRadius(Math.max(style.wallWidth + 6, 10));
+  let best = null;
+  let bestDistance = Infinity;
+
+  for (const segment of getAllCubicSegments()) {
+    if (!isPointNearSegmentBounds(point, segment.a, segment.b, tolerance)) continue;
+    const distance = getPointSegmentDistance(point, segment.a, segment.b);
+    if (distance <= tolerance && distance < bestDistance) {
+      best = segment;
+      bestDistance = distance;
+    }
+  }
+
+  return best;
+}
+
+function editCubicSegmentWithUndo(index, remove=false) {
+  const snapshot = getEditorSnapshot(cubicState);
+  const edited = editCubicSegment(index, remove);
+  if (edited) pushEditorUndoSnapshot(cubicState, snapshot);
+  return edited;
+}
+
+function editCubicSegment(index, remove=false) {
+  const gaps = getCubicSegmentGaps();
+  if (remove) {
+    if (gaps.includes(index)) return false;
+    cubicState.segmentGaps = [...gaps, index].sort((a, b) => a - b);
+    drawCubicPreview();
+    return true;
+  }
+
+  if (!gaps.includes(index)) return false;
+  cubicState.segmentGaps = gaps.filter((gap) => gap !== index);
+  drawCubicPreview();
+  return true;
 }
 
 function setEllipseHandle(index, point) {
@@ -3193,15 +3352,17 @@ async function applyCubicWalls() {
   if (!isCubicToolActive() || !cubicState.placed) return;
 
   const wallData = WALL_TYPE_DATA[cubicState.wallTypeTool]?.() ?? WALL_TYPE_DATA.walls();
-  const points = getCubicPoints(cubicState.segments);
+  const segments = getCubicSegments();
+  const segmentGaps = getCubicSegmentGaps();
   const curveId = cubicState.curveId ?? foundry.utils.randomID();
   const walls = [];
+  const wallSegmentIndexes = [];
 
-  for (let i = 0; i < points.length - 1; i++) {
-    const a = points[i];
-    const b = points[i + 1];
+  for (const segment of segments) {
+    const {a, b} = segment;
     const c = [Math.round(a.x), Math.round(a.y), Math.round(b.x), Math.round(b.y)];
     if ((c[0] === c[2]) && (c[1] === c[3])) continue;
+    wallSegmentIndexes.push(segment.index);
     walls.push({
       ...wallData,
       c,
@@ -3209,10 +3370,11 @@ async function applyCubicWalls() {
         [MODULE_ID]: {
           [CUBIC_FLAG]: {
             curveId,
-            index: i,
+            index: segment.index,
             wallIds: [],
             handles: cloneHandles(),
             segments: cubicState.segments,
+            segmentGaps,
             wallTypeTool: cubicState.wallTypeTool
           }
         }
@@ -3220,15 +3382,27 @@ async function applyCubicWalls() {
     });
   }
 
-  if (!walls.length) return;
-
   const oldWallIds = getExistingCurveWallIds();
   const oldWalls = oldWallIds.map((id) => canvas.scene.walls.get(id)).filter(Boolean);
+  if (!walls.length) {
+    if (oldWallIds.length) {
+      canvas.walls.storeHistory("delete", oldWalls.map((wall) => wall.toObject()));
+      oldWallIds.forEach((id) => cubicState.replacingWallIds.add(id));
+      try {
+        await canvas.scene.deleteEmbeddedDocuments("Wall", oldWallIds);
+      } finally {
+        oldWallIds.forEach((id) => cubicState.replacingWallIds.delete(id));
+      }
+    }
+    clearCubicPreview();
+    return;
+  }
+
   const created = await canvas.scene.createEmbeddedDocuments("Wall", walls);
   const wallIds = created.map((wall) => wall.id);
   const flagUpdates = created.map((wall, index) => ({
     _id: wall.id,
-    [`flags.${MODULE_ID}.${CUBIC_FLAG}.index`]: index,
+    [`flags.${MODULE_ID}.${CUBIC_FLAG}.index`]: wallSegmentIndexes[index] ?? index,
     [`flags.${MODULE_ID}.${CUBIC_FLAG}.wallIds`]: wallIds
   }));
   await canvas.scene.updateEmbeddedDocuments("Wall", flagUpdates);
@@ -3256,8 +3430,11 @@ function clearCubicPreview() {
   cubicState.placed = false;
   cubicState.initializing = false;
   cubicState.draggingHandle = null;
+  cubicState.lastSegmentEditAction = 0;
+  cubicState.suppressNextSegmentEditClick = false;
   cubicState.curveId = null;
   cubicState.wallIds = [];
+  cubicState.segmentGaps = [];
   cubicState.graphics?.destroy();
   cubicState.graphics = null;
   setCubicEditingState(false);
@@ -3429,10 +3606,13 @@ function loadCubicCurveFromWall(wall) {
   cubicState.placed = true;
   cubicState.initializing = false;
   cubicState.draggingHandle = null;
+  cubicState.lastSegmentEditAction = 0;
+  cubicState.suppressNextSegmentEditClick = false;
   cubicState.curveId = cubicData.curveId ?? null;
   cubicState.wallIds = Array.isArray(cubicData.wallIds) ? [...cubicData.wallIds] : [wall.document.id];
   cubicState.wallTypeTool = getWallTypeToolFromDocument(wall.document) ?? cubicData.wallTypeTool ?? "walls";
   cubicState.segments = clamp(Number(cubicData.segments) || DEFAULT_CUBIC_SEGMENTS, 2, 64);
+  cubicState.segmentGaps = reconcileCubicSegmentGaps(cubicData.segmentGaps, cubicState.segments);
   cubicState.handles = cubicData.handles.map((handle) => ({
     x: Number(handle.x) || 0,
     y: Number(handle.y) || 0
