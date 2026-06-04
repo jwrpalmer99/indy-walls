@@ -1,0 +1,29 @@
+.indy-walls-edit-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: fixed;
+  z-index: 90;
+}
+
+.indy-walls-edit-buttons[hidden] {
+  display: none;
+}
+
+.indy-walls-edit-buttons button {
+  align-items: center;
+  background: rgb(30 30 30 / 88%);
+  border: 1px solid #ff9f00;
+  border-radius: 5px;
+  color: #d9d5c9;
+  display: flex;
+  font-size: 16px;
+  height: 32px;
+  justify-content: center;
+  width: 32px;
+}
+
+.indy-walls-edit-buttons button:hover {
+  border-color: #ff6400;
+  color: #ffffff;
+}

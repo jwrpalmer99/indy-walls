@@ -1,0 +1,29 @@
+{
+  "indy-walls": {
+    "Controls": {
+      "CubicBezier": "Cubic Bezier Wall",
+      "Ellipse": "Ellipse Wall",
+      "DecreaseSegments": "Decrease Curve Segments",
+      "IncreaseSegments": "Increase Curve Segments",
+      "ApplyCubic": "Create Cubic Bezier Walls",
+      "CancelCubic": "Cancel Cubic Bezier Wall",
+      "ApplyEllipse": "Create Ellipse Walls",
+      "CancelEllipse": "Cancel Ellipse Wall"
+    },
+    "Settings": {
+      "QuickWallTypeChange": {
+        "Name": "Click wall type buttons to update selected walls",
+        "Hint": "When enabled, clicking Normal, Terrain, Invisible, Ethereal, Door, or Secret Door in the Wall Controls changes the selected walls to that type."
+      }
+    },
+    "Tooltips": {
+      "CubicBezier": "Click-drag to place the curve, then drag the red endpoints or green handles. Use plus/minus or Ctrl-wheel to adjust segment count, Enter to create walls, or Escape to cancel.",
+      "Ellipse": "Click-drag to place the ellipse, hold Alt for a circle, or hold Ctrl to grow from the center. Use plus/minus or Ctrl-wheel to adjust segment count, Enter to create walls, or Escape to cancel."
+    },
+    "Notifications": {
+      "WallTypesUpdated": "Indy Walls | Updated {count} selected wall(s).",
+      "CubicWallsCreated": "Indy Walls | Created {count} curved wall segment(s).",
+      "EllipseWallsCreated": "Indy Walls | Created {count} ellipse wall segment(s)."
+    }
+  }
+}
