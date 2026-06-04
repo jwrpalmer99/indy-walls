@@ -270,6 +270,8 @@ const editorDomDragState = {
   pointerOffset: null,
   startPointerPoint: null,
   startEditorPoint: null,
+  initialPlacement: false,
+  controlInteraction: false,
   pointerId: null,
   view: null
 };
@@ -279,6 +281,7 @@ const canvasSegmentEditState = {
   pointerId: null,
   clientX: null,
   clientY: null,
+  cancelledByMove: false,
   ignoreClickUntil: 0
 };
 const controlShapeSelectState = {
@@ -1050,6 +1053,7 @@ function registerRectangleCanvasClickHandler() {
   if (!view || rectangleCanvasClickViews.has(view)) return;
 
   view.addEventListener("pointerdown", handleCanvasSegmentEditPointerDown, {capture: true});
+  view.addEventListener("pointermove", handleCanvasSegmentEditPointerMove, {capture: true});
   view.addEventListener("pointermove", updateLastCanvasPointerPoint, {capture: true});
   view.addEventListener("pointerup", handleCanvasSegmentEditPointerUp, {capture: true});
   view.addEventListener("pointercancel", handleCanvasSegmentEditPointerCancel, {capture: true});
@@ -1082,12 +1086,11 @@ function handleCanvasSegmentEditPointerDown(event) {
     startControlShapeSelect(event);
     return;
   }
-  if (isPolylineToolActive() && getEditorDomDragHit(event)) return;
+  if (getEditorDomDragHit(event)) return;
 
   const pending = getActiveCanvasSegmentEdit(event);
   if (!pending) {
     if (isPolylineToolActive()) {
-      if (getEditorDomDragHit(event)) return;
       consumeCanvasInteraction(event);
       scheduleEditorInteractionReset(event);
     }
@@ -1106,7 +1109,26 @@ function handleCanvasSegmentEditPointerDown(event) {
   canvasSegmentEditState.pointerId = event.pointerId;
   canvasSegmentEditState.clientX = event.clientX;
   canvasSegmentEditState.clientY = event.clientY;
+  canvasSegmentEditState.cancelledByMove = false;
+  resetCanvasCursor(event);
   scheduleEditorInteractionReset(event);
+}
+
+function handleCanvasSegmentEditPointerMove(event) {
+  if (!isPendingCanvasSegmentEditEvent(event)) return;
+  if (canvasSegmentEditState.clientX !== null && canvasSegmentEditState.clientY !== null) {
+    const distance = Math.hypot(event.clientX - canvasSegmentEditState.clientX, event.clientY - canvasSegmentEditState.clientY);
+    if (distance > 8) canvasSegmentEditState.cancelledByMove = true;
+  }
+
+  debugShapeSelection(`${canvasSegmentEditState.tool} canvas segment pointermove blocked`, {
+    clientX: event.clientX,
+    clientY: event.clientY,
+    cancelledByMove: canvasSegmentEditState.cancelledByMove,
+    edit: canvasSegmentEditState.edit
+  });
+  consumeCanvasInteraction(event);
+  resetCanvasCursor(event);
 }
 
 function handleCanvasSegmentEditPointerUp(event) {
@@ -1136,6 +1158,7 @@ function handleCanvasSegmentEditPointerUp(event) {
   } else {
     clearPendingCanvasSegmentEdit();
   }
+  resetCanvasCursor(event);
   scheduleEditorInteractionReset(event);
 }
 
@@ -1384,6 +1407,10 @@ function isPendingCanvasSegmentEditEvent(event) {
 
 function consumePendingCanvasSegmentEdit(event) {
   if (!canvasSegmentEditState.edit) return null;
+  if (canvasSegmentEditState.cancelledByMove) {
+    clearPendingCanvasSegmentEdit();
+    return null;
+  }
   if (canvasSegmentEditState.clientX !== null && canvasSegmentEditState.clientY !== null) {
     const distance = Math.hypot(event.clientX - canvasSegmentEditState.clientX, event.clientY - canvasSegmentEditState.clientY);
     if (distance > 8) {
@@ -1406,6 +1433,7 @@ function clearPendingCanvasSegmentEdit() {
   canvasSegmentEditState.pointerId = null;
   canvasSegmentEditState.clientX = null;
   canvasSegmentEditState.clientY = null;
+  canvasSegmentEditState.cancelledByMove = false;
 }
 
 function shouldIgnoreCanvasSegmentClick() {
@@ -1601,7 +1629,7 @@ function registerEditorDomDragHandler() {
   const view = canvas?.app?.view;
   if (!view || editorDomDragViews.has(view)) return;
 
-  document.addEventListener("pointerdown", handleEditorDomPointerDown, {capture: true});
+  view.addEventListener("pointerdown", handleEditorDomPointerDown, {capture: true});
   window.addEventListener("pointermove", handleEditorDomPointerMove, {capture: true});
   window.addEventListener("pointerup", handleEditorDomPointerUp, {capture: true});
   window.addEventListener("pointercancel", handleEditorDomPointerCancel, {capture: true});
@@ -1616,12 +1644,38 @@ function registerEditorDomDragHandler() {
 }
 
 function handleEditorDomPointerDown(event) {
-  if (!isCanvasDomEvent(event) || event.button !== 0 || isControlInteraction(event)) return;
+  debugShapeSelection("editor DOM pointerdown", {
+    target: event.target?.tagName,
+    button: event.button,
+    activeTool: game.activeTool,
+    cubic: isCubicToolActive(),
+    ellipse: isEllipseToolActive(),
+    rectangle: isRectangleToolActive(),
+    polyline: isPolylineToolActive(),
+    placed: getActiveEditorState()?.placed ?? null
+  });
+  if (!isCanvasDomEvent(event) || event.button !== 0) return;
+  const controlInteraction = isControlInteraction(event);
   const hit = getEditorDomDragHit(event);
-  if (!hit) return;
+  if (!hit) {
+    debugShapeSelection("editor DOM pointerdown no hit", {
+      activeTool: game.activeTool,
+      candidates: getCanvasClickPointCandidates(event)
+    });
+    if (isAnyEditorToolActive()) {
+      consumeCanvasInteraction(event);
+      scheduleEditorInteractionReset(event);
+    }
+    return;
+  }
+  if (controlInteraction && !hit.initialPlacement) {
+    debugShapeSelection("editor DOM pointerdown ignored control edit hit", {hit});
+    return;
+  }
 
   debugInteractionManagers("editor DOM drag start", event, hit);
   consumeCanvasInteraction(event);
+  resetEditorCursor(event);
   event.target?.setPointerCapture?.(event.pointerId);
 
   if (hit.tool === RECTANGLE_TOOL && hit.vertex && event.altKey) {
@@ -1648,7 +1702,7 @@ function handleEditorDomPointerDown(event) {
   }
 
   const state = getActiveEditorState();
-  beginEditorOperation(state);
+  beginEditorOperation(state, !!hit.initialPlacement);
   editorDomDragState.active = true;
   editorDomDragState.tool = hit.tool;
   editorDomDragState.handle = hit.handle;
@@ -1659,6 +1713,8 @@ function handleEditorDomPointerDown(event) {
   editorDomDragState.pointerOffset = hit.pointerOffset;
   editorDomDragState.startPointerPoint = hit.startPointerPoint;
   editorDomDragState.startEditorPoint = hit.startEditorPoint;
+  editorDomDragState.initialPlacement = !!hit.initialPlacement;
+  editorDomDragState.controlInteraction = controlInteraction;
   editorDomDragState.pointerId = event.pointerId;
   editorDomDragState.view = canvas?.app?.view ?? null;
 
@@ -1671,20 +1727,29 @@ function handleEditorDomPointerDown(event) {
     polylineState.draggingVertex = null;
   }
   else if (hit.tool === CUBIC_TOOL) {
-    cubicState.draggingHandle = hit.handle;
-    markSuppressCubicSegmentClick();
+    if (hit.initialPlacement) initializeCubicDomPlacement(hit.editorPoint);
+    else {
+      cubicState.draggingHandle = hit.handle;
+      markSuppressCubicSegmentClick();
+    }
   }
   else if (hit.tool === ELLIPSE_TOOL) {
-    ellipseState.draggingHandle = hit.handle;
-    ellipseState.draggingVertex = hit.vertex;
-    if (hit.vertex) markSuppressEllipseSegmentClick();
+    if (hit.initialPlacement) initializeEllipseDomPlacement(hit.editorPoint);
+    else {
+      ellipseState.draggingHandle = hit.handle;
+      ellipseState.draggingVertex = hit.vertex;
+      if (hit.vertex) markSuppressEllipseSegmentClick();
+    }
   }
   else if (hit.tool === POLYLINE_TOOL) {
     polylineState.draggingVertex = hit.vertex;
   }
   else if (hit.handle !== null) {
-    rectangleState.draggingHandle = hit.handle;
-    rectangleState.draggingVertex = null;
+    if (hit.initialPlacement) initializeRectangleDomPlacement(hit.editorPoint);
+    else {
+      rectangleState.draggingHandle = hit.handle;
+      rectangleState.draggingVertex = null;
+    }
   } else {
     rectangleState.draggingHandle = null;
     rectangleState.draggingVertex = hit.vertex;
@@ -1716,6 +1781,7 @@ function handleEditorDomPointerMove(event) {
     drawEditorPreview(editorDomDragState.tool);
   } else if (editorDomDragState.tool === CUBIC_TOOL) {
     setHandle(editorDomDragState.handle, point);
+    if (cubicState.initializing && editorDomDragState.handle === 3) initializeCubicControls();
     cubicState.placed = true;
     drawCubicPreview();
   } else if (editorDomDragState.tool === ELLIPSE_TOOL) {
@@ -1724,6 +1790,7 @@ function handleEditorDomPointerMove(event) {
     } else {
       setEllipseResizeHandle(editorDomDragState.handle, point, event);
     }
+    if (ellipseState.initializing) updateEllipseInitialHandles(event);
     ellipseState.placed = true;
     drawEllipsePreview();
   } else if (editorDomDragState.tool === POLYLINE_TOOL && editorDomDragState.vertex) {
@@ -1757,10 +1824,24 @@ function finalizeEditorDomDrag(event=null, cancelled=false) {
     tool: editorDomDragState.tool,
     handle: editorDomDragState.handle,
     vertex: editorDomDragState.vertex,
-    move: editorDomDragState.move
+    move: editorDomDragState.move,
+    initialPlacement: editorDomDragState.initialPlacement,
+    controlInteraction: editorDomDragState.controlInteraction
   });
 
-  if (editorDomDragState.tool === CUBIC_TOOL) {
+  const controlClickSelect = !cancelled
+    && editorDomDragState.initialPlacement
+    && editorDomDragState.controlInteraction
+    && getEditorDomDragDistance(event) <= 6;
+
+  if (controlClickSelect) {
+    const tool = editorDomDragState.tool;
+    cancelEditorOperation(getEditorStateForTool(tool));
+    clearEditorPreviewForTool(tool);
+    const loaded = loadShapeFromCanvasPointerUp(event);
+    if (loaded) canvasSegmentEditState.ignoreClickUntil = Date.now() + 500;
+    debugShapeSelection("editor DOM control click selection", {tool, loaded});
+  } else if (editorDomDragState.tool === CUBIC_TOOL) {
     cubicState.draggingHandle = null;
     cubicState.initializing = false;
     if (cancelled) cancelEditorOperation(cubicState);
@@ -1804,12 +1885,34 @@ function finalizeEditorDomDrag(event=null, cancelled=false) {
   editorDomDragState.pointerOffset = null;
   editorDomDragState.startPointerPoint = null;
   editorDomDragState.startEditorPoint = null;
+  editorDomDragState.initialPlacement = false;
+  editorDomDragState.controlInteraction = false;
   editorDomDragState.pointerId = null;
   editorDomDragState.view = null;
   scheduleEditorInteractionReset(event);
 }
 
+function getEditorDomDragDistance(event=null) {
+  const start = editorDomDragState.startPointerPoint;
+  if (!start || !event) return 0;
+  const current = getCanvasClickPointCandidates(event)
+    .find(({label}) => label === editorDomDragState.coordinateLabel)?.point
+    ?? getCanvasClickPointCandidates(event)[0]?.point;
+  if (!current) return 0;
+  return Math.hypot(current.x - start.x, current.y - start.y);
+}
+
+function clearEditorPreviewForTool(tool) {
+  if (tool === CUBIC_TOOL) clearCubicPreview();
+  else if (tool === ELLIPSE_TOOL) clearEllipsePreview();
+  else if (tool === RECTANGLE_TOOL) clearRectanglePreview();
+  else if (tool === POLYLINE_TOOL) clearPolylinePreview();
+}
+
 function getEditorDomDragHit(event) {
+  const initialHit = getEditorDomInitialPlacementHit(event);
+  if (initialHit) return initialHit;
+
   if (isCubicToolActive() && cubicState.placed) {
     for (const {label, point} of getCanvasClickPointCandidates(event)) {
       const movePoint = getEditorMoveHandleAt(CUBIC_TOOL, point);
@@ -1932,6 +2035,97 @@ function getEditorDomDragHit(event) {
     });
   }
   return null;
+}
+
+function getEditorDomInitialPlacementHit(event) {
+  if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive()) return null;
+  if (isCubicToolActive() && cubicState.placed) return null;
+  if (isEllipseToolActive() && ellipseState.placed) return null;
+  if (isRectangleToolActive() && rectangleState.placed) return null;
+
+  const candidate = getCanvasClickPointCandidates(event)[0];
+  if (!candidate?.point) return null;
+
+  if (isCubicToolActive()) return withDomPointerDragData(event, {
+    tool: CUBIC_TOOL,
+    handle: 3,
+    vertex: null,
+    move: false,
+    initialPlacement: true,
+    coordinateLabel: candidate.label,
+    hitPoint: candidate.point,
+    editorPoint: candidate.point
+  });
+
+  if (isEllipseToolActive()) return withDomPointerDragData(event, {
+    tool: ELLIPSE_TOOL,
+    handle: 1,
+    vertex: null,
+    move: false,
+    initialPlacement: true,
+    coordinateLabel: candidate.label,
+    hitPoint: candidate.point,
+    editorPoint: candidate.point
+  });
+
+  return withDomPointerDragData(event, {
+    tool: RECTANGLE_TOOL,
+    handle: 1,
+    vertex: null,
+    move: false,
+    initialPlacement: true,
+    coordinateLabel: candidate.label,
+    hitPoint: candidate.point,
+    editorPoint: candidate.point
+  });
+}
+
+function initializeCubicDomPlacement(point) {
+  cubicState.placed = false;
+  cubicState.initializing = true;
+  cubicState.draggingHandle = 3;
+  cubicState.curveId = null;
+  cubicState.wallIds = [];
+  cubicState.wallTypeBySegment = {};
+  cubicState.segmentGaps = [];
+  setHandle(0, point);
+  setHandle(1, point);
+  setHandle(2, point);
+  setHandle(3, point);
+  drawCubicPreview();
+}
+
+function initializeEllipseDomPlacement(point) {
+  ellipseState.placed = false;
+  ellipseState.initializing = true;
+  ellipseState.initialOrigin = point;
+  ellipseState.draggingHandle = 1;
+  ellipseState.draggingVertex = null;
+  ellipseState.ellipseId = null;
+  ellipseState.wallIds = [];
+  ellipseState.wallTypeBySegment = {};
+  ellipseState.rotation = 0;
+  ellipseState.segmentGaps = [];
+  setEllipseHandle(0, point);
+  setEllipseHandle(1, point);
+  drawEllipsePreview();
+}
+
+function initializeRectangleDomPlacement(point) {
+  rectangleState.placed = false;
+  rectangleState.initializing = true;
+  rectangleState.draggingHandle = 1;
+  rectangleState.draggingVertex = null;
+  rectangleState.hoveredVertex = null;
+  rectangleState.rectangleId = null;
+  rectangleState.wallIds = [];
+  rectangleState.wallTypeBySegment = {};
+  rectangleState.sideRatios = getDefaultRectangleSideRatios();
+  rectangleState.sideEnabled = getDefaultRectangleSideEnabled();
+  rectangleState.sideGaps = getDefaultRectangleSideGaps();
+  setRectangleHandle(0, point);
+  setRectangleHandle(1, point);
+  drawRectanglePreview();
 }
 
 function withDomPointerDragData(event, hit) {
