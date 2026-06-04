@@ -197,8 +197,23 @@ const shapeLoadState = {
 const controlKeyState = {
   down: false
 };
+const editorDomDragState = {
+  active: false,
+  tool: null,
+  handle: null,
+  vertex: null,
+  coordinateLabel: null,
+  pointerCoordinateLabel: null,
+  pointerOffset: null,
+  startPointerPoint: null,
+  startEditorPoint: null,
+  pointerId: null,
+  view: null
+};
 
 const hiddenEditWalls = new Map();
+const rectangleCanvasClickViews = new WeakSet();
+const editorDomDragViews = new WeakSet();
 
 Hooks.once("init", () => {
   game.settings.register(MODULE_ID, QUICK_WALL_TYPE_SETTING, {
@@ -223,6 +238,7 @@ Hooks.once("init", () => {
   registerWallTypeControlShortcuts();
   registerCurveEditorShortcuts();
   registerControlKeyTracking();
+  registerEditorDragFallback();
 });
 
 Hooks.on("canvasReady", () => {
@@ -233,6 +249,8 @@ Hooks.on("canvasReady", () => {
     firstWallClass: canvas?.walls?.placeables?.[0]?.constructor?.name
   });
   patchAvailableWallObjectInteractions();
+  registerRectangleCanvasClickHandler();
+  registerEditorDomDragHandler();
 });
 
 Hooks.on("controlWall", (wall, controlled) => {
@@ -484,7 +502,6 @@ function patchWallsLayer() {
   const originalDragDrop = WallsLayer.prototype._onDragLeftDrop;
   const originalDragCancel = WallsLayer.prototype._onDragLeftCancel;
   const originalMouseWheel = WallsLayer.prototype._onMouseWheel;
-  const originalClickLeft = WallsLayer.prototype._onClickLeft;
 
   WallsLayer.prototype._onDragLeftStart = function(event) {
     debugShapeSelection("walls layer drag left start", {
@@ -494,7 +511,7 @@ function patchWallsLayer() {
     });
     if (isAnyEditorToolActive() && isControlInteraction(event) && loadShapeAtInteractionPoint(event)) {
       consumeCanvasInteraction(event);
-      resetCanvasCursor();
+      resetCanvasCursor(event);
       return;
     }
 
@@ -550,7 +567,7 @@ function patchWallsLayer() {
         rectangleState.hoveredVertex = null;
         rectangleState.lastSideEditAction = Date.now();
         rectangleState.suppressNextSideEditClick = true;
-        resetCanvasCursor();
+        scheduleCanvasInteractionReset(event);
         return;
       }
 
@@ -562,21 +579,10 @@ function patchWallsLayer() {
         return;
       }
 
-      if (rectangleState.draggingHandle === null
-        && rectangleState.placed
-        && editRectangleSideWithUndo({x: hitPoint.x, y: hitPoint.y}, event.altKey)) {
-        consumeCanvasInteraction(event);
-        rectangleState.draggingVertex = null;
-        rectangleState.lastSideEditAction = Date.now();
-        rectangleState.suppressNextSideEditClick = true;
-        resetCanvasCursor();
-        return;
-      }
-
       if (rectangleState.draggingHandle === null) {
         if (rectangleState.placed) {
           consumeCanvasInteraction(event);
-          resetCanvasCursor();
+          resetCanvasCursor(event);
           drawRectanglePreview();
           return;
         }
@@ -599,7 +605,7 @@ function patchWallsLayer() {
     if (cubicState.draggingHandle === null) {
       if (cubicState.placed) {
         consumeCanvasInteraction(event);
-        resetCanvasCursor();
+        resetCanvasCursor(event);
         drawCubicPreview();
         return;
       }
@@ -665,6 +671,14 @@ function patchWallsLayer() {
   };
 
   WallsLayer.prototype._onDragLeftDrop = function(event) {
+    debugShapeSelection("walls layer drag left drop", {
+      activeTool: game.activeTool,
+      editorActive: isAnyEditorToolActive(),
+      cubicDraggingHandle: cubicState.draggingHandle,
+      ellipseDraggingHandle: ellipseState.draggingHandle,
+      rectangleDraggingHandle: rectangleState.draggingHandle,
+      rectangleDraggingVertex: rectangleState.draggingVertex
+    });
     if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive()) {
       return originalDragDrop.call(this, event);
     }
@@ -684,7 +698,7 @@ function patchWallsLayer() {
       rectangleState.hoveredVertex = null;
       rectangleState.initializing = false;
       event.interactionData.clearPreviewContainer = false;
-      resetCanvasCursor();
+      resetCanvasCursor(event);
       commitEditorOperation(rectangleState);
       drawRectanglePreview();
       return;
@@ -698,6 +712,14 @@ function patchWallsLayer() {
   };
 
   WallsLayer.prototype._onDragLeftCancel = function(event) {
+    debugShapeSelection("walls layer drag left cancel", {
+      activeTool: game.activeTool,
+      editorActive: isAnyEditorToolActive(),
+      cubicDraggingHandle: cubicState.draggingHandle,
+      ellipseDraggingHandle: ellipseState.draggingHandle,
+      rectangleDraggingHandle: rectangleState.draggingHandle,
+      rectangleDraggingVertex: rectangleState.draggingVertex
+    });
     if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive()) {
       return originalDragCancel.call(this, event);
     }
@@ -739,23 +761,6 @@ function patchWallsLayer() {
     const delta = Math.sign(event.deltaY ?? event.delta);
     changeActiveSegments(delta < 0 ? 1 : -1);
   };
-
-  if (originalClickLeft) {
-    WallsLayer.prototype._onClickLeft = function(event) {
-      debugShapeSelection("walls layer click left", {
-        ctrl: isControlInteraction(event),
-        activeTool: game.activeTool,
-        editorActive: isAnyEditorToolActive(),
-        controlledWallIds: canvas?.walls?.controlled?.map((wall) => wall.document?.id ?? wall.id)
-      });
-      if (isControlInteraction(event) && loadShapeAtInteractionPoint(event)) {
-        consumeCanvasInteraction(event);
-        resetCanvasCursor();
-        return;
-      }
-      return originalClickLeft.call(this, event);
-    };
-  }
 
   WallsLayer.prototype._indyWallsCubicPatched = true;
 
@@ -802,7 +807,7 @@ function patchWallObjectInteractions(WallClass) {
         && isControlInteraction(event)
         && loadShapeFromExistingWall(this)) {
         consumeCanvasInteraction(event);
-        resetCanvasCursor();
+        resetCanvasCursor(event);
         return;
       }
 
@@ -837,8 +842,448 @@ function shouldRouteWallObjectDragStartToEditor(event) {
     || getRectangleSideAt(point) !== null;
 }
 
+function registerRectangleCanvasClickHandler() {
+  const view = canvas?.app?.view;
+  if (!view || rectangleCanvasClickViews.has(view)) return;
+
+  view.addEventListener("click", handleRectangleCanvasClick, {capture: true});
+  rectangleCanvasClickViews.add(view);
+  debugShapeSelection("registered rectangle canvas click handler", {
+    tagName: view.tagName,
+    width: view.width,
+    height: view.height,
+    clientWidth: view.clientWidth,
+    clientHeight: view.clientHeight
+  });
+}
+
+function handleRectangleCanvasClick(event) {
+  if (Number.isFinite(event.button) && event.button !== 0) return;
+
+  if (isControlInteraction(event) && loadShapeFromCanvasClick(event)) {
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    scheduleCanvasInteractionReset(event);
+    return;
+  }
+
+  if (!isRectangleToolActive() || !rectangleState.placed) return;
+
+  const edit = getRectangleSideEditFromEvent(event);
+  debugShapeSelection("rectangle canvas click", {
+    clientX: event.clientX,
+    clientY: event.clientY,
+    altKey: !!event.altKey,
+    edit
+  });
+  if (!edit) return;
+
+  event.preventDefault?.();
+  event.stopPropagation?.();
+  commitRectangleSideEdit(edit, event);
+}
+
+function loadShapeFromCanvasClick(event) {
+  for (const point of getCanvasClickCandidatePoints(event)) {
+    const scan = getIndyWallAtPoint(point, "canvas click");
+    if (!scan?.wall || !loadShapeFromExistingWall(scan.wall)) continue;
+
+    debugShapeSelection("canvas click loaded shape", {
+      point,
+      wallId: scan.wall.document?.id ?? scan.wall.id
+    });
+    return true;
+  }
+  return false;
+}
+
+function getRectangleSideEditFromEvent(event) {
+  if (!isRectangleToolActive() || !rectangleState.placed) return null;
+  const point = getRectangleSidePointFromEvent(event);
+  if (!point) return null;
+
+  return {
+    point: {x: point.x, y: point.y},
+    remove: isAltInteraction(event)
+  };
+}
+
+function getRectangleSidePointFromEvent(event) {
+  for (const point of getCanvasClickCandidatePoints(event)) {
+    if (getRectangleSideAt({x: point.x, y: point.y})) return {x: point.x, y: point.y};
+  }
+  return null;
+}
+
+function getCanvasClickCandidatePoints(event) {
+  return getCanvasClickPointCandidates(event).map(({point}) => point);
+}
+
+function getCanvasClickPointCandidates(event) {
+  const interactionPoint = getLabeledInteractionPoint(event);
+  const candidates = [
+    ...(interactionPoint ? [interactionPoint] : []),
+    ...getClientInteractionPoints(event)
+  ].filter(({point}) => Number.isFinite(point?.x) && Number.isFinite(point?.y));
+
+  const seen = new Set();
+  return candidates.filter(({label, point}) => {
+    const key = `${Math.round(point.x * 100) / 100}:${Math.round(point.y * 100) / 100}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function getLabeledInteractionPoint(event) {
+  const source = event.data ?? event;
+  if (source.getLocalPosition || source.global || event.global || event.interactionData?.origin) {
+    return {label: "interaction", point: getInteractionPoint(event)};
+  }
+  return null;
+}
+
+function commitRectangleSideEdit(edit, event=null) {
+  if (!isRectangleToolActive() || !rectangleState.placed) return false;
+  debugInteractionManagers("before rectangle canvas click commit", event, {edit});
+  if (!editRectangleSideWithUndo(edit.point, edit.remove)) return false;
+
+  rectangleState.draggingHandle = null;
+  rectangleState.draggingVertex = null;
+  rectangleState.lastSideEditAction = Date.now();
+  rectangleState.suppressNextSideEditClick = false;
+  debugInteractionManagers("after rectangle canvas click commit", event, {edit});
+  scheduleCanvasInteractionReset(event);
+  return true;
+}
+
+function registerEditorDomDragHandler() {
+  const view = canvas?.app?.view;
+  if (!view || editorDomDragViews.has(view)) return;
+
+  document.addEventListener("pointerdown", handleEditorDomPointerDown, {capture: true});
+  window.addEventListener("pointermove", handleEditorDomPointerMove, {capture: true});
+  window.addEventListener("pointerup", handleEditorDomPointerUp, {capture: true});
+  window.addEventListener("pointercancel", handleEditorDomPointerCancel, {capture: true});
+  editorDomDragViews.add(view);
+  debugShapeSelection("registered editor DOM drag handler", {
+    tagName: view.tagName,
+    width: view.width,
+    height: view.height,
+    clientWidth: view.clientWidth,
+    clientHeight: view.clientHeight
+  });
+}
+
+function handleEditorDomPointerDown(event) {
+  if (!isCanvasDomEvent(event) || event.button !== 0 || isControlInteraction(event)) return;
+  const hit = getEditorDomDragHit(event);
+  if (!hit) return;
+
+  debugInteractionManagers("editor DOM drag start", event, hit);
+  consumeCanvasInteraction(event);
+  event.target?.setPointerCapture?.(event.pointerId);
+
+  if (hit.tool === RECTANGLE_TOOL && hit.vertex && event.altKey) {
+    const snapshot = getEditorSnapshot(rectangleState);
+    removeRectangleVertex(hit.vertex);
+    pushEditorUndoSnapshot(rectangleState, snapshot);
+    rectangleState.draggingVertex = null;
+    rectangleState.hoveredVertex = null;
+    rectangleState.draggingHandle = null;
+    rectangleState.lastSideEditAction = Date.now();
+    rectangleState.suppressNextSideEditClick = false;
+    scheduleCanvasInteractionReset(event);
+    return;
+  }
+
+  const state = getActiveEditorState();
+  beginEditorOperation(state);
+  editorDomDragState.active = true;
+  editorDomDragState.tool = hit.tool;
+  editorDomDragState.handle = hit.handle;
+  editorDomDragState.vertex = hit.vertex;
+  editorDomDragState.coordinateLabel = hit.coordinateLabel;
+  editorDomDragState.pointerCoordinateLabel = hit.pointerCoordinateLabel;
+  editorDomDragState.pointerOffset = hit.pointerOffset;
+  editorDomDragState.startPointerPoint = hit.startPointerPoint;
+  editorDomDragState.startEditorPoint = hit.startEditorPoint;
+  editorDomDragState.pointerId = event.pointerId;
+  editorDomDragState.view = canvas?.app?.view ?? null;
+
+  if (hit.tool === CUBIC_TOOL) cubicState.draggingHandle = hit.handle;
+  else if (hit.tool === ELLIPSE_TOOL) ellipseState.draggingHandle = hit.handle;
+  else if (hit.handle !== null) {
+    rectangleState.draggingHandle = hit.handle;
+    rectangleState.draggingVertex = null;
+  } else {
+    rectangleState.draggingHandle = null;
+    rectangleState.draggingVertex = hit.vertex;
+  }
+}
+
+function handleEditorDomPointerMove(event) {
+  if (!editorDomDragState.active || event.pointerId !== editorDomDragState.pointerId) return;
+  consumeCanvasInteraction(event);
+
+  const point = getSnappedDomEditorPoint(event);
+  if (!point) return;
+
+  debugShapeSelection("editor DOM drag move", {
+    tool: editorDomDragState.tool,
+    handle: editorDomDragState.handle,
+    vertex: editorDomDragState.vertex,
+    coordinateLabel: editorDomDragState.coordinateLabel,
+    pointerCoordinateLabel: editorDomDragState.pointerCoordinateLabel,
+    pointerOffset: editorDomDragState.pointerOffset,
+    startPointerPoint: editorDomDragState.startPointerPoint,
+    startEditorPoint: editorDomDragState.startEditorPoint,
+    point
+  });
+
+  if (editorDomDragState.tool === CUBIC_TOOL) {
+    setHandle(editorDomDragState.handle, point);
+    cubicState.placed = true;
+    drawCubicPreview();
+  } else if (editorDomDragState.tool === ELLIPSE_TOOL) {
+    setEllipseHandle(editorDomDragState.handle, point);
+    ellipseState.placed = true;
+    drawEllipsePreview();
+  } else if (editorDomDragState.handle !== null) {
+    setRectangleHandle(editorDomDragState.handle, point);
+    rectangleState.placed = true;
+    drawRectanglePreview();
+  } else if (editorDomDragState.vertex) {
+    setRectangleVertex(editorDomDragState.vertex, point);
+    drawRectanglePreview();
+  }
+}
+
+function handleEditorDomPointerUp(event) {
+  if (!editorDomDragState.active || event.pointerId !== editorDomDragState.pointerId) return;
+  consumeCanvasInteraction(event);
+  finalizeEditorDomDrag(event, false);
+}
+
+function handleEditorDomPointerCancel(event) {
+  if (!editorDomDragState.active || event.pointerId !== editorDomDragState.pointerId) return;
+  consumeCanvasInteraction(event);
+  finalizeEditorDomDrag(event, true);
+}
+
+function finalizeEditorDomDrag(event=null, cancelled=false) {
+  debugInteractionManagers(cancelled ? "editor DOM drag cancel" : "editor DOM drag commit", event, {
+    tool: editorDomDragState.tool,
+    handle: editorDomDragState.handle,
+    vertex: editorDomDragState.vertex
+  });
+
+  if (editorDomDragState.tool === CUBIC_TOOL) {
+    cubicState.draggingHandle = null;
+    cubicState.initializing = false;
+    if (cancelled) cancelEditorOperation(cubicState);
+    else commitEditorOperation(cubicState);
+    drawCubicPreview();
+  } else if (editorDomDragState.tool === ELLIPSE_TOOL) {
+    ellipseState.draggingHandle = null;
+    ellipseState.initializing = false;
+    ellipseState.initialOrigin = null;
+    if (cancelled) cancelEditorOperation(ellipseState);
+    else commitEditorOperation(ellipseState);
+    drawEllipsePreview();
+  } else if (editorDomDragState.tool === RECTANGLE_TOOL) {
+    rectangleState.draggingHandle = null;
+    rectangleState.draggingVertex = null;
+    rectangleState.hoveredVertex = null;
+    rectangleState.initializing = false;
+    if (cancelled) cancelEditorOperation(rectangleState);
+    else commitEditorOperation(rectangleState);
+    drawRectanglePreview();
+  }
+
+  editorDomDragState.active = false;
+  editorDomDragState.tool = null;
+  editorDomDragState.handle = null;
+  editorDomDragState.vertex = null;
+  editorDomDragState.coordinateLabel = null;
+  editorDomDragState.pointerCoordinateLabel = null;
+  editorDomDragState.pointerOffset = null;
+  editorDomDragState.startPointerPoint = null;
+  editorDomDragState.startEditorPoint = null;
+  editorDomDragState.pointerId = null;
+  editorDomDragState.view = null;
+  scheduleCanvasInteractionReset(event);
+}
+
+function getEditorDomDragHit(event) {
+  if (isCubicToolActive() && cubicState.placed) {
+    for (const {label, point} of getCanvasClickPointCandidates(event)) {
+      const handle = getCubicHandleAt(point);
+      if (handle !== null) return withDomPointerDragData(event, {
+        tool: CUBIC_TOOL,
+        handle,
+        vertex: null,
+        coordinateLabel: label,
+        hitPoint: point,
+        editorPoint: cubicState.handles[handle]
+      });
+    }
+    return null;
+  }
+
+  if (isEllipseToolActive() && ellipseState.placed) {
+    for (const {label, point} of getCanvasClickPointCandidates(event)) {
+      const handle = getEllipseHandleAt(point);
+      if (handle !== null) return withDomPointerDragData(event, {
+        tool: ELLIPSE_TOOL,
+        handle,
+        vertex: null,
+        coordinateLabel: label,
+        hitPoint: point,
+        editorPoint: ellipseState.handles[handle]
+      });
+    }
+    return null;
+  }
+
+  if (!isRectangleToolActive() || !rectangleState.placed) return null;
+  for (const {label, point} of getCanvasClickPointCandidates(event)) {
+    const handle = getRectangleHandleAt(point);
+    if (handle !== null) return withDomPointerDragData(event, {
+      tool: RECTANGLE_TOOL,
+      handle,
+      vertex: null,
+      coordinateLabel: label,
+      hitPoint: point,
+      editorPoint: rectangleState.handles[handle]
+    });
+    const vertex = getRectangleVertexAt(point);
+    if (vertex) return withDomPointerDragData(event, {
+      tool: RECTANGLE_TOOL,
+      handle: null,
+      vertex,
+      coordinateLabel: label,
+      hitPoint: point,
+      editorPoint: vertex.point
+    });
+  }
+  return null;
+}
+
+function withDomPointerDragData(event, hit) {
+  const pointer = {
+    label: hit.coordinateLabel,
+    point: hit.hitPoint
+  };
+  if (!pointer.point || !hit.editorPoint) return null;
+
+  return {
+    ...hit,
+    pointerCoordinateLabel: pointer.label,
+    pointerOffset: {
+      x: hit.editorPoint.x - pointer.point.x,
+      y: hit.editorPoint.y - pointer.point.y
+    },
+    startPointerPoint: {x: pointer.point.x, y: pointer.point.y},
+    startEditorPoint: {x: hit.editorPoint.x, y: hit.editorPoint.y}
+  };
+}
+
+function getSnappedDomEditorPoint(event) {
+  const point = getDomEditorDragPoint(event);
+  if (!point || !canvas?.walls?._getWallEndpointCoordinates) return point ?? null;
+  return getEventPoint(canvas.walls, point, event);
+}
+
+function getDomEditorDragPoint(event) {
+  const candidates = getCanvasClickPointCandidates(event);
+  const pointerPoint = candidates.find(({label}) => label === editorDomDragState.coordinateLabel)?.point
+    ?? candidates.find(({label}) => label === editorDomDragState.pointerCoordinateLabel)?.point
+    ?? candidates[0]?.point;
+  if (!pointerPoint) return null;
+
+  const startPointer = editorDomDragState.startPointerPoint;
+  const startEditor = editorDomDragState.startEditorPoint;
+  if (startPointer && startEditor) {
+    return {
+      x: startEditor.x + (pointerPoint.x - startPointer.x),
+      y: startEditor.y + (pointerPoint.y - startPointer.y)
+    };
+  }
+
+  const offset = editorDomDragState.pointerOffset ?? {x: 0, y: 0};
+  return {
+    x: pointerPoint.x + offset.x,
+    y: pointerPoint.y + offset.y
+  };
+}
+
+function isCanvasDomEvent(event) {
+  const view = canvas?.app?.view;
+  return !!view && (event.target === view || (event.composedPath?.() ?? []).includes(view));
+}
+
 function isAnyEditorToolActive() {
   return isCubicToolActive() || isEllipseToolActive() || isRectangleToolActive();
+}
+
+function registerEditorDragFallback() {
+  window.addEventListener("pointerup", (event) => {
+    scheduleEditorDragFallback(event, false);
+  }, {capture: false});
+  window.addEventListener("pointercancel", (event) => {
+    scheduleEditorDragFallback(event, true);
+  }, {capture: false});
+}
+
+function scheduleEditorDragFallback(event, cancelled) {
+  if (!hasActiveEditorDrag()) return;
+
+  setTimeout(() => {
+    if (!hasActiveEditorDrag()) return;
+    debugInteractionManagers(cancelled ? "fallback cancelling active editor drag" : "fallback committing active editor drag", event, {
+      activeTool: game.activeTool,
+      cubicDraggingHandle: cubicState.draggingHandle,
+      ellipseDraggingHandle: ellipseState.draggingHandle,
+      rectangleDraggingHandle: rectangleState.draggingHandle,
+      rectangleDraggingVertex: rectangleState.draggingVertex
+    });
+    finalizeActiveEditorDrag(event, cancelled);
+  }, 0);
+}
+
+function hasActiveEditorDrag() {
+  return cubicState.draggingHandle !== null
+    || ellipseState.draggingHandle !== null
+    || rectangleState.draggingHandle !== null
+    || !!rectangleState.draggingVertex;
+}
+
+function finalizeActiveEditorDrag(event=null, cancelled=false) {
+  if (isEllipseToolActive() && ellipseState.draggingHandle !== null) {
+    ellipseState.draggingHandle = null;
+    ellipseState.initializing = false;
+    ellipseState.initialOrigin = null;
+    if (cancelled) cancelEditorOperation(ellipseState);
+    else commitEditorOperation(ellipseState);
+    drawEllipsePreview();
+  } else if (isRectangleToolActive() && (rectangleState.draggingHandle !== null || rectangleState.draggingVertex)) {
+    rectangleState.draggingHandle = null;
+    rectangleState.draggingVertex = null;
+    rectangleState.hoveredVertex = null;
+    rectangleState.initializing = false;
+    if (cancelled) cancelEditorOperation(rectangleState);
+    else commitEditorOperation(rectangleState);
+    drawRectanglePreview();
+  } else if (isCubicToolActive() && cubicState.draggingHandle !== null) {
+    cubicState.draggingHandle = null;
+    cubicState.initializing = false;
+    if (cancelled) cancelEditorOperation(cubicState);
+    else commitEditorOperation(cubicState);
+    drawCubicPreview();
+  }
+
+  scheduleCanvasInteractionReset(event);
 }
 
 function debugShapeSelection(message, data=null) {
@@ -892,6 +1337,12 @@ function isControlInteraction(event) {
     || event.data?.originalEvent?.ctrlKey
     || event.originalEvent?.ctrlKey
     || isControlKeyDown());
+}
+
+function isAltInteraction(event) {
+  return !!(event?.altKey
+    || event.data?.originalEvent?.altKey
+    || event.originalEvent?.altKey);
 }
 
 function loadShapeAtInteractionPoint(event) {
@@ -1099,30 +1550,100 @@ function consumeCanvasInteraction(event) {
   if (event.interactionData) event.interactionData.clearPreviewContainer = false;
 }
 
-function resetCanvasCursor() {
-  clearMouseInteractionManagerDragState();
+function resetCanvasCursor(event=null) {
+  clearMouseInteractionManagerDragState(event);
   if (canvas?.app?.view?.style) canvas.app.view.style.cursor = "";
   if (document.body?.style) document.body.style.cursor = "";
 }
 
-function clearMouseInteractionManagerDragState(event=null) {
-  const managers = new Set([
-    canvas?.mouseInteractionManager,
-    canvas?.walls?.mouseInteractionManager,
-    canvas?.walls?._mouseInteractionManager,
-    event?.target?.mouseInteractionManager,
-    event?.target?._mouseInteractionManager,
-    event?.currentTarget?.mouseInteractionManager,
-    event?.currentTarget?._mouseInteractionManager
-  ].filter(Boolean));
+function scheduleCanvasInteractionReset(event=null) {
+  debugInteractionManagers("schedule interaction reset start", event);
+  resetCanvasCursor(event);
+  debugInteractionManagers("after immediate interaction reset", event);
+  globalThis.queueMicrotask?.(() => {
+    resetCanvasCursor(event);
+    debugInteractionManagers("after microtask interaction reset", event);
+  });
+  setTimeout(() => {
+    resetCanvasCursor(event);
+    debugInteractionManagers("after timeout 0 interaction reset", event);
+  }, 0);
+  setTimeout(() => {
+    resetCanvasCursor(event);
+    debugInteractionManagers("after timeout 50 interaction reset", event);
+  }, 50);
+}
 
-  for (const manager of managers) {
+function clearMouseInteractionManagerDragState(event=null) {
+  for (const {manager} of getCanvasInteractionManagers(event)) {
     manager.cursor = null;
     manager._dragging = false;
     manager.dragging = false;
     const noneState = manager.constructor?.INTERACTION_STATES?.NONE;
     if (Number.isFinite(noneState)) manager.state = noneState;
   }
+}
+
+function debugInteractionManagers(message, event=null, extra={}) {
+  try {
+    if (!game?.settings?.get(MODULE_ID, DEBUG_SETTING)) return;
+  } catch (_error) {
+    return;
+  }
+
+  console.debug(`${MODULE_ID} | ${message}`, {
+    ...extra,
+    eventType: event?.type,
+    eventButton: event?.button,
+    interactionData: {
+      clearPreviewContainer: event?.interactionData?.clearPreviewContainer,
+      origin: event?.interactionData?.origin,
+      destination: event?.interactionData?.destination,
+      objectId: event?.interactionData?.object?.document?.id ?? event?.interactionData?.object?.id
+    },
+    managers: getCanvasInteractionManagers(event).map(({label, manager}) => ({
+      label,
+      state: manager.state,
+      dragging: manager.dragging,
+      _dragging: manager._dragging,
+      cursor: manager.cursor,
+      targetId: manager.object?.document?.id ?? manager.object?.id
+    }))
+  });
+}
+
+function getCanvasInteractionManagers(event=null) {
+  const interactionObject = event?.interactionData?.object;
+  const entries = [
+    ["canvas", canvas?.mouseInteractionManager],
+    ["walls", canvas?.walls?.mouseInteractionManager],
+    ["walls._", canvas?.walls?._mouseInteractionManager],
+    ["interactionObject", interactionObject?.mouseInteractionManager],
+    ["interactionObject._", interactionObject?._mouseInteractionManager],
+    ["event.target", event?.target?.mouseInteractionManager],
+    ["event.target._", event?.target?._mouseInteractionManager],
+    ["event.currentTarget", event?.currentTarget?.mouseInteractionManager],
+    ["event.currentTarget._", event?.currentTarget?._mouseInteractionManager]
+  ];
+
+  for (const wall of canvas?.walls?.controlled ?? []) {
+    entries.push([`controlled:${wall.document?.id ?? wall.id}`, wall?.mouseInteractionManager]);
+    entries.push([`controlled:${wall.document?.id ?? wall.id}._`, wall?._mouseInteractionManager]);
+  }
+  for (const wall of canvas?.walls?.placeables ?? []) {
+    if (!wall?.hover) continue;
+    entries.push([`hover:${wall.document?.id ?? wall.id}`, wall?.mouseInteractionManager]);
+    entries.push([`hover:${wall.document?.id ?? wall.id}._`, wall?._mouseInteractionManager]);
+  }
+
+  const seen = new Set();
+  const managers = [];
+  for (const [label, manager] of entries) {
+    if (!manager || seen.has(manager)) continue;
+    seen.add(manager);
+    managers.push({label, manager});
+  }
+  return managers;
 }
 
 function getInteractionPoint(event) {
@@ -1159,17 +1680,13 @@ function getClientInteractionPoints(event) {
   const scaleY = view.height / Math.max(rect.height, 1);
   const localX = original.clientX - rect.left;
   const localY = original.clientY - rect.top;
+  const pixiPoint = getPixiMappedClientPoint(original);
   const candidates = [
+    ...(pixiPoint ? [["pixi.mapPositionToPoint", pixiPoint]] : []),
     ["scaled", new PIXI.Point(localX * scaleX, localY * scaleY)],
     ["unscaled", new PIXI.Point(localX, localY)]
   ];
   const points = [];
-
-  const mouse = canvas?.mousePosition;
-  if (mouse && Number.isFinite(mouse.x) && Number.isFinite(mouse.y)) {
-    candidates.push(["canvas.mousePosition", new PIXI.Point(mouse.x, mouse.y)]);
-    addUniqueInteractionPoint(points, "canvas.mousePosition.raw", {x: mouse.x, y: mouse.y});
-  }
 
   for (const [label, screenPoint] of candidates) {
     const worldPoint = transform.applyInverse(screenPoint);
@@ -1177,6 +1694,22 @@ function getClientInteractionPoints(event) {
   }
 
   return points;
+}
+
+function getPixiMappedClientPoint(original) {
+  const renderer = canvas?.app?.renderer;
+  const transform = canvas?.stage?.worldTransform;
+  const mapped = new PIXI.Point();
+  const mapper = renderer?.events?.mapPositionToPoint ?? renderer?.plugins?.interaction?.mapPositionToPoint;
+  if (!mapper || !transform?.applyInverse) return null;
+
+  try {
+    mapper.call(renderer.events ?? renderer.plugins.interaction, mapped, original.clientX, original.clientY);
+    return mapped;
+  } catch (error) {
+    debugShapeSelection("pixi mapPositionToPoint failed", {message: error?.message});
+    return null;
+  }
 }
 
 function addUniqueInteractionPoint(points, label, point) {
@@ -1678,7 +2211,7 @@ function getRectangleVertexAt(point) {
   const vertices = getRectangleSideVertices();
   for (const vertex of vertices) {
     if (Math.hypot(vertex.point.x - point.x, vertex.point.y - point.y) <= radius) {
-      return {side: vertex.side, index: vertex.index};
+      return {side: vertex.side, index: vertex.index, point: vertex.point};
     }
   }
   return null;
@@ -1895,8 +2428,10 @@ function drawRectanglePreview() {
   if (!rectangleState.graphics || rectangleState.graphics._destroyed) {
     rectangleState.graphics = new PIXI.Graphics();
     layer.preview.addChild(rectangleState.graphics);
+    configureRectanglePreviewInteraction(rectangleState.graphics);
   } else if (!rectangleState.graphics.parent) {
     layer.preview.addChild(rectangleState.graphics);
+    configureRectanglePreviewInteraction(rectangleState.graphics);
   }
 
   const graphics = rectangleState.graphics;
@@ -1906,6 +2441,7 @@ function drawRectanglePreview() {
 
   const style = getPreviewStyle();
   const segments = getRectangleSegments();
+  drawRectangleInteractionHits(graphics, style);
   graphics.lineStyle(getScaledRadius(style.wallWidth), style.wallColor, 0.9);
   for (const {a, b} of segments) {
     graphics.moveTo(a.x, a.y);
@@ -1925,6 +2461,61 @@ function drawRectanglePreview() {
   }
   drawEndpoint(graphics, a, style);
   drawEndpoint(graphics, b, style);
+}
+
+function configureRectanglePreviewInteraction(graphics) {
+  if (graphics._indyWallsRectangleInteraction) return;
+
+  graphics.eventMode = "static";
+  graphics.cursor = "pointer";
+  graphics.on("pointerdown", handleRectanglePreviewPointerGate);
+  graphics.on("pointerup", handleRectanglePreviewPointerGate);
+  graphics.on("pointertap", handleRectanglePreviewPointerTap);
+  graphics._indyWallsRectangleInteraction = true;
+}
+
+function drawRectangleInteractionHits(graphics, style) {
+  const width = getScaledRadius(Math.max(style.wallWidth + 18, 24));
+  graphics.lineStyle(width, 0xffffff, 0.001);
+  for (const [, start, end] of getRectangleBoundsSides(getRectangleBounds())) {
+    graphics.moveTo(start.x, start.y);
+    graphics.lineTo(end.x, end.y);
+  }
+}
+
+function handleRectanglePreviewPointerTap(event) {
+  const point = getRectanglePreviewSideInteractionPoint(event);
+  if (!point) return;
+
+  debugInteractionManagers("rectangle preview pointertap side edit", event, {
+    point,
+    remove: isAltInteraction(event)
+  });
+  if (!editRectangleSideWithUndo(point, isAltInteraction(event))) return;
+
+  event.stopPropagation?.();
+  event.preventDefault?.();
+  rectangleState.draggingHandle = null;
+  rectangleState.draggingVertex = null;
+  rectangleState.lastSideEditAction = Date.now();
+  rectangleState.suppressNextSideEditClick = false;
+  scheduleCanvasInteractionReset(event);
+}
+
+function handleRectanglePreviewPointerGate(event) {
+  const point = getRectanglePreviewSideInteractionPoint(event);
+  if (!point) return;
+
+  debugInteractionManagers("rectangle preview pointer gate", event, {point});
+  event.stopPropagation?.();
+  event.preventDefault?.();
+}
+
+function getRectanglePreviewSideInteractionPoint(event) {
+  if (!isRectangleToolActive() || !rectangleState.placed || isControlInteraction(event)) return null;
+  const point = getInteractionPoint(event);
+  if (!point || !getRectangleSideAt(point)) return null;
+  return point;
 }
 
 function drawRectangleBoundsGuide(graphics, bounds, style) {
