@@ -11,6 +11,33 @@ import {
   positionEditButtons,
   setEditButtonsVisible
 } from "./curve-common.js";
+import {
+  CUBIC_EDIT_BUTTONS_ID,
+  CUBIC_FLAG,
+  CUBIC_TOOL,
+  DEFAULT_CUBIC_SEGMENTS,
+  cubicState
+} from "./shapes/cubic.js";
+import {
+  DEFAULT_ELLIPSE_SEGMENTS,
+  ELLIPSE_EDIT_BUTTONS_ID,
+  ELLIPSE_FLAG,
+  ELLIPSE_TOOL,
+  ellipseState
+} from "./shapes/ellipse.js";
+import {
+  DEFAULT_RECTANGLE_SEGMENTS,
+  RECTANGLE_EDIT_BUTTONS_ID,
+  RECTANGLE_FLAG,
+  RECTANGLE_TOOL,
+  rectangleState
+} from "./shapes/rectangle.js";
+import {
+  POLYLINE_EDIT_BUTTONS_ID,
+  POLYLINE_FLAG,
+  POLYLINE_TOOL,
+  polylineState
+} from "./shapes/polyline.js";
 
 const MODULE_ID = "indy-walls";
 const QUICK_WALL_TYPE_SETTING = "quickWallTypeChange";
@@ -33,21 +60,6 @@ const STYLE_SETTINGS = {
   outlineColor: "previewOutlineColor",
   outlineWidth: "previewOutlineWidth"
 };
-const CUBIC_TOOL = "indyCubicBezier";
-const ELLIPSE_TOOL = "indyEllipseWall";
-const RECTANGLE_TOOL = "indyRectangleWall";
-const POLYLINE_TOOL = "indyPolylineWall";
-const DEFAULT_CUBIC_SEGMENTS = 10;
-const DEFAULT_ELLIPSE_SEGMENTS = 16;
-const DEFAULT_RECTANGLE_SEGMENTS = 1;
-const CUBIC_FLAG = "cubicBezier";
-const ELLIPSE_FLAG = "ellipse";
-const RECTANGLE_FLAG = "rectangle";
-const POLYLINE_FLAG = "polyline";
-const CUBIC_EDIT_BUTTONS_ID = "indy-walls-cubic-edit-buttons";
-const ELLIPSE_EDIT_BUTTONS_ID = "indy-walls-ellipse-edit-buttons";
-const RECTANGLE_EDIT_BUTTONS_ID = "indy-walls-rectangle-edit-buttons";
-const POLYLINE_EDIT_BUTTONS_ID = "indy-walls-polyline-edit-buttons";
 const SEGMENT_WALL_TYPE_KEYBINDINGS = {
   walls: {label: "Normal", key: "KeyX"},
   doors: {label: "Door", key: "KeyD"},
@@ -128,129 +140,6 @@ const WALL_TYPE_TOOL_ALIASES = {
   doorWall: "doors",
   secretDoor: "secret",
   secretDoorWall: "secret"
-};
-
-const cubicState = {
-  active: false,
-  placed: false,
-  initializing: false,
-  initialOrigin: null,
-  draggingHandle: null,
-  lastSegmentEditAction: 0,
-  suppressNextSegmentEditClick: false,
-  curveId: null,
-  wallIds: [],
-  replacingWallIds: new Set(),
-  undoStack: [],
-  redoStack: [],
-  pendingUndoSnapshot: null,
-  wallTypeTool: "walls",
-  wallTypeBySegment: {},
-  segments: DEFAULT_CUBIC_SEGMENTS,
-  segmentGaps: [],
-  graphics: null,
-  handles: [
-    {x: 0, y: 0},
-    {x: 0, y: 0},
-    {x: 0, y: 0},
-    {x: 0, y: 0}
-  ]
-};
-
-const ellipseState = {
-  active: false,
-  placed: false,
-  initializing: false,
-  initialOrigin: null,
-  draggingHandle: null,
-  draggingVertex: null,
-  lastSegmentEditAction: 0,
-  suppressNextSegmentEditClick: false,
-  ellipseId: null,
-  wallIds: [],
-  replacingWallIds: new Set(),
-  undoStack: [],
-  redoStack: [],
-  pendingUndoSnapshot: null,
-  wallTypeTool: "walls",
-  wallTypeBySegment: {},
-  segments: DEFAULT_ELLIPSE_SEGMENTS,
-  rotation: 0,
-  segmentGaps: [],
-  graphics: null,
-  handles: [
-    {x: 0, y: 0},
-    {x: 0, y: 0}
-  ]
-};
-
-const rectangleState = {
-  active: false,
-  placed: false,
-  initializing: false,
-  draggingHandle: null,
-  draggingVertex: null,
-  hoveredVertex: null,
-  lastSideEditAction: 0,
-  suppressNextSideEditClick: false,
-  rectangleId: null,
-  wallIds: [],
-  replacingWallIds: new Set(),
-  undoStack: [],
-  redoStack: [],
-  pendingUndoSnapshot: null,
-  wallTypeTool: "walls",
-  wallTypeBySegment: {},
-  sideSegments: {
-    top: DEFAULT_RECTANGLE_SEGMENTS,
-    right: DEFAULT_RECTANGLE_SEGMENTS,
-    bottom: DEFAULT_RECTANGLE_SEGMENTS,
-    left: DEFAULT_RECTANGLE_SEGMENTS
-  },
-  sideRatios: {
-    top: [],
-    right: [],
-    bottom: [],
-    left: []
-  },
-  sideEnabled: {
-    top: true,
-    right: true,
-    bottom: true,
-    left: true
-  },
-  sideGaps: {
-    top: [],
-    right: [],
-    bottom: [],
-    left: []
-  },
-  graphics: null,
-  handles: [
-    {x: 0, y: 0},
-    {x: 0, y: 0}
-  ]
-};
-
-const polylineState = {
-  active: false,
-  placed: false,
-  drawing: false,
-  closed: false,
-  draggingVertex: null,
-  hoveredVertex: null,
-  polylineId: null,
-  wallIds: [],
-  replacingWallIds: new Set(),
-  undoStack: [],
-  redoStack: [],
-  pendingUndoSnapshot: null,
-  wallTypeTool: "walls",
-  wallTypeBySegment: {},
-  segmentGaps: [],
-  graphics: null,
-  previewPoint: null,
-  points: []
 };
 
 const shapeLoadState = {
