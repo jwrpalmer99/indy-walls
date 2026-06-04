@@ -14,6 +14,7 @@ import {
 
 const MODULE_ID = "indy-walls";
 const QUICK_WALL_TYPE_SETTING = "quickWallTypeChange";
+const DEBUG_SETTING = "debugShapeSelection";
 const STYLE_SETTINGS = {
   wallColor: "previewWallColor",
   wallWidth: "previewWallWidth",
@@ -193,6 +194,9 @@ const rectangleState = {
 const shapeLoadState = {
   allowControlWallLoad: false
 };
+const controlKeyState = {
+  down: false
+};
 
 const hiddenEditWalls = new Map();
 
@@ -205,16 +209,42 @@ Hooks.once("init", () => {
     type: Boolean,
     default: true
   });
+  game.settings.register(MODULE_ID, DEBUG_SETTING, {
+    name: game.i18n.localize("indy-walls.Settings.DebugShapeSelection.Name"),
+    hint: game.i18n.localize("indy-walls.Settings.DebugShapeSelection.Hint"),
+    scope: "client",
+    config: true,
+    type: Boolean,
+    default: false
+  });
   registerStyleSettings();
 
   patchWallsLayer();
   registerWallTypeControlShortcuts();
   registerCurveEditorShortcuts();
+  registerControlKeyTracking();
+});
+
+Hooks.on("canvasReady", () => {
+  debugShapeSelection("canvasReady", {
+    hasView: !!canvas?.app?.view,
+    wallPlaceables: canvas?.walls?.placeables?.length ?? 0,
+    wallObjectClass: CONFIG.Wall?.objectClass?.name,
+    firstWallClass: canvas?.walls?.placeables?.[0]?.constructor?.name
+  });
+  patchAvailableWallObjectInteractions();
 });
 
 Hooks.on("controlWall", (wall, controlled) => {
   if (!controlled || !game.user.isGM) return;
-  if (shapeLoadState.allowControlWallLoad) loadShapeFromExistingWall(wall);
+  const controlKeyDown = isControlKeyDown();
+  debugShapeSelection("controlWall", {
+    wallId: wall?.document?.id ?? wall?.id,
+    controlled,
+    allowControlWallLoad: shapeLoadState.allowControlWallLoad,
+    controlKeyDown
+  });
+  if (shapeLoadState.allowControlWallLoad || controlKeyDown) loadShapeFromExistingWall(wall);
 });
 
 Hooks.on("deleteWall", (wallDocument) => {
@@ -224,6 +254,7 @@ Hooks.on("deleteWall", (wallDocument) => {
 });
 
 Hooks.on("drawWall", (wall) => {
+  patchWallObjectInteractions(wall?.constructor);
   applyHiddenEditWallState(wall);
 });
 
@@ -453,9 +484,15 @@ function patchWallsLayer() {
   const originalDragDrop = WallsLayer.prototype._onDragLeftDrop;
   const originalDragCancel = WallsLayer.prototype._onDragLeftCancel;
   const originalMouseWheel = WallsLayer.prototype._onMouseWheel;
+  const originalClickLeft = WallsLayer.prototype._onClickLeft;
 
   WallsLayer.prototype._onDragLeftStart = function(event) {
-    if (isControlInteraction(event) && loadShapeAtInteractionPoint(event)) {
+    debugShapeSelection("walls layer drag left start", {
+      ctrl: isControlInteraction(event),
+      activeTool: game.activeTool,
+      editorActive: isAnyEditorToolActive()
+    });
+    if (isAnyEditorToolActive() && isControlInteraction(event) && loadShapeAtInteractionPoint(event)) {
       consumeCanvasInteraction(event);
       resetCanvasCursor();
       return;
@@ -703,56 +740,262 @@ function patchWallsLayer() {
     changeActiveSegments(delta < 0 ? 1 : -1);
   };
 
+  if (originalClickLeft) {
+    WallsLayer.prototype._onClickLeft = function(event) {
+      debugShapeSelection("walls layer click left", {
+        ctrl: isControlInteraction(event),
+        activeTool: game.activeTool,
+        editorActive: isAnyEditorToolActive(),
+        controlledWallIds: canvas?.walls?.controlled?.map((wall) => wall.document?.id ?? wall.id)
+      });
+      if (isControlInteraction(event) && loadShapeAtInteractionPoint(event)) {
+        consumeCanvasInteraction(event);
+        resetCanvasCursor();
+        return;
+      }
+      return originalClickLeft.call(this, event);
+    };
+  }
+
   WallsLayer.prototype._indyWallsCubicPatched = true;
+
+  patchAvailableWallObjectInteractions();
+}
+
+function patchAvailableWallObjectInteractions() {
+  const WallClass = CONFIG.Wall?.objectClass ?? canvas?.walls?.placeables?.[0]?.constructor;
+  debugShapeSelection("patchAvailableWallObjectInteractions", {
+    hasWallClass: !!WallClass,
+    wallClassName: WallClass?.name,
+    placeables: canvas?.walls?.placeables?.length ?? 0
+  });
+  patchWallObjectInteractions(WallClass);
+}
+
+function patchWallObjectInteractions(WallClass) {
+  if (!WallClass) {
+    debugShapeSelection("patchWallObjectInteractions skipped: no WallClass");
+    return;
+  }
+  if (WallClass.prototype._indyWallsObjectPatched) {
+    debugShapeSelection("patchWallObjectInteractions skipped: already patched", {
+      wallClassName: WallClass.name
+    });
+    return;
+  }
+
+  for (const method of ["_onDragLeftStart", "_onDragLeftMove", "_onDragLeftDrop", "_onDragLeftCancel", "_onClickLeft"]) {
+    const original = WallClass.prototype[method];
+    WallClass.prototype[method] = function(event) {
+      const editorActive = isAnyEditorToolActive();
+      debugShapeSelection("wall object event", {
+        method,
+        wallId: this.document?.id ?? this.id,
+        ctrl: isControlInteraction(event),
+        hasIndyShapeFlag: hasIndyShapeFlag(this.document),
+        hasOriginal: !!original,
+        editorActive
+      });
+
+      if ((method === "_onDragLeftStart" || method === "_onClickLeft")
+        && game.user.isGM
+        && isControlInteraction(event)
+        && loadShapeFromExistingWall(this)) {
+        consumeCanvasInteraction(event);
+        resetCanvasCursor();
+        return;
+      }
+
+      if (!editorActive) return original?.call(this, event);
+
+      consumeCanvasInteraction(event);
+      if (method === "_onDragLeftStart" && shouldRouteWallObjectDragStartToEditor(event)) {
+        return canvas?.walls?._onDragLeftStart?.(event);
+      }
+      if ((method === "_onDragLeftMove" || method === "_onDragLeftDrop" || method === "_onDragLeftCancel")
+        && hasActiveEditorDrag()) {
+        return canvas?.walls?.[method]?.(event);
+      }
+      resetCanvasCursor();
+      return;
+    };
+  }
+
+  WallClass.prototype._indyWallsObjectPatched = true;
+  debugShapeSelection("patchWallObjectInteractions patched", {
+    wallClassName: WallClass.name
+  });
+}
+
+function shouldRouteWallObjectDragStartToEditor(event) {
+  const point = getInteractionPoint(event) ?? event.interactionData?.origin;
+  if (!point) return false;
+
+  if (isCubicToolActive()) return !cubicState.placed || getCubicHandleAt(point) !== null;
+  if (isEllipseToolActive()) return !ellipseState.placed || getEllipseHandleAt(point) !== null;
+  if (!isRectangleToolActive()) return false;
+
+  return !rectangleState.placed
+    || getRectangleHandleAt(point) !== null
+    || getRectangleVertexAt(point) !== null
+    || getRectangleSideAt(point) !== null;
+}
+
+function hasActiveEditorDrag() {
+  return cubicState.draggingHandle !== null
+    || ellipseState.draggingHandle !== null
+    || rectangleState.draggingHandle !== null
+    || !!rectangleState.draggingVertex;
 }
 
 function isAnyEditorToolActive() {
   return isCubicToolActive() || isEllipseToolActive() || isRectangleToolActive();
 }
 
+function debugShapeSelection(message, data=null) {
+  try {
+    if (!game?.settings?.get(MODULE_ID, DEBUG_SETTING)) return;
+  } catch (_error) {
+    return;
+  }
+
+  if (data === null || data === undefined) {
+    console.debug(`${MODULE_ID} | ${message}`);
+    return;
+  }
+  console.debug(`${MODULE_ID} | ${message}`, data);
+}
+
+function registerControlKeyTracking() {
+  window.addEventListener("keydown", (event) => {
+    if (!isControlKeyEvent(event)) return;
+    if (!controlKeyState.down) debugShapeSelection("control key down", {key: event.key, code: event.code});
+    controlKeyState.down = true;
+  }, {capture: true});
+
+  window.addEventListener("keyup", (event) => {
+    if (!isControlKeyEvent(event)) return;
+    controlKeyState.down = false;
+    debugShapeSelection("control key up", {key: event.key, code: event.code});
+  }, {capture: true});
+
+  window.addEventListener("blur", () => {
+    if (!controlKeyState.down) return;
+    controlKeyState.down = false;
+    debugShapeSelection("control key cleared on blur");
+  });
+}
+
+function isControlKeyEvent(event) {
+  return event?.key === "Control" || event?.code === "ControlLeft" || event?.code === "ControlRight";
+}
+
+function isControlKeyDown() {
+  const downKeys = game?.keyboard?.downKeys;
+  return !!(controlKeyState.down
+    || downKeys?.has?.("Control")
+    || downKeys?.has?.("ControlLeft")
+    || downKeys?.has?.("ControlRight"));
+}
+
 function isControlInteraction(event) {
   return !!(event?.ctrlKey
     || event.data?.originalEvent?.ctrlKey
-    || event.originalEvent?.ctrlKey);
+    || event.originalEvent?.ctrlKey
+    || isControlKeyDown());
 }
 
 function loadShapeAtInteractionPoint(event) {
   const point = getInteractionPoint(event) ?? event.interactionData?.origin;
+  debugShapeSelection("layer shortcut point", {
+    point,
+    origin: event.interactionData?.origin,
+    ctrl: isControlInteraction(event)
+  });
   if (!point) return false;
 
-  return loadShapeAtPoint(point);
+  return loadShapeAtPoint(point, "layer shortcut");
 }
 
-function loadShapeAtPoint(point) {
-  const wall = getIndyWallAtPoint(point);
-  return wall ? loadShapeFromExistingWall(wall) : false;
+function loadShapeAtPoint(point, source="unknown") {
+  const scan = getIndyWallAtPoint(point, source);
+  const wall = scan?.wall ?? null;
+  const loaded = wall ? loadShapeFromExistingWall(wall) : false;
+  debugShapeSelection("loadShapeAtPoint result", {
+    source,
+    point,
+    wallId: wall?.document?.id ?? wall?.id,
+    loaded
+  });
+  return loaded;
 }
 
-function getIndyWallAtPoint(point) {
+function getIndyWallAtPoint(point, source="unknown") {
   const tolerance = getScaledRadius(Math.max(getPreviewStyle().wallWidth + 8, 12));
   let best = null;
   let bestDistance = Infinity;
+  let total = 0;
+  let flagged = 0;
+  let invalidCoords = 0;
+  let outsideBounds = 0;
+  let nearestFlagged = null;
+  let nearestInBounds = null;
 
   for (const wall of canvas?.walls?.placeables ?? []) {
+    total += 1;
     if (!hasIndyShapeFlag(wall.document)) continue;
+    flagged += 1;
     const coords = wall.document.c;
-    if (!Array.isArray(coords) || coords.length < 4) continue;
+    if (!Array.isArray(coords) || coords.length < 4) {
+      invalidCoords += 1;
+      continue;
+    }
     const start = {x: Number(coords[0]) || 0, y: Number(coords[1]) || 0};
     const end = {x: Number(coords[2]) || 0, y: Number(coords[3]) || 0};
-    if (!isPointNearSegmentBounds(point, start, end, tolerance)) continue;
-
     const distance = getPointSegmentDistance(
       point,
       start,
       end
     );
+    if (!nearestFlagged || distance < nearestFlagged.distance) {
+      nearestFlagged = {
+        wallId: wall.document?.id ?? wall.id,
+        distance,
+        coords
+      };
+    }
+    if (!isPointNearSegmentBounds(point, start, end, tolerance)) {
+      outsideBounds += 1;
+      continue;
+    }
+
+    if (!nearestInBounds || distance < nearestInBounds.distance) {
+      nearestInBounds = {
+        wallId: wall.document?.id ?? wall.id,
+        distance,
+        coords
+      };
+    }
     if (distance <= tolerance && distance < bestDistance) {
       best = wall;
       bestDistance = distance;
     }
   }
 
-  return best;
+  debugShapeSelection("getIndyWallAtPoint scan", {
+    source,
+    point,
+    tolerance,
+    total,
+    flagged,
+    invalidCoords,
+    outsideBounds,
+    bestWallId: best?.document?.id ?? best?.id,
+    bestDistance: Number.isFinite(bestDistance) ? bestDistance : null,
+    nearestFlagged,
+    nearestInBounds
+  });
+  return {wall: best, nearestFlagged, nearestInBounds};
 }
 
 function isPointNearSegmentBounds(point, start, end, tolerance) {
@@ -779,11 +1022,20 @@ function getPointSegmentDistance(point, start, end) {
 }
 
 function loadShapeFromExistingWall(wall) {
-  if (!wall?.document) return false;
+  if (!wall?.document) {
+    debugShapeSelection("loadShapeFromExistingWall skipped: no document", {wallId: wall?.id});
+    return false;
+  }
 
   const cubicData = wall.document.getFlag(MODULE_ID, CUBIC_FLAG);
   const ellipseData = wall.document.getFlag(MODULE_ID, ELLIPSE_FLAG);
   const rectangleData = wall.document.getFlag(MODULE_ID, RECTANGLE_FLAG);
+  debugShapeSelection("loadShapeFromExistingWall flags", {
+    wallId: wall.document.id,
+    hasCubic: !!cubicData,
+    hasEllipse: !!ellipseData,
+    hasRectangle: !!rectangleData
+  });
   if (!cubicData && !ellipseData && !rectangleData) return false;
 
   clearCubicPreview();
@@ -846,10 +1098,13 @@ function getWallPlaceable(id) {
 }
 
 function consumeCanvasInteraction(event) {
+  event.stopImmediatePropagation?.();
   event.stopPropagation?.();
   event.preventDefault?.();
+  event.data?.originalEvent?.stopImmediatePropagation?.();
   event.data?.originalEvent?.stopPropagation?.();
   event.data?.originalEvent?.preventDefault?.();
+  event.originalEvent?.stopImmediatePropagation?.();
   event.originalEvent?.stopPropagation?.();
   event.originalEvent?.preventDefault?.();
   if (event.interactionData) event.interactionData.clearPreviewContainer = false;
@@ -899,22 +1154,49 @@ function getInteractionPoint(event) {
 }
 
 function getClientInteractionPoint(event) {
+  return getClientInteractionPoints(event)[0]?.point ?? null;
+}
+
+function getClientInteractionPoints(event) {
   const original = event.data?.originalEvent ?? event.originalEvent ?? event;
-  if (!Number.isFinite(original?.clientX) || !Number.isFinite(original?.clientY)) return null;
+  if (!Number.isFinite(original?.clientX) || !Number.isFinite(original?.clientY)) return [];
 
   const view = canvas?.app?.view;
   const rect = view?.getBoundingClientRect?.();
   const transform = canvas?.stage?.worldTransform;
-  if (!view || !rect || !transform?.applyInverse) return null;
+  if (!view || !rect || !transform?.applyInverse) return [];
 
   const scaleX = view.width / Math.max(rect.width, 1);
   const scaleY = view.height / Math.max(rect.height, 1);
-  const screenPoint = new PIXI.Point(
-    (original.clientX - rect.left) * scaleX,
-    (original.clientY - rect.top) * scaleY
+  const localX = original.clientX - rect.left;
+  const localY = original.clientY - rect.top;
+  const candidates = [
+    ["scaled", new PIXI.Point(localX * scaleX, localY * scaleY)],
+    ["unscaled", new PIXI.Point(localX, localY)]
+  ];
+  const points = [];
+
+  const mouse = canvas?.mousePosition;
+  if (mouse && Number.isFinite(mouse.x) && Number.isFinite(mouse.y)) {
+    candidates.push(["canvas.mousePosition", new PIXI.Point(mouse.x, mouse.y)]);
+    addUniqueInteractionPoint(points, "canvas.mousePosition.raw", {x: mouse.x, y: mouse.y});
+  }
+
+  for (const [label, screenPoint] of candidates) {
+    const worldPoint = transform.applyInverse(screenPoint);
+    addUniqueInteractionPoint(points, label, {x: worldPoint.x, y: worldPoint.y});
+  }
+
+  return points;
+}
+
+function addUniqueInteractionPoint(points, label, point) {
+  if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return;
+  const duplicate = points.some((candidate) =>
+    Math.abs(candidate.point.x - point.x) < 0.01
+    && Math.abs(candidate.point.y - point.y) < 0.01
   );
-  const worldPoint = transform.applyInverse(screenPoint);
-  return {x: worldPoint.x, y: worldPoint.y};
+  if (!duplicate) points.push({label, point});
 }
 
 function registerCurveEditorShortcuts() {

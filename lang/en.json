@@ -21,6 +21,10 @@
         "Name": "Ctrl-click wall type buttons to update selected walls",
         "Hint": "When enabled, Ctrl-clicking Normal, Terrain, Invisible, Ethereal, Window, Door, or Secret Door in the Wall Controls changes the selected walls to that type."
       },
+      "DebugShapeSelection": {
+        "Name": "Debug Indy shape selection",
+        "Hint": "When enabled, Ctrl-click shape selection diagnostics are written to the browser console."
+      },
       "PreviewWallColor": {
         "Name": "Preview wall color",
         "Hint": "Hex color for generated wall previews, for example #c10e56ff."
