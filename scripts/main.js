@@ -130,6 +130,8 @@ const ellipseState = {
   initialOrigin: null,
   draggingHandle: null,
   draggingVertex: null,
+  lastSegmentEditAction: 0,
+  suppressNextSegmentEditClick: false,
   ellipseId: null,
   wallIds: [],
   replacingWallIds: new Set(),
@@ -534,6 +536,7 @@ function patchWallsLayer() {
         : null;
       if (ellipseState.draggingVertex) {
         beginEditorOperation(ellipseState);
+        markSuppressEllipseSegmentClick();
         drawEllipsePreview();
         return;
       }
@@ -704,12 +707,14 @@ function patchWallsLayer() {
       return originalDragDrop.call(this, event);
     }
     if (isEllipseToolActive()) {
+      const wasVertexDrag = !!ellipseState.draggingVertex;
       ellipseState.draggingHandle = null;
       ellipseState.draggingVertex = null;
       ellipseState.initializing = false;
       ellipseState.initialOrigin = null;
       event.interactionData.clearPreviewContainer = false;
       commitEditorOperation(ellipseState);
+      if (wasVertexDrag) markSuppressEllipseSegmentClick();
       drawEllipsePreview();
       return;
     }
@@ -747,12 +752,14 @@ function patchWallsLayer() {
       return originalDragCancel.call(this, event);
     }
     if (isEllipseToolActive()) {
+      const wasVertexDrag = !!ellipseState.draggingVertex;
       ellipseState.draggingHandle = null;
       ellipseState.draggingVertex = null;
       ellipseState.initializing = false;
       ellipseState.initialOrigin = null;
       event.interactionData.clearPreviewContainer = false;
       cancelEditorOperation(ellipseState);
+      if (wasVertexDrag) markSuppressEllipseSegmentClick();
       drawEllipsePreview();
       return;
     }
@@ -895,6 +902,17 @@ function handleRectangleCanvasClick(event) {
   }
 
   if (isEllipseToolActive() && ellipseState.placed) {
+    if (shouldSuppressEllipseSegmentClick()) {
+      debugShapeSelection("ellipse canvas click suppressed after drag", {
+        clientX: event.clientX,
+        clientY: event.clientY
+      });
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      scheduleCanvasInteractionReset(event);
+      return;
+    }
+
     const edit = getEllipseSegmentEditFromEvent(event);
     debugShapeSelection("ellipse canvas click", {
       clientX: event.clientX,
@@ -1021,9 +1039,24 @@ function commitEllipseSegmentEdit(edit, event=null) {
 
   ellipseState.draggingHandle = null;
   ellipseState.draggingVertex = null;
+  ellipseState.lastSegmentEditAction = Date.now();
+  ellipseState.suppressNextSegmentEditClick = false;
   debugInteractionManagers("after ellipse canvas click commit", event, {edit});
   scheduleCanvasInteractionReset(event);
   return true;
+}
+
+function markSuppressEllipseSegmentClick() {
+  ellipseState.lastSegmentEditAction = Date.now();
+  ellipseState.suppressNextSegmentEditClick = true;
+}
+
+function shouldSuppressEllipseSegmentClick() {
+  if (!ellipseState.suppressNextSegmentEditClick) return false;
+
+  const elapsed = Date.now() - ellipseState.lastSegmentEditAction;
+  ellipseState.suppressNextSegmentEditClick = false;
+  return elapsed < 1000;
 }
 
 function registerEditorDomDragHandler() {
@@ -1084,6 +1117,7 @@ function handleEditorDomPointerDown(event) {
   else if (hit.tool === ELLIPSE_TOOL) {
     ellipseState.draggingHandle = hit.handle;
     ellipseState.draggingVertex = hit.vertex;
+    if (hit.vertex) markSuppressEllipseSegmentClick();
   }
   else if (hit.handle !== null) {
     rectangleState.draggingHandle = hit.handle;
@@ -1161,12 +1195,14 @@ function finalizeEditorDomDrag(event=null, cancelled=false) {
     else commitEditorOperation(cubicState);
     drawCubicPreview();
   } else if (editorDomDragState.tool === ELLIPSE_TOOL) {
+    const wasVertexDrag = !!editorDomDragState.vertex;
     ellipseState.draggingHandle = null;
     ellipseState.draggingVertex = null;
     ellipseState.initializing = false;
     ellipseState.initialOrigin = null;
     if (cancelled) cancelEditorOperation(ellipseState);
     else commitEditorOperation(ellipseState);
+    if (wasVertexDrag) markSuppressEllipseSegmentClick();
     drawEllipsePreview();
   } else if (editorDomDragState.tool === RECTANGLE_TOOL) {
     rectangleState.draggingHandle = null;
@@ -3235,6 +3271,8 @@ function clearEllipsePreview() {
   ellipseState.initialOrigin = null;
   ellipseState.draggingHandle = null;
   ellipseState.draggingVertex = null;
+  ellipseState.lastSegmentEditAction = 0;
+  ellipseState.suppressNextSegmentEditClick = false;
   ellipseState.ellipseId = null;
   ellipseState.wallIds = [];
   ellipseState.rotation = 0;
@@ -3418,6 +3456,8 @@ function loadEllipseFromWall(wall) {
   ellipseState.initialOrigin = null;
   ellipseState.draggingHandle = null;
   ellipseState.draggingVertex = null;
+  ellipseState.lastSegmentEditAction = 0;
+  ellipseState.suppressNextSegmentEditClick = false;
   ellipseState.ellipseId = ellipseData.ellipseId ?? null;
   ellipseState.wallIds = Array.isArray(ellipseData.wallIds) ? [...ellipseData.wallIds] : [wall.document.id];
   ellipseState.wallTypeTool = getWallTypeToolFromDocument(wall.document) ?? ellipseData.wallTypeTool ?? "walls";
