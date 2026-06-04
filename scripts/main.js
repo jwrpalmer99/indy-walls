@@ -16,14 +16,32 @@ import {
   CUBIC_FLAG,
   CUBIC_TOOL,
   DEFAULT_CUBIC_SEGMENTS,
-  cubicState
+  cubicState,
+  getAllCubicSegments,
+  getCubicPoints,
+  getCubicSegmentGaps,
+  getCubicSegments,
+  initializeCubicControls,
+  reconcileCubicSegmentGaps,
+  setHandle
 } from "./shapes/cubic.js";
 import {
   DEFAULT_ELLIPSE_SEGMENTS,
   ELLIPSE_EDIT_BUTTONS_ID,
   ELLIPSE_FLAG,
   ELLIPSE_TOOL,
-  ellipseState
+  ellipseState,
+  getAllEllipseSegments,
+  getEllipseGeometry,
+  getEllipsePoints,
+  getEllipseSegmentGaps,
+  getEllipseSegments,
+  getEllipseVertices,
+  reconcileEllipseSegmentGaps,
+  setEllipseHandle,
+  setEllipseResizeHandle,
+  setEllipseRotationFromVertex,
+  updateEllipseInitialHandles
 } from "./shapes/ellipse.js";
 import {
   DEFAULT_RECTANGLE_SEGMENTS,
@@ -36,7 +54,16 @@ import {
   POLYLINE_EDIT_BUTTONS_ID,
   POLYLINE_FLAG,
   POLYLINE_TOOL,
-  polylineState
+  getAllPolylineSegments,
+  getPolylineSegmentCount,
+  getPolylineSegmentGaps,
+  getPolylineSegments,
+  polylineState,
+  reconcilePolylineSegmentGaps,
+  shiftPolylineGapsForInsert,
+  shiftPolylineGapsForRemove,
+  shiftPolylineWallTypesForInsert,
+  shiftPolylineWallTypesForRemove
 } from "./shapes/polyline.js";
 
 const MODULE_ID = "indy-walls";
@@ -700,9 +727,12 @@ function patchWallsLayer() {
       }
       if (ellipseState.draggingHandle === null) return;
       const point = getEventPoint(this, event.interactionData.destination, event);
-      setEllipseResizeHandle(ellipseState.draggingHandle, point, event);
+      setEllipseResizeHandle(ellipseState.draggingHandle, point, isAltInteraction(event));
       if (ellipseState.initializing) {
-        updateEllipseInitialHandles(event);
+        updateEllipseInitialHandles({
+          alt: isAltInteraction(event),
+          ctrl: isControlInteraction(event)
+        });
       }
       ellipseState.placed = true;
       drawEllipsePreview();
@@ -1677,9 +1707,12 @@ function handleEditorDomPointerMove(event) {
     if (editorDomDragState.vertex) {
       setEllipseRotationFromVertex(editorDomDragState.vertex, point);
     } else {
-      setEllipseResizeHandle(editorDomDragState.handle, point, event);
+      setEllipseResizeHandle(editorDomDragState.handle, point, isAltInteraction(event));
     }
-    if (ellipseState.initializing) updateEllipseInitialHandles(event);
+    if (ellipseState.initializing) updateEllipseInitialHandles({
+      alt: isAltInteraction(event),
+      ctrl: isControlInteraction(event)
+    });
     ellipseState.placed = true;
     drawEllipsePreview();
   } else if (editorDomDragState.tool === POLYLINE_TOOL && editorDomDragState.vertex) {
@@ -3307,26 +3340,6 @@ function drawEditorPreview(tool) {
   else if (tool === POLYLINE_TOOL) drawPolylinePreview();
 }
 
-function setHandle(index, point) {
-  cubicState.handles[index] = {x: point.x, y: point.y};
-}
-
-function initializeCubicControls() {
-  const [start, controlA, controlB, end] = cubicState.handles;
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const length = Math.hypot(dx, dy);
-  if (!length) return;
-
-  const nx = dy / length;
-  const ny = -dx / length;
-
-  controlA.x = start.x + (dx * 0.35) + (nx * length * 0.25);
-  controlA.y = start.y + (dy * 0.35) + (ny * length * 0.25);
-  controlB.x = end.x - (dx * 0.10) + (nx * length * 0.35);
-  controlB.y = end.y - (dy * 0.10) + (ny * length * 0.35);
-}
-
 function getCubicHandleAt(point) {
   if (!cubicState.placed) return null;
   const style = getPreviewStyle();
@@ -3398,48 +3411,6 @@ function drawCubicPreview() {
   drawMoveHandle(graphics, getEditorShapeCenter(CUBIC_TOOL), style);
 }
 
-function getCubicPoints(segments) {
-  const [p0, p1, p2, p3] = cubicState.handles;
-  const points = [];
-  for (let i = 0; i <= segments; i++) {
-    const t = i / segments;
-    const mt = 1 - t;
-    points.push({
-      x: (mt ** 3 * p0.x) + (3 * mt ** 2 * t * p1.x) + (3 * mt * t ** 2 * p2.x) + (t ** 3 * p3.x),
-      y: (mt ** 3 * p0.y) + (3 * mt ** 2 * t * p1.y) + (3 * mt * t ** 2 * p2.y) + (t ** 3 * p3.y)
-    });
-  }
-  return points;
-}
-
-function getAllCubicSegments() {
-  const points = getCubicPoints(cubicState.segments);
-  const segments = [];
-  for (let i = 0; i < points.length - 1; i++) {
-    segments.push({index: i, a: points[i], b: points[i + 1]});
-  }
-  return segments;
-}
-
-function getCubicSegments() {
-  const gaps = getCubicSegmentGaps();
-  return getAllCubicSegments().filter((segment) => !gaps.includes(segment.index));
-}
-
-function getCubicSegmentGaps() {
-  const gaps = reconcileCubicSegmentGaps(cubicState.segmentGaps, cubicState.segments);
-  cubicState.segmentGaps = gaps;
-  return gaps;
-}
-
-function reconcileCubicSegmentGaps(source, segmentCount) {
-  if (!Array.isArray(source)) return [];
-  return [...new Set(source
-    .map((index) => Number(index))
-    .filter((index) => Number.isInteger(index) && index >= 0 && index < segmentCount))]
-    .sort((a, b) => a - b);
-}
-
 function getCubicSegmentAt(point) {
   if (!cubicState.placed) return null;
   const style = getPreviewStyle();
@@ -3481,27 +3452,6 @@ function editCubicSegment(index, remove=false) {
   return true;
 }
 
-function setEllipseHandle(index, point) {
-  ellipseState.handles[index] = {x: point.x, y: point.y};
-}
-
-function setEllipseResizeHandle(index, point, event=null) {
-  if (!isAltInteraction(event)) {
-    setEllipseHandle(index, point);
-    return;
-  }
-
-  const oppositeIndex = index === 0 ? 1 : 0;
-  const opposite = ellipseState.handles[oppositeIndex];
-  const dx = point.x - opposite.x;
-  const dy = point.y - opposite.y;
-  const size = Math.max(Math.abs(dx), Math.abs(dy));
-  setEllipseHandle(index, {
-    x: opposite.x + Math.sign(dx || 1) * size,
-    y: opposite.y + Math.sign(dy || 1) * size
-  });
-}
-
 function getEllipseHandleAt(point) {
   if (!ellipseState.placed) return null;
   const style = getPreviewStyle();
@@ -3523,30 +3473,6 @@ function getEllipseVertexAt(point) {
 function getEllipseVertexHitRadius() {
   const style = getPreviewStyle();
   return getSplitVertexHitRadius(style);
-}
-
-function updateEllipseInitialHandles(event) {
-  const origin = ellipseState.initialOrigin ?? ellipseState.handles[0];
-  const destination = ellipseState.handles[1];
-  const dx = destination.x - origin.x;
-  const dy = destination.y - origin.y;
-
-  if (event.ctrlKey) {
-    let rx = Math.abs(dx);
-    let ry = Math.abs(dy);
-    if (event.altKey) rx = ry = Math.max(rx, ry);
-    ellipseState.handles[0] = {x: origin.x - rx, y: origin.y - ry};
-    ellipseState.handles[1] = {x: origin.x + rx, y: origin.y + ry};
-    return;
-  }
-
-  if (event.altKey) {
-    const size = Math.max(Math.abs(dx), Math.abs(dy));
-    ellipseState.handles[1] = {
-      x: origin.x + Math.sign(dx || 1) * size,
-      y: origin.y + Math.sign(dy || 1) * size
-    };
-  }
 }
 
 function changeEllipseSegments(delta) {
@@ -3606,70 +3532,6 @@ function drawEllipsePreview() {
   drawMoveHandle(graphics, getEditorShapeCenter(ELLIPSE_TOOL), style);
 }
 
-function getEllipsePoints(segments) {
-  const {cx, cy, rx, ry} = getEllipseGeometry();
-  const rotation = Number(ellipseState.rotation) || 0;
-  const cosRotation = Math.cos(rotation);
-  const sinRotation = Math.sin(rotation);
-  const points = [];
-
-  for (let i = 0; i <= segments; i++) {
-    const angle = (Math.PI * 2 * i) / segments;
-    const x = Math.cos(angle) * rx;
-    const y = Math.sin(angle) * ry;
-    points.push({
-      x: cx + (x * cosRotation) - (y * sinRotation),
-      y: cy + (x * sinRotation) + (y * cosRotation)
-    });
-  }
-
-  return points;
-}
-
-function getEllipseGeometry() {
-  const [a, b] = ellipseState.handles;
-  return {
-    cx: (a.x + b.x) / 2,
-    cy: (a.y + b.y) / 2,
-    rx: Math.abs(b.x - a.x) / 2,
-    ry: Math.abs(b.y - a.y) / 2
-  };
-}
-
-function getEllipseVertices() {
-  return getEllipsePoints(ellipseState.segments)
-    .slice(0, -1)
-    .map((point, index) => ({index, point}));
-}
-
-function getAllEllipseSegments() {
-  const points = getEllipsePoints(ellipseState.segments);
-  const segments = [];
-  for (let i = 0; i < points.length - 1; i++) {
-    segments.push({index: i, a: points[i], b: points[i + 1]});
-  }
-  return segments;
-}
-
-function getEllipseSegments() {
-  const gaps = getEllipseSegmentGaps();
-  return getAllEllipseSegments().filter((segment) => !gaps.includes(segment.index));
-}
-
-function getEllipseSegmentGaps() {
-  const gaps = reconcileEllipseSegmentGaps(ellipseState.segmentGaps, ellipseState.segments);
-  ellipseState.segmentGaps = gaps;
-  return gaps;
-}
-
-function reconcileEllipseSegmentGaps(source, segmentCount) {
-  if (!Array.isArray(source)) return [];
-  return [...new Set(source
-    .map((index) => Number(index))
-    .filter((index) => Number.isInteger(index) && index >= 0 && index < segmentCount))]
-    .sort((a, b) => a - b);
-}
-
 function getEllipseSegmentAt(point) {
   if (!ellipseState.placed) return null;
   const style = getPreviewStyle();
@@ -3709,20 +3571,6 @@ function editEllipseSegment(index, remove=false) {
   ellipseState.segmentGaps = gaps.filter((gap) => gap !== index);
   drawEllipsePreview();
   return true;
-}
-
-function setEllipseRotationFromVertex(vertex, point) {
-  if (!vertex || !Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return;
-  const {cx, cy, rx, ry} = getEllipseGeometry();
-  const pointerAngle = Math.atan2(point.y - cy, point.x - cx);
-  const vertexAngle = (Math.PI * 2 * vertex.index) / ellipseState.segments;
-  const baseAngle = Math.atan2(Math.sin(vertexAngle) * ry, Math.cos(vertexAngle) * rx);
-  ellipseState.rotation = normalizeAngle(pointerAngle - baseAngle);
-}
-
-function normalizeAngle(angle) {
-  const fullTurn = Math.PI * 2;
-  return ((angle % fullTurn) + fullTurn) % fullTurn;
 }
 
 function drawEllipseSplitVertex(graphics, vertex, style) {
@@ -4455,45 +4303,6 @@ function drawPolylineVertex(graphics, vertex, style) {
   graphics.endFill();
 }
 
-function getPolylineSegmentCount() {
-  if (polylineState.closed && polylineState.points.length > 2) return polylineState.points.length;
-  return Math.max(polylineState.points.length - 1, 0);
-}
-
-function getAllPolylineSegments() {
-  const segments = [];
-  for (let i = 0; i < polylineState.points.length - 1; i++) {
-    segments.push({index: i, a: polylineState.points[i], b: polylineState.points[i + 1]});
-  }
-  if (polylineState.closed && polylineState.points.length > 2) {
-    segments.push({
-      index: polylineState.points.length - 1,
-      a: polylineState.points.at(-1),
-      b: polylineState.points[0]
-    });
-  }
-  return segments;
-}
-
-function getPolylineSegments() {
-  const gaps = getPolylineSegmentGaps();
-  return getAllPolylineSegments().filter((segment) => !gaps.includes(segment.index));
-}
-
-function getPolylineSegmentGaps() {
-  const gaps = reconcilePolylineSegmentGaps(polylineState.segmentGaps, getPolylineSegmentCount());
-  polylineState.segmentGaps = gaps;
-  return gaps;
-}
-
-function reconcilePolylineSegmentGaps(source, segmentCount) {
-  if (!Array.isArray(source)) return [];
-  return [...new Set(source
-    .map((index) => Number(index))
-    .filter((index) => Number.isInteger(index) && index >= 0 && index < segmentCount))]
-    .sort((a, b) => a - b);
-}
-
 function getPolylineSegmentAt(point) {
   if (!polylineState.placed) return null;
   const style = getPreviewStyle();
@@ -4596,125 +4405,6 @@ function removePolylineVertex(index) {
   polylineState.previewPoint = null;
   drawPolylinePreview();
   return true;
-}
-
-function shiftPolylineGapsForInsert(source, splitIndex) {
-  return [...new Set((source ?? []).map((gap) => {
-    const index = Number(gap);
-    if (!Number.isInteger(index)) return null;
-    return index > splitIndex ? index + 1 : index;
-  }).filter((index) => index !== null))]
-    .sort((a, b) => a - b);
-}
-
-function shiftPolylineGapsForRemove(source, vertexIndex, pointCountBefore, closed=false) {
-  if (closed) return shiftClosedPolylineGapsForRemove(source, vertexIndex, pointCountBefore);
-
-  const result = new Set();
-  const segmentCountBefore = Math.max(pointCountBefore - 1, 0);
-  const segmentCountAfter = Math.max(pointCountBefore - 2, 0);
-  for (const gap of source ?? []) {
-    const index = Number(gap);
-    if (!Number.isInteger(index)) continue;
-    if (vertexIndex === 0) {
-      if (index > 0) result.add(index - 1);
-    } else if (vertexIndex === pointCountBefore - 1) {
-      if (index < segmentCountBefore - 1) result.add(index);
-    } else if (index === vertexIndex || index === vertexIndex - 1) {
-      result.add(vertexIndex - 1);
-    } else if (index > vertexIndex) {
-      result.add(index - 1);
-    } else {
-      result.add(index);
-    }
-  }
-  return [...result].filter((index) => index >= 0 && index < segmentCountAfter).sort((a, b) => a - b);
-}
-
-function shiftClosedPolylineGapsForRemove(source, vertexIndex, pointCountBefore) {
-  const result = new Set();
-  const segmentCountAfter = Math.max(pointCountBefore - 1, 0);
-  const previousSegment = vertexIndex === 0 ? pointCountBefore - 1 : vertexIndex - 1;
-  const nextSegment = vertexIndex;
-  const mergedSegment = vertexIndex === 0 ? segmentCountAfter - 1 : vertexIndex - 1;
-
-  for (const gap of source ?? []) {
-    const index = Number(gap);
-    if (!Number.isInteger(index)) continue;
-    if (index === previousSegment || index === nextSegment) {
-      result.add(mergedSegment);
-    } else if (index > vertexIndex) {
-      result.add(index - 1);
-    } else {
-      result.add(index);
-    }
-  }
-  return [...result].filter((index) => index >= 0 && index < segmentCountAfter).sort((a, b) => a - b);
-}
-
-function shiftPolylineWallTypesForInsert(source={}, splitIndex) {
-  const result = {};
-  const splitKey = String(splitIndex);
-  const splitType = source?.[splitKey];
-  for (const [key, value] of Object.entries(source ?? {})) {
-    const index = Number(key);
-    if (!Number.isInteger(index)) continue;
-    result[String(index > splitIndex ? index + 1 : index)] = value;
-  }
-  if (splitType) result[String(splitIndex + 1)] = splitType;
-  return result;
-}
-
-function shiftPolylineWallTypesForRemove(source={}, vertexIndex, pointCountBefore, closed=false) {
-  if (closed) return shiftClosedPolylineWallTypesForRemove(source, vertexIndex, pointCountBefore);
-
-  const result = {};
-  const segmentCountBefore = Math.max(pointCountBefore - 1, 0);
-  const segmentCountAfter = Math.max(pointCountBefore - 2, 0);
-  const previousType = source?.[String(vertexIndex - 1)];
-  const nextType = source?.[String(vertexIndex)];
-  for (const [key, value] of Object.entries(source ?? {})) {
-    const index = Number(key);
-    if (!Number.isInteger(index)) continue;
-    if (vertexIndex === 0) {
-      if (index > 0) result[String(index - 1)] = value;
-    } else if (vertexIndex === pointCountBefore - 1) {
-      if (index < segmentCountBefore - 1) result[String(index)] = value;
-    } else if (index === vertexIndex || index === vertexIndex - 1) {
-      continue;
-    } else {
-      result[String(index > vertexIndex ? index - 1 : index)] = value;
-    }
-  }
-  const mergedType = previousType ?? nextType;
-  if (mergedType && vertexIndex > 0 && vertexIndex < pointCountBefore - 1) result[String(vertexIndex - 1)] = mergedType;
-  return Object.fromEntries(Object.entries(result)
-    .filter(([key]) => {
-      const index = Number(key);
-      return Number.isInteger(index) && index >= 0 && index < segmentCountAfter;
-    }));
-}
-
-function shiftClosedPolylineWallTypesForRemove(source={}, vertexIndex, pointCountBefore) {
-  const result = {};
-  const segmentCountAfter = Math.max(pointCountBefore - 1, 0);
-  const previousSegment = vertexIndex === 0 ? pointCountBefore - 1 : vertexIndex - 1;
-  const nextSegment = vertexIndex;
-  const mergedSegment = vertexIndex === 0 ? segmentCountAfter - 1 : vertexIndex - 1;
-  const mergedType = source?.[String(previousSegment)] ?? source?.[String(nextSegment)];
-
-  for (const [key, value] of Object.entries(source ?? {})) {
-    const index = Number(key);
-    if (!Number.isInteger(index)) continue;
-    if (index === previousSegment || index === nextSegment) continue;
-    result[String(index > vertexIndex ? index - 1 : index)] = value;
-  }
-  if (mergedType) result[String(mergedSegment)] = mergedType;
-  return Object.fromEntries(Object.entries(result)
-    .filter(([key]) => {
-      const index = Number(key);
-      return Number.isInteger(index) && index >= 0 && index < segmentCountAfter;
-    }));
 }
 
 async function applyPolylineWalls() {
