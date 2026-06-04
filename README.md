@@ -29,9 +29,33 @@ Supported type buttons:
 
 This setting is client-side and is enabled by default.
 
+### Indy Shape Editing
+
+Indy Walls adds shape-based wall tools to Foundry's Wall Controls. Generated wall segments store metadata so the shape can be reopened later.
+
+Common editing controls:
+
+- Ctrl-left-click any generated Indy wall segment to reopen its shape editor.
+- Use the undo/redo editor buttons or Ctrl-Z/Ctrl-Y while editing.
+- Use Ctrl-C to copy the active shape preview.
+- Use Ctrl-V to paste the copied shape centered on the mouse position.
+- Use the center handle to move the active shape.
+- Press Delete or Backspace while editing to delete the underlying wall documents.
+- Press Enter or the check button to create or re-apply wall segments.
+- Press Escape or the cancel button to cancel editing.
+
+Generated segments use the last selected wall type from Foundry's wall type buttons unless a segment has an override. While editing a shape, hover a segment and press:
+
+- `X` for Normal wall
+- `D` for Door
+- `W` for Window
+- `I` for Invisible
+- `S` for Secret Door
+- `T` for Terrain
+
 ### Preview Styling
 
-Module settings include client-side controls for the editor preview wall color and width, regular vertex color and size, active vertex color, endpoint color and size, Bezier handle color and size, and outline color and width.
+Module settings include client-side controls for the editor preview wall color and width, per-type segment preview colors, regular vertex color and size, active vertex color, endpoint color and size, Bezier handle color and size, and outline color and width.
 If lib - ColorSettings is active, Indy Walls uses its color picker UI for color settings. Without it, color settings remain plain hex text fields.
 
 ### Editing Undo/Redo
@@ -49,9 +73,7 @@ Basic workflow:
 3. Click-drag on the canvas to place the initial curve.
 4. Drag the red endpoint handles or green Bezier handles to adjust the curve.
 5. Use `+` and `-`, or Ctrl-scrollwheel, to change the number of generated wall segments.
-6. Use the check button or Enter to create wall segments, or X or Escape to cancel.
-
-Generated segments use the last selected wall type from the standard wall type buttons.
+6. Use the check button or Enter to create wall segments, or Escape to cancel.
 
 Bezier metadata is stored on each generated wall segment. Ctrl-left-click any generated segment to reopen the curve editor so it can be adjusted and re-applied.
 
@@ -66,8 +88,12 @@ Basic workflow:
 3. Click-drag on the canvas to place the ellipse.
 4. Hold Alt while placing to make a circle.
 5. Hold Ctrl while placing to grow the ellipse from the center point.
-6. Use `+` and `-`, or Ctrl-scrollwheel, to change the number of generated wall segments.
-7. Use the check button or Enter to create wall segments, or X or Escape to cancel.
+6. Drag the red corner handles to resize the ellipse. Hold Alt while resizing to keep it circular.
+7. Drag ellipse vertices to rotate the ellipse.
+8. Left-click a hidden segment to restore it.
+9. Alt-click a segment to hide it.
+10. Use `+` and `-`, or Ctrl-scrollwheel, to change the number of generated wall segments.
+11. Use the check button or Enter to create wall segments, or Escape to cancel.
 
 Ellipse metadata is stored on each generated wall segment. Ctrl-left-click any generated segment to reopen the ellipse editor so it can be adjusted and re-applied.
 
@@ -88,9 +114,28 @@ Basic workflow:
 9. Alt-click a side with no intermediate vertices to remove that side wall.
 10. Left-click a removed side to restore it.
 11. Use Ctrl-scrollwheel to change all four side segment counts together.
-12. Use the check button or Enter to create wall segments, or X or Escape to cancel.
+12. Use the check button or Enter to create wall segments, or Escape to cancel.
 
 Rectangle metadata is stored on each generated wall segment. Ctrl-left-click any generated segment to reopen the rectangle editor, including per-side vertices, segment gaps, and removed sides, so it can be adjusted and re-applied.
+
+### Polyline Walls
+
+The Wall Controls include a Polyline Wall tool for drawing vertex-to-vertex wall paths.
+
+Basic workflow:
+
+1. Open Wall Controls.
+2. Select the Polyline Wall tool.
+3. Click on the canvas to place each point.
+4. Double-click to stop drawing and enter edit mode.
+5. Double-click back on the first point to stop drawing as a closed polygon.
+6. Drag points to reposition them.
+7. Left-click a segment to add a point, or to restore a hidden segment.
+8. Alt-click a point to remove it.
+9. Alt-click a segment to hide it.
+10. Use the check button or Enter to create wall segments, or Escape to cancel.
+
+Polyline metadata is stored on each generated wall segment. Ctrl-left-click any generated segment to reopen the polyline editor, including closed polygon state, hidden segments, and per-segment wall types.
 
 ## License
 
@@ -98,7 +143,7 @@ Indy Walls is licensed under the BSD 3-Clause License. See [license.md](license.
 
 ## Attribution
 
-The cubic Bezier wall tool is informed by DragonFlagon Curvy Walls from the DragonFlagon FoundryVTT Modules project:
+This module borrows heavily from the ideas in DragonFlagon Curvy Walls from the DragonFlagon FoundryVTT Modules project:
 
 https://github.com/flamewave000/dragonflagon-fvtt
 
