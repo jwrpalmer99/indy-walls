@@ -29,6 +29,26 @@
         "Name": "Preview wall color",
         "Hint": "Hex color for generated wall previews, for example #c10e56ff."
       },
+      "PreviewWindowWallColor": {
+        "Name": "Preview window segment color",
+        "Hint": "Hex color for Indy preview segments marked as windows."
+      },
+      "PreviewDoorWallColor": {
+        "Name": "Preview door segment color",
+        "Hint": "Hex color for Indy preview segments marked as doors."
+      },
+      "PreviewSecretWallColor": {
+        "Name": "Preview secret door segment color",
+        "Hint": "Hex color for Indy preview segments marked as secret doors."
+      },
+      "PreviewInvisibleWallColor": {
+        "Name": "Preview invisible segment color",
+        "Hint": "Hex color for Indy preview segments marked as invisible walls."
+      },
+      "PreviewTerrainWallColor": {
+        "Name": "Preview terrain segment color",
+        "Hint": "Hex color for Indy preview segments marked as terrain."
+      },
       "PreviewWallWidth": {
         "Name": "Preview wall width",
         "Hint": "Line width for generated wall previews."
@@ -68,6 +88,32 @@
       "PreviewOutlineWidth": {
         "Name": "Preview outline width",
         "Hint": "Outline width for handles and vertices."
+      }
+    },
+    "Keybindings": {
+      "SetHoveredSegmentNormal": {
+        "Name": "Set hovered Indy wall segment to Normal",
+        "Hint": "While editing an Indy wall shape, changes the segment under the mouse to a normal wall."
+      },
+      "SetHoveredSegmentDoor": {
+        "Name": "Set hovered Indy wall segment to Door",
+        "Hint": "While editing an Indy wall shape, changes the segment under the mouse to a door."
+      },
+      "SetHoveredSegmentWindow": {
+        "Name": "Set hovered Indy wall segment to Window",
+        "Hint": "While editing an Indy wall shape, changes the segment under the mouse to a window."
+      },
+      "SetHoveredSegmentInvisible": {
+        "Name": "Set hovered Indy wall segment to Invisible",
+        "Hint": "While editing an Indy wall shape, changes the segment under the mouse to an invisible wall."
+      },
+      "SetHoveredSegmentSecret": {
+        "Name": "Set hovered Indy wall segment to Secret Door",
+        "Hint": "While editing an Indy wall shape, changes the segment under the mouse to a secret door."
+      },
+      "SetHoveredSegmentTerrain": {
+        "Name": "Set hovered Indy wall segment to Terrain",
+        "Hint": "While editing an Indy wall shape, changes the segment under the mouse to terrain."
       }
     },
     "Tooltips": {

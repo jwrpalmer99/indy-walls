@@ -17,6 +17,11 @@ const QUICK_WALL_TYPE_SETTING = "quickWallTypeChange";
 const DEBUG_SETTING = "debugShapeSelection";
 const STYLE_SETTINGS = {
   wallColor: "previewWallColor",
+  windowWallColor: "previewWindowWallColor",
+  doorWallColor: "previewDoorWallColor",
+  secretWallColor: "previewSecretWallColor",
+  invisibleWallColor: "previewInvisibleWallColor",
+  terrainWallColor: "previewTerrainWallColor",
   wallWidth: "previewWallWidth",
   vertexColor: "previewVertexColor",
   vertexActiveColor: "previewVertexActiveColor",
@@ -40,6 +45,14 @@ const RECTANGLE_FLAG = "rectangle";
 const CUBIC_EDIT_BUTTONS_ID = "indy-walls-cubic-edit-buttons";
 const ELLIPSE_EDIT_BUTTONS_ID = "indy-walls-ellipse-edit-buttons";
 const RECTANGLE_EDIT_BUTTONS_ID = "indy-walls-rectangle-edit-buttons";
+const SEGMENT_WALL_TYPE_KEYBINDINGS = {
+  walls: {label: "Normal", key: "KeyX"},
+  doors: {label: "Door", key: "KeyD"},
+  windows: {label: "Window", key: "KeyW"},
+  invisible: {label: "Invisible", key: "KeyI"},
+  secret: {label: "Secret", key: "KeyS"},
+  terrain: {label: "Terrain", key: "KeyT"}
+};
 
 const WALL_TYPE_DATA = {
   walls: () => ({
@@ -99,6 +112,20 @@ const WALL_TYPE_DATA = {
     ds: CONST.WALL_DOOR_STATES.CLOSED
   })
 };
+const WALL_TYPE_TOOL_ALIASES = {
+  wall: "walls",
+  normal: "walls",
+  terrainWall: "terrain",
+  invisibleWall: "invisible",
+  etherealWall: "ethereal",
+  window: "windows",
+  windowWall: "windows",
+  windowWalls: "windows",
+  door: "doors",
+  doorWall: "doors",
+  secretDoor: "secret",
+  secretDoorWall: "secret"
+};
 
 const cubicState = {
   active: false,
@@ -115,6 +142,7 @@ const cubicState = {
   redoStack: [],
   pendingUndoSnapshot: null,
   wallTypeTool: "walls",
+  wallTypeBySegment: {},
   segments: DEFAULT_CUBIC_SEGMENTS,
   segmentGaps: [],
   graphics: null,
@@ -142,6 +170,7 @@ const ellipseState = {
   redoStack: [],
   pendingUndoSnapshot: null,
   wallTypeTool: "walls",
+  wallTypeBySegment: {},
   segments: DEFAULT_ELLIPSE_SEGMENTS,
   rotation: 0,
   segmentGaps: [],
@@ -168,6 +197,7 @@ const rectangleState = {
   redoStack: [],
   pendingUndoSnapshot: null,
   wallTypeTool: "walls",
+  wallTypeBySegment: {},
   sideSegments: {
     top: DEFAULT_RECTANGLE_SEGMENTS,
     right: DEFAULT_RECTANGLE_SEGMENTS,
@@ -210,6 +240,7 @@ const editorDomDragState = {
   tool: null,
   handle: null,
   vertex: null,
+  move: false,
   coordinateLabel: null,
   pointerCoordinateLabel: null,
   pointerOffset: null,
@@ -232,6 +263,10 @@ const controlShapeSelectState = {
   clientX: null,
   clientY: null
 };
+const lastCanvasPointerState = {
+  point: null
+};
+let copiedEditorShape = null;
 
 const hiddenEditWalls = new Map();
 const rectangleCanvasClickViews = new WeakSet();
@@ -255,6 +290,7 @@ Hooks.once("init", () => {
     default: false
   });
   registerStyleSettings();
+  registerSegmentWallTypeKeybindings();
 
   patchWallsLayer();
   registerWallTypeControlShortcuts();
@@ -305,6 +341,11 @@ Hooks.on("refreshWall", (wall) => {
 function registerStyleSettings() {
   for (const [key, data] of Object.entries({
     wallColor: ["PreviewWallColor", String, "#c10e56ff"],
+    windowWallColor: ["PreviewWindowWallColor", String, "#b784a7ff"],
+    doorWallColor: ["PreviewDoorWallColor", String, "#123c69ff"],
+    secretWallColor: ["PreviewSecretWallColor", String, "#7a3db8ff"],
+    invisibleWallColor: ["PreviewInvisibleWallColor", String, "#8ecae6ff"],
+    terrainWallColor: ["PreviewTerrainWallColor", String, "#3f9b4fff"],
     vertexColor: ["PreviewVertexColor", String, "#ffffff"],
     vertexActiveColor: ["PreviewVertexActiveColor", String, "#aaff44"],
     endpointColor: ["PreviewEndpointColor", String, "#ff4444"],
@@ -366,12 +407,28 @@ function registerColorStyleSetting(key, data) {
   });
 }
 
+function registerSegmentWallTypeKeybindings() {
+  if (!game.keybindings?.register) return;
+
+  for (const [toolName, {label, key}] of Object.entries(SEGMENT_WALL_TYPE_KEYBINDINGS)) {
+    game.keybindings.register(MODULE_ID, `setHoveredSegment${label}`, {
+      name: `indy-walls.Keybindings.SetHoveredSegment${label}.Name`,
+      hint: `indy-walls.Keybindings.SetHoveredSegment${label}.Hint`,
+      editable: [{key}],
+      restricted: true,
+      onDown: () => changeHoveredSegmentWallType(toolName)
+    });
+  }
+}
+
 Hooks.on("getSceneControlButtons", (controls) => {
   const wallTools = controls.walls?.tools;
   if (!wallTools) return;
 
-  for (const toolName of Object.keys(WALL_TYPE_DATA)) {
-    const tool = wallTools[toolName];
+  for (const toolId of Object.keys(wallTools)) {
+    const toolName = getWallTypeToolName(toolId);
+    if (!toolName) continue;
+    const tool = wallTools[toolId];
     if (!tool || tool._indyWallsWrapped) continue;
 
     const originalOnChange = tool.onChange;
@@ -500,8 +557,8 @@ function registerWallTypeControlShortcuts() {
     if (!canvas?.walls?.controlled?.length) return;
 
     const button = event.target?.closest?.("[data-tool]");
-    const toolName = button?.dataset?.tool;
-    if (!WALL_TYPE_DATA[toolName]) return;
+    const toolName = getWallTypeToolName(button?.dataset?.tool);
+    if (!toolName) return;
 
     event.preventDefault();
     event.stopPropagation();
@@ -510,6 +567,13 @@ function registerWallTypeControlShortcuts() {
     rectangleState.wallTypeTool = toolName;
     updateSelectedWalls(toolName);
   }, {capture: true});
+}
+
+function getWallTypeToolName(toolName) {
+  if (!toolName) return null;
+  if (WALL_TYPE_DATA[toolName]) return toolName;
+  const alias = WALL_TYPE_TOOL_ALIASES[toolName];
+  return WALL_TYPE_DATA[alias] ? alias : null;
 }
 
 function patchWallsLayer() {
@@ -564,6 +628,7 @@ function patchWallsLayer() {
         ellipseState.draggingVertex = null;
         ellipseState.ellipseId = null;
         ellipseState.wallIds = [];
+        ellipseState.wallTypeBySegment = {};
         ellipseState.rotation = 0;
         ellipseState.segmentGaps = [];
         setEllipseHandle(0, point);
@@ -622,6 +687,7 @@ function patchWallsLayer() {
         rectangleState.hoveredVertex = null;
         rectangleState.rectangleId = null;
         rectangleState.wallIds = [];
+        rectangleState.wallTypeBySegment = {};
         rectangleState.sideRatios = getDefaultRectangleSideRatios();
         rectangleState.sideEnabled = getDefaultRectangleSideEnabled();
         rectangleState.sideGaps = getDefaultRectangleSideGaps();
@@ -646,6 +712,7 @@ function patchWallsLayer() {
       cubicState.draggingHandle = 3;
       cubicState.curveId = null;
       cubicState.wallIds = [];
+      cubicState.wallTypeBySegment = {};
       cubicState.segmentGaps = [];
       setHandle(0, point);
       setHandle(1, point);
@@ -900,6 +967,7 @@ function registerRectangleCanvasClickHandler() {
   if (!view || rectangleCanvasClickViews.has(view)) return;
 
   view.addEventListener("pointerdown", handleCanvasSegmentEditPointerDown, {capture: true});
+  view.addEventListener("pointermove", updateLastCanvasPointerPoint, {capture: true});
   view.addEventListener("pointerup", handleCanvasSegmentEditPointerUp, {capture: true});
   view.addEventListener("pointercancel", handleCanvasSegmentEditPointerCancel, {capture: true});
   view.addEventListener("mousedown", handleEditorCanvasMouseEvent, {capture: true});
@@ -913,6 +981,11 @@ function registerRectangleCanvasClickHandler() {
     clientWidth: view.clientWidth,
     clientHeight: view.clientHeight
   });
+}
+
+function updateLastCanvasPointerPoint(event) {
+  const point = getClientInteractionPoint(event);
+  if (point) lastCanvasPointerState.point = point;
 }
 
 function handleCanvasSegmentEditPointerDown(event) {
@@ -1415,6 +1488,7 @@ function handleEditorDomPointerDown(event) {
   editorDomDragState.tool = hit.tool;
   editorDomDragState.handle = hit.handle;
   editorDomDragState.vertex = hit.vertex;
+  editorDomDragState.move = !!hit.move;
   editorDomDragState.coordinateLabel = hit.coordinateLabel;
   editorDomDragState.pointerCoordinateLabel = hit.pointerCoordinateLabel;
   editorDomDragState.pointerOffset = hit.pointerOffset;
@@ -1423,7 +1497,14 @@ function handleEditorDomPointerDown(event) {
   editorDomDragState.pointerId = event.pointerId;
   editorDomDragState.view = canvas?.app?.view ?? null;
 
-  if (hit.tool === CUBIC_TOOL) {
+  if (hit.move) {
+    cubicState.draggingHandle = null;
+    ellipseState.draggingHandle = null;
+    ellipseState.draggingVertex = null;
+    rectangleState.draggingHandle = null;
+    rectangleState.draggingVertex = null;
+  }
+  else if (hit.tool === CUBIC_TOOL) {
     cubicState.draggingHandle = hit.handle;
     markSuppressCubicSegmentClick();
   }
@@ -1452,6 +1533,7 @@ function handleEditorDomPointerMove(event) {
     tool: editorDomDragState.tool,
     handle: editorDomDragState.handle,
     vertex: editorDomDragState.vertex,
+    move: editorDomDragState.move,
     coordinateLabel: editorDomDragState.coordinateLabel,
     pointerCoordinateLabel: editorDomDragState.pointerCoordinateLabel,
     pointerOffset: editorDomDragState.pointerOffset,
@@ -1460,7 +1542,10 @@ function handleEditorDomPointerMove(event) {
     point
   });
 
-  if (editorDomDragState.tool === CUBIC_TOOL) {
+  if (editorDomDragState.move) {
+    moveEditorShapeToCenter(editorDomDragState.tool, point);
+    drawEditorPreview(editorDomDragState.tool);
+  } else if (editorDomDragState.tool === CUBIC_TOOL) {
     setHandle(editorDomDragState.handle, point);
     cubicState.placed = true;
     drawCubicPreview();
@@ -1498,7 +1583,8 @@ function finalizeEditorDomDrag(event=null, cancelled=false) {
   debugInteractionManagers(cancelled ? "editor DOM drag cancel" : "editor DOM drag commit", event, {
     tool: editorDomDragState.tool,
     handle: editorDomDragState.handle,
-    vertex: editorDomDragState.vertex
+    vertex: editorDomDragState.vertex,
+    move: editorDomDragState.move
   });
 
   if (editorDomDragState.tool === CUBIC_TOOL) {
@@ -1532,6 +1618,7 @@ function finalizeEditorDomDrag(event=null, cancelled=false) {
   editorDomDragState.tool = null;
   editorDomDragState.handle = null;
   editorDomDragState.vertex = null;
+  editorDomDragState.move = false;
   editorDomDragState.coordinateLabel = null;
   editorDomDragState.pointerCoordinateLabel = null;
   editorDomDragState.pointerOffset = null;
@@ -1545,11 +1632,22 @@ function finalizeEditorDomDrag(event=null, cancelled=false) {
 function getEditorDomDragHit(event) {
   if (isCubicToolActive() && cubicState.placed) {
     for (const {label, point} of getCanvasClickPointCandidates(event)) {
+      const movePoint = getEditorMoveHandleAt(CUBIC_TOOL, point);
+      if (movePoint) return withDomPointerDragData(event, {
+        tool: CUBIC_TOOL,
+        handle: null,
+        vertex: null,
+        move: true,
+        coordinateLabel: label,
+        hitPoint: point,
+        editorPoint: movePoint
+      });
       const handle = getCubicHandleAt(point);
       if (handle !== null) return withDomPointerDragData(event, {
         tool: CUBIC_TOOL,
         handle,
         vertex: null,
+        move: false,
         coordinateLabel: label,
         hitPoint: point,
         editorPoint: cubicState.handles[handle]
@@ -1560,11 +1658,22 @@ function getEditorDomDragHit(event) {
 
   if (isEllipseToolActive() && ellipseState.placed) {
     for (const {label, point} of getCanvasClickPointCandidates(event)) {
+      const movePoint = getEditorMoveHandleAt(ELLIPSE_TOOL, point);
+      if (movePoint) return withDomPointerDragData(event, {
+        tool: ELLIPSE_TOOL,
+        handle: null,
+        vertex: null,
+        move: true,
+        coordinateLabel: label,
+        hitPoint: point,
+        editorPoint: movePoint
+      });
       const handle = getEllipseHandleAt(point);
       if (handle !== null) return withDomPointerDragData(event, {
         tool: ELLIPSE_TOOL,
         handle,
         vertex: null,
+        move: false,
         coordinateLabel: label,
         hitPoint: point,
         editorPoint: ellipseState.handles[handle]
@@ -1574,6 +1683,7 @@ function getEditorDomDragHit(event) {
         tool: ELLIPSE_TOOL,
         handle: null,
         vertex,
+        move: false,
         coordinateLabel: label,
         hitPoint: point,
         editorPoint: vertex.point
@@ -1584,11 +1694,22 @@ function getEditorDomDragHit(event) {
 
   if (!isRectangleToolActive() || !rectangleState.placed) return null;
   for (const {label, point} of getCanvasClickPointCandidates(event)) {
+    const movePoint = getEditorMoveHandleAt(RECTANGLE_TOOL, point);
+    if (movePoint) return withDomPointerDragData(event, {
+      tool: RECTANGLE_TOOL,
+      handle: null,
+      vertex: null,
+      move: true,
+      coordinateLabel: label,
+      hitPoint: point,
+      editorPoint: movePoint
+    });
     const handle = getRectangleHandleAt(point);
     if (handle !== null) return withDomPointerDragData(event, {
       tool: RECTANGLE_TOOL,
       handle,
       vertex: null,
+      move: false,
       coordinateLabel: label,
       hitPoint: point,
       editorPoint: rectangleState.handles[handle]
@@ -1598,6 +1719,7 @@ function getEditorDomDragHit(event) {
       tool: RECTANGLE_TOOL,
       handle: null,
       vertex,
+      move: false,
       coordinateLabel: label,
       hitPoint: point,
       editorPoint: vertex.point
@@ -1969,6 +2091,10 @@ function restoreEditSessionWalls() {
   hiddenEditWalls.clear();
 }
 
+function dropHiddenEditWalls(wallIds=[]) {
+  for (const id of wallIds) hiddenEditWalls.delete(id);
+}
+
 function applyHiddenEditWallState(wall) {
   const id = wall?.document?.id ?? wall?.id;
   if (!id || !hiddenEditWalls.has(id)) return;
@@ -2201,13 +2327,28 @@ function registerCurveEditorShortcuts() {
   }, {capture: true, passive: false});
 
   window.addEventListener("keydown", (event) => {
-    if (!isAnyEditorToolActive() || isEditableTarget(event.target)) return;
+    if (!game.user.isGM || isEditableTarget(event.target)) return;
+    if (!isAnyEditorToolActive() && !copiedEditorShape) return;
 
     const key = event.key.toLowerCase();
     if (event.ctrlKey && !event.shiftKey && key === "z") {
       event.preventDefault();
       event.stopPropagation();
       undoActiveEditor();
+      return;
+    }
+
+    if (event.ctrlKey && key === "c") {
+      event.preventDefault();
+      event.stopPropagation();
+      copyActiveEditorShape();
+      return;
+    }
+
+    if (event.ctrlKey && key === "v") {
+      event.preventDefault();
+      event.stopPropagation();
+      pasteCopiedEditorShape();
       return;
     }
 
@@ -2228,6 +2369,11 @@ function registerCurveEditorShortcuts() {
       ellipseState.active = false;
       rectangleState.active = false;
       canvas.walls.activate({tool: "select"});
+    } else if (event.key === "Delete" || event.key === "Backspace") {
+      event.preventDefault();
+      event.stopImmediatePropagation?.();
+      event.stopPropagation();
+      deleteActiveEditorWalls();
     } else if (event.key === "Enter") {
       event.preventDefault();
       event.stopPropagation();
@@ -2255,6 +2401,78 @@ function getActiveEditorState() {
   return null;
 }
 
+function getActiveEditorTool() {
+  if (isCubicToolActive()) return CUBIC_TOOL;
+  if (isEllipseToolActive()) return ELLIPSE_TOOL;
+  if (isRectangleToolActive()) return RECTANGLE_TOOL;
+  return null;
+}
+
+function getEditorStateForTool(tool) {
+  if (tool === CUBIC_TOOL) return cubicState;
+  if (tool === ELLIPSE_TOOL) return ellipseState;
+  if (tool === RECTANGLE_TOOL) return rectangleState;
+  return null;
+}
+
+function copyActiveEditorShape() {
+  const tool = getActiveEditorTool();
+  const state = getActiveEditorState();
+  if (!tool || !state?.placed) return;
+
+  copiedEditorShape = {
+    tool,
+    snapshot: getEditorSnapshot(state),
+    pasteCount: 0
+  };
+  debugShapeSelection("copied editor shape", {tool});
+}
+
+function pasteCopiedEditorShape() {
+  if (!copiedEditorShape?.snapshot) return;
+
+  const {tool} = copiedEditorShape;
+  const snapshot = JSON.parse(JSON.stringify(copiedEditorShape.snapshot));
+  copiedEditorShape.pasteCount += 1;
+
+  clearCubicPreview();
+  clearEllipsePreview();
+  clearRectanglePreview();
+  cubicState.active = tool === CUBIC_TOOL;
+  ellipseState.active = tool === ELLIPSE_TOOL;
+  rectangleState.active = tool === RECTANGLE_TOOL;
+  canvas.walls.activate({tool});
+
+  const state = getEditorStateForTool(tool);
+  restoreEditorSnapshot(state, snapshot);
+  state.wallIds = [];
+  if (tool === CUBIC_TOOL) state.curveId = null;
+  else if (tool === ELLIPSE_TOOL) state.ellipseId = null;
+  else if (tool === RECTANGLE_TOOL) state.rectangleId = null;
+
+  const pastePoint = getLastCanvasPointerPoint();
+  const center = getEditorShapeCenter(tool);
+  const offset = pastePoint && center
+    ? {x: pastePoint.x - center.x, y: pastePoint.y - center.y}
+    : getCopyPasteOffset(copiedEditorShape.pasteCount);
+  translateEditorShape(tool, offset.x, offset.y);
+  clearEditorHistory(state);
+  drawEditorPreview(tool);
+  debugShapeSelection("pasted editor shape", {tool, offset, pastePoint});
+}
+
+function getCopyPasteOffset(count) {
+  const amount = getScaledRadius(48) * Math.max(count, 1);
+  return {x: amount, y: amount};
+}
+
+function getLastCanvasPointerPoint() {
+  const point = lastCanvasPointerState.point;
+  return Number.isFinite(point?.x) && Number.isFinite(point?.y)
+    ? {x: point.x, y: point.y}
+    : null;
+}
+
 function changeActiveSegments(delta) {
   const state = getActiveEditorState();
   const snapshot = state?.placed ? getEditorSnapshot(state) : null;
@@ -2264,6 +2482,51 @@ function changeActiveSegments(delta) {
   else if (isRectangleToolActive()) changeRectangleSegments(delta);
 
   if (snapshot) pushEditorUndoSnapshot(state, snapshot);
+}
+
+function changeHoveredSegmentWallType(toolName) {
+  if (!WALL_TYPE_DATA[toolName] || isEditableTarget(document.activeElement)) return false;
+
+  const state = getActiveEditorState();
+  if (!state?.placed) return false;
+
+  const point = getLastCanvasPointerPoint();
+  if (!point) return false;
+
+  const segment = getHoveredEditorSegment(point);
+  if (!segment) return false;
+
+  const key = getSegmentKey(segment);
+  if (state.wallTypeBySegment?.[key] === toolName) return true;
+
+  const snapshot = getEditorSnapshot(state);
+  state.wallTypeBySegment = {
+    ...state.wallTypeBySegment,
+    [key]: toolName
+  };
+  pushEditorUndoSnapshot(state, snapshot);
+  drawEditorPreview(getActiveEditorTool());
+  debugShapeSelection("changed hovered segment wall type", {
+    toolName,
+    segment,
+    key,
+    point
+  });
+  return true;
+}
+
+function getHoveredEditorSegment(point) {
+  if (isCubicToolActive()) return getCubicSegmentAt(point);
+  if (isEllipseToolActive()) return getEllipseSegmentAt(point);
+  if (isRectangleToolActive()) {
+    const side = getRectangleSideAt(point);
+    if (!side) return null;
+    return {
+      side: side.side,
+      index: getRectangleSegmentIndexAt(side.side, side.ratio)
+    };
+  }
+  return null;
 }
 
 function applyActiveWalls() {
@@ -2276,6 +2539,41 @@ function clearActivePreview() {
   if (isCubicToolActive()) clearCubicPreview();
   else if (isEllipseToolActive()) clearEllipsePreview();
   else if (isRectangleToolActive()) clearRectanglePreview();
+}
+
+async function deleteActiveEditorWalls() {
+  const state = getActiveEditorState();
+  if (!state?.placed) return;
+
+  const wallIds = getExistingActiveEditorWallIds();
+  if (!wallIds.length) {
+    clearActivePreview();
+    return;
+  }
+
+  const oldWalls = wallIds.map((id) => canvas.scene.walls.get(id)).filter(Boolean);
+  const replacingWallIds = state.replacingWallIds;
+  wallIds.forEach((id) => replacingWallIds.add(id));
+  canvas.walls.storeHistory("delete", oldWalls.map((wall) => wall.toObject()));
+  dropHiddenEditWalls(wallIds);
+  try {
+    await canvas.scene.deleteEmbeddedDocuments("Wall", wallIds);
+  } finally {
+    wallIds.forEach((id) => replacingWallIds.delete(id));
+  }
+
+  clearActivePreview();
+  cubicState.active = false;
+  ellipseState.active = false;
+  rectangleState.active = false;
+  canvas.walls.activate({tool: "select"});
+}
+
+function getExistingActiveEditorWallIds() {
+  if (isCubicToolActive()) return getExistingCurveWallIds();
+  if (isEllipseToolActive()) return getExistingEllipseWallIds();
+  if (isRectangleToolActive()) return getExistingRectangleWallIds();
+  return [];
 }
 
 function beginEditorOperation(state=getActiveEditorState(), includeUnplaced=false) {
@@ -2362,6 +2660,7 @@ function getEditorSnapshot(state) {
       handles: clonePoints(cubicState.handles),
       segments: cubicState.segments,
       segmentGaps: [...cubicState.segmentGaps],
+      wallTypeBySegment: cloneWallTypeBySegment(cubicState.wallTypeBySegment),
       wallTypeTool: cubicState.wallTypeTool
     };
   }
@@ -2373,6 +2672,7 @@ function getEditorSnapshot(state) {
       segments: ellipseState.segments,
       rotation: ellipseState.rotation,
       segmentGaps: [...ellipseState.segmentGaps],
+      wallTypeBySegment: cloneWallTypeBySegment(ellipseState.wallTypeBySegment),
       wallTypeTool: ellipseState.wallTypeTool
     };
   }
@@ -2384,6 +2684,7 @@ function getEditorSnapshot(state) {
     sideRatios: cloneRectangleSideRatios(rectangleState.sideRatios),
     sideEnabled: cloneRectangleSideEnabled(rectangleState.sideEnabled),
     sideGaps: cloneRectangleSideGaps(rectangleState.sideGaps),
+    wallTypeBySegment: cloneWallTypeBySegment(rectangleState.wallTypeBySegment),
     wallTypeTool: rectangleState.wallTypeTool
   };
 }
@@ -2394,6 +2695,7 @@ function restoreEditorSnapshot(state, snapshot) {
     cubicState.handles = clonePoints(snapshot.handles);
     cubicState.segments = snapshot.segments;
     cubicState.segmentGaps = reconcileCubicSegmentGaps(snapshot.segmentGaps, cubicState.segments);
+    cubicState.wallTypeBySegment = cloneWallTypeBySegment(snapshot.wallTypeBySegment);
     cubicState.wallTypeTool = snapshot.wallTypeTool;
     cubicState.draggingHandle = null;
     cubicState.initializing = false;
@@ -2407,6 +2709,7 @@ function restoreEditorSnapshot(state, snapshot) {
     ellipseState.segments = snapshot.segments;
     ellipseState.rotation = Number(snapshot.rotation) || 0;
     ellipseState.segmentGaps = reconcileEllipseSegmentGaps(snapshot.segmentGaps, ellipseState.segments);
+    ellipseState.wallTypeBySegment = cloneWallTypeBySegment(snapshot.wallTypeBySegment);
     ellipseState.wallTypeTool = snapshot.wallTypeTool;
     ellipseState.draggingHandle = null;
     ellipseState.draggingVertex = null;
@@ -2422,6 +2725,7 @@ function restoreEditorSnapshot(state, snapshot) {
   rectangleState.sideRatios = cloneRectangleSideRatios(snapshot.sideRatios);
   rectangleState.sideEnabled = cloneRectangleSideEnabled(snapshot.sideEnabled);
   rectangleState.sideGaps = cloneRectangleSideGaps(snapshot.sideGaps);
+  rectangleState.wallTypeBySegment = cloneWallTypeBySegment(snapshot.wallTypeBySegment);
   rectangleState.wallTypeTool = snapshot.wallTypeTool;
   rectangleState.draggingHandle = null;
   rectangleState.draggingVertex = null;
@@ -2432,6 +2736,75 @@ function restoreEditorSnapshot(state, snapshot) {
 
 function snapshotsEqual(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function cloneWallTypeBySegment(source={}) {
+  return {...(source ?? {})};
+}
+
+function getSegmentWallData(state, key) {
+  const tool = state?.wallTypeBySegment?.[key] ?? state?.wallTypeTool ?? "walls";
+  return WALL_TYPE_DATA[tool]?.() ?? WALL_TYPE_DATA.walls();
+}
+
+function getSegmentWallType(state, segment) {
+  return state?.wallTypeBySegment?.[getSegmentKey(segment)] ?? state?.wallTypeTool ?? "walls";
+}
+
+function getSegmentPreviewColor(state, segment, style=getPreviewStyle()) {
+  const tool = getSegmentWallType(state, segment);
+  return style.wallTypeColors?.[tool] ?? style.wallColor;
+}
+
+function getWallDocumentById(id) {
+  return canvas?.scene?.walls?.get(id) ?? null;
+}
+
+function getShapeWallTypeByIndexedFlag(wallIds, flagName) {
+  const result = {};
+  for (const id of wallIds ?? []) {
+    const wallDocument = getWallDocumentById(id);
+    const data = wallDocument?.getFlag(MODULE_ID, flagName);
+    const index = Number(data?.index);
+    if (!Number.isInteger(index)) continue;
+    const tool = getWallTypeToolFromDocument(wallDocument) ?? data.wallTypeTool;
+    if (tool) result[String(index)] = tool;
+  }
+  return result;
+}
+
+function getRectangleWallTypeBySegment(wallIds) {
+  const result = {};
+  const segments = getRectangleSegments();
+  for (const id of wallIds ?? []) {
+    const wallDocument = getWallDocumentById(id);
+    const data = wallDocument?.getFlag(MODULE_ID, RECTANGLE_FLAG);
+    const explicitKey = data?.side && Number.isInteger(Number(data?.segmentIndex))
+      ? getRectangleSegmentKey({side: data.side, index: Number(data.segmentIndex)})
+      : null;
+    const key = explicitKey ?? getSegmentKeyFromWallCoordinates(segments, wallDocument?.c);
+    if (!key) continue;
+    const tool = getWallTypeToolFromDocument(wallDocument) ?? data?.wallTypeTool;
+    if (tool) result[key] = tool;
+  }
+  return result;
+}
+
+function getSegmentKeyFromWallCoordinates(segments, coords) {
+  if (!Array.isArray(coords) || coords.length < 4) return null;
+  const target = coords.map((value) => Math.round(Number(value) || 0));
+  for (const segment of segments) {
+    const c = [
+      Math.round(segment.a.x),
+      Math.round(segment.a.y),
+      Math.round(segment.b.x),
+      Math.round(segment.b.y)
+    ];
+    const matchesForward = c.every((value, index) => value === target[index]);
+    const matchesReverse = c[0] === target[2] && c[1] === target[3] && c[2] === target[0] && c[3] === target[1];
+    if (matchesForward || matchesReverse) return getSegmentKey(segment);
+  }
+  return null;
 }
 
 function redrawActivePreview() {
@@ -2445,6 +2818,13 @@ function getPreviewStyle() {
   const outlineColor = getStyleColor(STYLE_SETTINGS.outlineColor, 0x111111);
   return {
     wallColor: getStyleColor(STYLE_SETTINGS.wallColor, 0xc10e56),
+    wallTypeColors: {
+      windows: getStyleColor(STYLE_SETTINGS.windowWallColor, 0xb784a7),
+      doors: getStyleColor(STYLE_SETTINGS.doorWallColor, 0x123c69),
+      secret: getStyleColor(STYLE_SETTINGS.secretWallColor, 0x7a3db8),
+      invisible: getStyleColor(STYLE_SETTINGS.invisibleWallColor, 0x8ecae6),
+      terrain: getStyleColor(STYLE_SETTINGS.terrainWallColor, 0x3f9b4f)
+    },
     wallWidth: getStyleNumber(STYLE_SETTINGS.wallWidth, 4, 1, 12),
     guideWidth: Math.max(getStyleNumber(STYLE_SETTINGS.wallWidth, 4, 1, 12) / 2, 1),
     vertexColor: getStyleColor(STYLE_SETTINGS.vertexColor, 0xffffff),
@@ -2499,6 +2879,79 @@ function drawBezierHandle(graphics, point, style=getPreviewStyle()) {
     outlineColor: style.outlineColor,
     outlineWidth: style.outlineWidth
   });
+}
+
+function drawMoveHandle(graphics, point, style=getPreviewStyle()) {
+  drawHandle(graphics, point, style.vertexActiveColor, {
+    radius: Math.max(style.handleSize * 0.75, style.splitVertexSize),
+    outlineColor: style.outlineColor,
+    outlineWidth: style.outlineWidth
+  });
+}
+
+function getEditorMoveHandleAt(tool, point) {
+  const center = getEditorShapeCenter(tool);
+  if (!center) return null;
+  const style = getPreviewStyle();
+  const radius = getScaledRadius(Math.max(style.handleSize * 0.75, style.splitVertexSize) + (style.outlineWidth / 2));
+  return Math.hypot(center.x - point.x, center.y - point.y) <= radius ? center : null;
+}
+
+function getEditorShapeCenter(tool) {
+  if (tool === RECTANGLE_TOOL && rectangleState.placed) {
+    const [a, b] = rectangleState.handles;
+    return {x: (a.x + b.x) / 2, y: (a.y + b.y) / 2};
+  }
+  if (tool === ELLIPSE_TOOL && ellipseState.placed) {
+    const {cx, cy} = getEllipseGeometry();
+    return {x: cx, y: cy};
+  }
+  if (tool === CUBIC_TOOL && cubicState.placed) {
+    return getPointsCenter(getCubicPoints(cubicState.segments));
+  }
+  return null;
+}
+
+function getPointsCenter(points) {
+  if (!points.length) return null;
+  const bounds = points.reduce((result, point) => ({
+    minX: Math.min(result.minX, point.x),
+    minY: Math.min(result.minY, point.y),
+    maxX: Math.max(result.maxX, point.x),
+    maxY: Math.max(result.maxY, point.y)
+  }), {
+    minX: points[0].x,
+    minY: points[0].y,
+    maxX: points[0].x,
+    maxY: points[0].y
+  });
+  return {
+    x: (bounds.minX + bounds.maxX) / 2,
+    y: (bounds.minY + bounds.maxY) / 2
+  };
+}
+
+function moveEditorShapeToCenter(tool, point) {
+  const center = getEditorShapeCenter(tool);
+  if (!center) return;
+  translateEditorShape(tool, point.x - center.x, point.y - center.y);
+}
+
+function translateEditorShape(tool, dx, dy) {
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || (!dx && !dy)) return;
+  if (tool === CUBIC_TOOL) cubicState.handles = translatePoints(cubicState.handles, dx, dy);
+  else if (tool === ELLIPSE_TOOL) ellipseState.handles = translatePoints(ellipseState.handles, dx, dy);
+  else if (tool === RECTANGLE_TOOL) rectangleState.handles = translatePoints(rectangleState.handles, dx, dy);
+}
+
+function translatePoints(points, dx, dy) {
+  return points.map((point) => ({x: point.x + dx, y: point.y + dy}));
+}
+
+function drawEditorPreview(tool) {
+  if (tool === CUBIC_TOOL) drawCubicPreview();
+  else if (tool === ELLIPSE_TOOL) drawEllipsePreview();
+  else if (tool === RECTANGLE_TOOL) drawRectanglePreview();
 }
 
 function setHandle(index, point) {
@@ -2557,15 +3010,20 @@ function drawCubicPreview() {
   const segments = getCubicSegments();
   const allSegments = getAllCubicSegments();
   const gaps = getCubicSegmentGaps();
-  graphics.lineStyle(getScaledRadius(style.wallWidth), style.wallColor, 0.9);
-  for (const {a, b} of segments) {
+  for (const segment of segments) {
+    const {a, b} = segment;
+    graphics.lineStyle(getScaledRadius(style.wallWidth), getSegmentPreviewColor(cubicState, segment, style), 0.9);
     graphics.moveTo(a.x, a.y);
     graphics.lineTo(b.x, b.y);
   }
 
   for (const segment of allSegments) {
     if (!gaps.includes(segment.index)) continue;
-    graphics.lineStyle(getScaledRadius(Math.max(style.guideWidth, 1)), style.outlineColor, 0.22);
+    graphics.lineStyle(
+      getScaledRadius(Math.max(style.guideWidth, 1)),
+      getSegmentPreviewColor(cubicState, segment, style),
+      0.22
+    );
     graphics.moveTo(segment.a.x, segment.a.y);
     graphics.lineTo(segment.b.x, segment.b.y);
   }
@@ -2584,6 +3042,7 @@ function drawCubicPreview() {
   drawEndpoint(graphics, end, style);
   drawBezierHandle(graphics, controlA, style);
   drawBezierHandle(graphics, controlB, style);
+  drawMoveHandle(graphics, getEditorShapeCenter(CUBIC_TOOL), style);
 }
 
 function getCubicPoints(segments) {
@@ -2747,15 +3206,20 @@ function drawEllipsePreview() {
   const segments = getEllipseSegments();
   const allSegments = getAllEllipseSegments();
   const gaps = getEllipseSegmentGaps();
-  graphics.lineStyle(getScaledRadius(style.wallWidth), style.wallColor, 0.9);
-  for (const {a, b} of segments) {
+  for (const segment of segments) {
+    const {a, b} = segment;
+    graphics.lineStyle(getScaledRadius(style.wallWidth), getSegmentPreviewColor(ellipseState, segment, style), 0.9);
     graphics.moveTo(a.x, a.y);
     graphics.lineTo(b.x, b.y);
   }
 
   for (const segment of allSegments) {
     if (!gaps.includes(segment.index)) continue;
-    graphics.lineStyle(getScaledRadius(Math.max(style.guideWidth, 1)), style.outlineColor, 0.22);
+    graphics.lineStyle(
+      getScaledRadius(Math.max(style.guideWidth, 1)),
+      getSegmentPreviewColor(ellipseState, segment, style),
+      0.22
+    );
     graphics.moveTo(segment.a.x, segment.a.y);
     graphics.lineTo(segment.b.x, segment.b.y);
   }
@@ -2769,6 +3233,7 @@ function drawEllipsePreview() {
   }
   drawEndpoint(graphics, a, style);
   drawEndpoint(graphics, b, style);
+  drawMoveHandle(graphics, getEditorShapeCenter(ELLIPSE_TOOL), style);
 }
 
 function getEllipsePoints(segments) {
@@ -3161,8 +3626,9 @@ function drawRectanglePreview() {
   const style = getPreviewStyle();
   const segments = getRectangleSegments();
   drawRectangleInteractionHits(graphics, style);
-  graphics.lineStyle(getScaledRadius(style.wallWidth), style.wallColor, 0.9);
-  for (const {a, b} of segments) {
+  for (const segment of segments) {
+    const {a, b} = segment;
+    graphics.lineStyle(getScaledRadius(style.wallWidth), getSegmentPreviewColor(rectangleState, segment, style), 0.9);
     graphics.moveTo(a.x, a.y);
     graphics.lineTo(b.x, b.y);
   }
@@ -3180,6 +3646,7 @@ function drawRectanglePreview() {
   }
   drawEndpoint(graphics, a, style);
   drawEndpoint(graphics, b, style);
+  drawMoveHandle(graphics, getEditorShapeCenter(RECTANGLE_TOOL), style);
 }
 
 function configureRectanglePreviewInteraction(graphics) {
@@ -3249,9 +3716,10 @@ function drawRectangleBoundsGuide(graphics, bounds, style) {
     const gaps = getRectangleSideGaps(side);
     for (const segment of getAllSideSegments(side, start, end)) {
       const missing = gaps.includes(segment.index);
+      const color = getSegmentPreviewColor(rectangleState, segment, style);
       graphics.lineStyle(
         getScaledRadius(missing ? Math.max(style.guideWidth, 1) : style.guideWidth),
-        missing ? style.outlineColor : style.wallColor,
+        color,
         missing ? 0.22 : 0.45
       );
       graphics.moveTo(segment.a.x, segment.a.y);
@@ -3448,6 +3916,14 @@ function getRectangleBoundsSides(bounds) {
   ];
 }
 
+function getSegmentKey(segment) {
+  return segment.side ? getRectangleSegmentKey(segment) : String(segment.index);
+}
+
+function getRectangleSegmentKey(segment) {
+  return `${segment.side}:${segment.index}`;
+}
+
 function getSideSegments(side, start, end) {
   if (!rectangleState.sideEnabled[side]) return [];
 
@@ -3483,13 +3959,14 @@ function getSidePoints(side, start, end) {
 async function applyRectangleWalls() {
   if (!isRectangleToolActive() || !rectangleState.placed) return;
 
-  const wallData = WALL_TYPE_DATA[rectangleState.wallTypeTool]?.() ?? WALL_TYPE_DATA.walls();
   const rectangleId = rectangleState.rectangleId ?? foundry.utils.randomID();
   const segments = getRectangleSegments();
   const walls = [];
 
   for (let i = 0; i < segments.length; i++) {
-    const {a, b} = segments[i];
+    const segment = segments[i];
+    const {a, b} = segment;
+    const wallData = getSegmentWallData(rectangleState, getSegmentKey(segment));
     const c = [Math.round(a.x), Math.round(a.y), Math.round(b.x), Math.round(b.y)];
     if ((c[0] === c[2]) && (c[1] === c[3])) continue;
     walls.push({
@@ -3500,12 +3977,15 @@ async function applyRectangleWalls() {
           [RECTANGLE_FLAG]: {
             rectangleId,
             index: i,
+            side: segment.side,
+            segmentIndex: segment.index,
             wallIds: [],
             handles: clonePoints(rectangleState.handles),
             sideSegments: {...rectangleState.sideSegments},
             sideRatios: cloneRectangleSideRatios(rectangleState.sideRatios),
             sideEnabled: cloneRectangleSideEnabled(rectangleState.sideEnabled),
             sideGaps: cloneRectangleSideGaps(rectangleState.sideGaps),
+            wallTypeBySegment: cloneWallTypeBySegment(rectangleState.wallTypeBySegment),
             wallTypeTool: rectangleState.wallTypeTool
           }
         }
@@ -3546,7 +4026,6 @@ async function applyRectangleWalls() {
 async function applyEllipseWalls() {
   if (!isEllipseToolActive() || !ellipseState.placed) return;
 
-  const wallData = WALL_TYPE_DATA[ellipseState.wallTypeTool]?.() ?? WALL_TYPE_DATA.walls();
   const segments = getEllipseSegments();
   const segmentGaps = getEllipseSegmentGaps();
   const ellipseId = ellipseState.ellipseId ?? foundry.utils.randomID();
@@ -3555,6 +4034,7 @@ async function applyEllipseWalls() {
 
   for (const segment of segments) {
     const {a, b} = segment;
+    const wallData = getSegmentWallData(ellipseState, getSegmentKey(segment));
     const c = [Math.round(a.x), Math.round(a.y), Math.round(b.x), Math.round(b.y)];
     if ((c[0] === c[2]) && (c[1] === c[3])) continue;
     wallSegmentIndexes.push(segment.index);
@@ -3571,6 +4051,7 @@ async function applyEllipseWalls() {
             segments: ellipseState.segments,
             rotation: ellipseState.rotation,
             segmentGaps,
+            wallTypeBySegment: cloneWallTypeBySegment(ellipseState.wallTypeBySegment),
             wallTypeTool: ellipseState.wallTypeTool
           }
         }
@@ -3623,7 +4104,6 @@ async function applyEllipseWalls() {
 async function applyCubicWalls() {
   if (!isCubicToolActive() || !cubicState.placed) return;
 
-  const wallData = WALL_TYPE_DATA[cubicState.wallTypeTool]?.() ?? WALL_TYPE_DATA.walls();
   const segments = getCubicSegments();
   const segmentGaps = getCubicSegmentGaps();
   const curveId = cubicState.curveId ?? foundry.utils.randomID();
@@ -3632,6 +4112,7 @@ async function applyCubicWalls() {
 
   for (const segment of segments) {
     const {a, b} = segment;
+    const wallData = getSegmentWallData(cubicState, getSegmentKey(segment));
     const c = [Math.round(a.x), Math.round(a.y), Math.round(b.x), Math.round(b.y)];
     if ((c[0] === c[2]) && (c[1] === c[3])) continue;
     wallSegmentIndexes.push(segment.index);
@@ -3647,6 +4128,7 @@ async function applyCubicWalls() {
             handles: cloneHandles(),
             segments: cubicState.segments,
             segmentGaps,
+            wallTypeBySegment: cloneWallTypeBySegment(cubicState.wallTypeBySegment),
             wallTypeTool: cubicState.wallTypeTool
           }
         }
@@ -3706,6 +4188,7 @@ function clearCubicPreview() {
   cubicState.suppressNextSegmentEditClick = false;
   cubicState.curveId = null;
   cubicState.wallIds = [];
+  cubicState.wallTypeBySegment = {};
   cubicState.segmentGaps = [];
   cubicState.graphics?.destroy();
   cubicState.graphics = null;
@@ -3724,6 +4207,7 @@ function clearEllipsePreview() {
   ellipseState.suppressNextSegmentEditClick = false;
   ellipseState.ellipseId = null;
   ellipseState.wallIds = [];
+  ellipseState.wallTypeBySegment = {};
   ellipseState.rotation = 0;
   ellipseState.segmentGaps = [];
   ellipseState.graphics?.destroy();
@@ -3741,6 +4225,7 @@ function clearRectanglePreview() {
   rectangleState.hoveredVertex = null;
   rectangleState.rectangleId = null;
   rectangleState.wallIds = [];
+  rectangleState.wallTypeBySegment = {};
   rectangleState.sideRatios = getDefaultRectangleSideRatios();
   rectangleState.sideEnabled = getDefaultRectangleSideEnabled();
   rectangleState.sideGaps = getDefaultRectangleSideGaps();
@@ -3889,6 +4374,10 @@ function loadCubicCurveFromWall(wall) {
     x: Number(handle.x) || 0,
     y: Number(handle.y) || 0
   }));
+  cubicState.wallTypeBySegment = {
+    ...cloneWallTypeBySegment(cubicData.wallTypeBySegment),
+    ...getShapeWallTypeByIndexedFlag(cubicState.wallIds, CUBIC_FLAG)
+  };
 
   canvas.walls.activate({tool: CUBIC_TOOL});
   hideEditSessionWalls(cubicState.wallIds);
@@ -3920,6 +4409,10 @@ function loadEllipseFromWall(wall) {
     x: Number(handle.x) || 0,
     y: Number(handle.y) || 0
   }));
+  ellipseState.wallTypeBySegment = {
+    ...cloneWallTypeBySegment(ellipseData.wallTypeBySegment),
+    ...getShapeWallTypeByIndexedFlag(ellipseState.wallIds, ELLIPSE_FLAG)
+  };
 
   canvas.walls.activate({tool: ELLIPSE_TOOL});
   hideEditSessionWalls(ellipseState.wallIds);
@@ -3950,6 +4443,10 @@ function loadRectangleFromWall(wall) {
     x: Number(handle.x) || 0,
     y: Number(handle.y) || 0
   }));
+  rectangleState.wallTypeBySegment = {
+    ...cloneWallTypeBySegment(rectangleData.wallTypeBySegment),
+    ...getRectangleWallTypeBySegment(rectangleState.wallIds)
+  };
 
   canvas.walls.activate({tool: RECTANGLE_TOOL});
   hideEditSessionWalls(rectangleState.wallIds);
