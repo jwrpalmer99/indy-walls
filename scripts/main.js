@@ -129,6 +129,7 @@ const ellipseState = {
   initializing: false,
   initialOrigin: null,
   draggingHandle: null,
+  draggingVertex: null,
   ellipseId: null,
   wallIds: [],
   replacingWallIds: new Set(),
@@ -137,6 +138,8 @@ const ellipseState = {
   pendingUndoSnapshot: null,
   wallTypeTool: "walls",
   segments: DEFAULT_ELLIPSE_SEGMENTS,
+  rotation: 0,
+  segmentGaps: [],
   graphics: null,
   handles: [
     {x: 0, y: 0},
@@ -526,6 +529,14 @@ function patchWallsLayer() {
 
     if (isEllipseToolActive()) {
       ellipseState.draggingHandle = getEllipseHandleAt({x: hitPoint.x, y: hitPoint.y});
+      ellipseState.draggingVertex = ellipseState.draggingHandle === null
+        ? getEllipseVertexAt({x: hitPoint.x, y: hitPoint.y})
+        : null;
+      if (ellipseState.draggingVertex) {
+        beginEditorOperation(ellipseState);
+        drawEllipsePreview();
+        return;
+      }
       if (ellipseState.draggingHandle === null) {
         if (ellipseState.placed) {
           consumeCanvasInteraction(event);
@@ -538,6 +549,9 @@ function patchWallsLayer() {
         ellipseState.initializing = true;
         ellipseState.initialOrigin = point;
         ellipseState.draggingHandle = 1;
+        ellipseState.draggingVertex = null;
+        ellipseState.rotation = 0;
+        ellipseState.segmentGaps = [];
         setEllipseHandle(0, point);
         setEllipseHandle(1, point);
       } else {
@@ -630,6 +644,12 @@ function patchWallsLayer() {
     }
 
     if (isEllipseToolActive()) {
+      if (ellipseState.draggingVertex) {
+        const point = getEventPoint(this, event.interactionData.destination, event);
+        setEllipseRotationFromVertex(ellipseState.draggingVertex, point);
+        drawEllipsePreview();
+        return;
+      }
       if (ellipseState.draggingHandle === null) return;
       const point = getEventPoint(this, event.interactionData.destination, event);
       setEllipseHandle(ellipseState.draggingHandle, point);
@@ -676,6 +696,7 @@ function patchWallsLayer() {
       editorActive: isAnyEditorToolActive(),
       cubicDraggingHandle: cubicState.draggingHandle,
       ellipseDraggingHandle: ellipseState.draggingHandle,
+      ellipseDraggingVertex: ellipseState.draggingVertex,
       rectangleDraggingHandle: rectangleState.draggingHandle,
       rectangleDraggingVertex: rectangleState.draggingVertex
     });
@@ -684,6 +705,7 @@ function patchWallsLayer() {
     }
     if (isEllipseToolActive()) {
       ellipseState.draggingHandle = null;
+      ellipseState.draggingVertex = null;
       ellipseState.initializing = false;
       ellipseState.initialOrigin = null;
       event.interactionData.clearPreviewContainer = false;
@@ -717,6 +739,7 @@ function patchWallsLayer() {
       editorActive: isAnyEditorToolActive(),
       cubicDraggingHandle: cubicState.draggingHandle,
       ellipseDraggingHandle: ellipseState.draggingHandle,
+      ellipseDraggingVertex: ellipseState.draggingVertex,
       rectangleDraggingHandle: rectangleState.draggingHandle,
       rectangleDraggingVertex: rectangleState.draggingVertex
     });
@@ -725,6 +748,7 @@ function patchWallsLayer() {
     }
     if (isEllipseToolActive()) {
       ellipseState.draggingHandle = null;
+      ellipseState.draggingVertex = null;
       ellipseState.initializing = false;
       ellipseState.initialOrigin = null;
       event.interactionData.clearPreviewContainer = false;
@@ -833,7 +857,10 @@ function shouldRouteWallObjectDragStartToEditor(event) {
   if (!point) return false;
 
   if (isCubicToolActive()) return !cubicState.placed || getCubicHandleAt(point) !== null;
-  if (isEllipseToolActive()) return !ellipseState.placed || getEllipseHandleAt(point) !== null;
+  if (isEllipseToolActive()) return !ellipseState.placed
+    || getEllipseHandleAt(point) !== null
+    || getEllipseVertexAt(point) !== null
+    || getEllipseSegmentAt(point) !== null;
   if (!isRectangleToolActive()) return false;
 
   return !rectangleState.placed
@@ -864,6 +891,22 @@ function handleRectangleCanvasClick(event) {
     event.preventDefault?.();
     event.stopPropagation?.();
     scheduleCanvasInteractionReset(event);
+    return;
+  }
+
+  if (isEllipseToolActive() && ellipseState.placed) {
+    const edit = getEllipseSegmentEditFromEvent(event);
+    debugShapeSelection("ellipse canvas click", {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      altKey: !!event.altKey,
+      edit
+    });
+    if (!edit) return;
+
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    commitEllipseSegmentEdit(edit, event);
     return;
   }
 
@@ -906,6 +949,20 @@ function getRectangleSideEditFromEvent(event) {
     point: {x: point.x, y: point.y},
     remove: isAltInteraction(event)
   };
+}
+
+function getEllipseSegmentEditFromEvent(event) {
+  if (!isEllipseToolActive() || !ellipseState.placed) return null;
+  for (const point of getCanvasClickCandidatePoints(event)) {
+    const segment = getEllipseSegmentAt({x: point.x, y: point.y});
+    if (!segment) continue;
+    return {
+      point: {x: point.x, y: point.y},
+      segment,
+      remove: isAltInteraction(event)
+    };
+  }
+  return null;
 }
 
 function getRectangleSidePointFromEvent(event) {
@@ -953,6 +1010,18 @@ function commitRectangleSideEdit(edit, event=null) {
   rectangleState.lastSideEditAction = Date.now();
   rectangleState.suppressNextSideEditClick = false;
   debugInteractionManagers("after rectangle canvas click commit", event, {edit});
+  scheduleCanvasInteractionReset(event);
+  return true;
+}
+
+function commitEllipseSegmentEdit(edit, event=null) {
+  if (!isEllipseToolActive() || !ellipseState.placed) return false;
+  debugInteractionManagers("before ellipse canvas click commit", event, {edit});
+  if (!editEllipseSegmentWithUndo(edit.segment.index, edit.remove)) return false;
+
+  ellipseState.draggingHandle = null;
+  ellipseState.draggingVertex = null;
+  debugInteractionManagers("after ellipse canvas click commit", event, {edit});
   scheduleCanvasInteractionReset(event);
   return true;
 }
@@ -1012,7 +1081,10 @@ function handleEditorDomPointerDown(event) {
   editorDomDragState.view = canvas?.app?.view ?? null;
 
   if (hit.tool === CUBIC_TOOL) cubicState.draggingHandle = hit.handle;
-  else if (hit.tool === ELLIPSE_TOOL) ellipseState.draggingHandle = hit.handle;
+  else if (hit.tool === ELLIPSE_TOOL) {
+    ellipseState.draggingHandle = hit.handle;
+    ellipseState.draggingVertex = hit.vertex;
+  }
   else if (hit.handle !== null) {
     rectangleState.draggingHandle = hit.handle;
     rectangleState.draggingVertex = null;
@@ -1046,7 +1118,11 @@ function handleEditorDomPointerMove(event) {
     cubicState.placed = true;
     drawCubicPreview();
   } else if (editorDomDragState.tool === ELLIPSE_TOOL) {
-    setEllipseHandle(editorDomDragState.handle, point);
+    if (editorDomDragState.vertex) {
+      setEllipseRotationFromVertex(editorDomDragState.vertex, point);
+    } else {
+      setEllipseHandle(editorDomDragState.handle, point);
+    }
     ellipseState.placed = true;
     drawEllipsePreview();
   } else if (editorDomDragState.handle !== null) {
@@ -1086,6 +1162,7 @@ function finalizeEditorDomDrag(event=null, cancelled=false) {
     drawCubicPreview();
   } else if (editorDomDragState.tool === ELLIPSE_TOOL) {
     ellipseState.draggingHandle = null;
+    ellipseState.draggingVertex = null;
     ellipseState.initializing = false;
     ellipseState.initialOrigin = null;
     if (cancelled) cancelEditorOperation(ellipseState);
@@ -1141,6 +1218,15 @@ function getEditorDomDragHit(event) {
         coordinateLabel: label,
         hitPoint: point,
         editorPoint: ellipseState.handles[handle]
+      });
+      const vertex = getEllipseVertexAt(point);
+      if (vertex) return withDomPointerDragData(event, {
+        tool: ELLIPSE_TOOL,
+        handle: null,
+        vertex,
+        coordinateLabel: label,
+        hitPoint: point,
+        editorPoint: vertex.point
       });
     }
     return null;
@@ -1245,6 +1331,7 @@ function scheduleEditorDragFallback(event, cancelled) {
       activeTool: game.activeTool,
       cubicDraggingHandle: cubicState.draggingHandle,
       ellipseDraggingHandle: ellipseState.draggingHandle,
+      ellipseDraggingVertex: ellipseState.draggingVertex,
       rectangleDraggingHandle: rectangleState.draggingHandle,
       rectangleDraggingVertex: rectangleState.draggingVertex
     });
@@ -1255,13 +1342,15 @@ function scheduleEditorDragFallback(event, cancelled) {
 function hasActiveEditorDrag() {
   return cubicState.draggingHandle !== null
     || ellipseState.draggingHandle !== null
+    || !!ellipseState.draggingVertex
     || rectangleState.draggingHandle !== null
     || !!rectangleState.draggingVertex;
 }
 
 function finalizeActiveEditorDrag(event=null, cancelled=false) {
-  if (isEllipseToolActive() && ellipseState.draggingHandle !== null) {
+  if (isEllipseToolActive() && (ellipseState.draggingHandle !== null || ellipseState.draggingVertex)) {
     ellipseState.draggingHandle = null;
+    ellipseState.draggingVertex = null;
     ellipseState.initializing = false;
     ellipseState.initialOrigin = null;
     if (cancelled) cancelEditorOperation(ellipseState);
@@ -1900,6 +1989,8 @@ function getEditorSnapshot(state) {
       placed: ellipseState.placed,
       handles: clonePoints(ellipseState.handles),
       segments: ellipseState.segments,
+      rotation: ellipseState.rotation,
+      segmentGaps: [...ellipseState.segmentGaps],
       wallTypeTool: ellipseState.wallTypeTool
     };
   }
@@ -1931,8 +2022,11 @@ function restoreEditorSnapshot(state, snapshot) {
     ellipseState.placed = snapshot.placed;
     ellipseState.handles = clonePoints(snapshot.handles);
     ellipseState.segments = snapshot.segments;
+    ellipseState.rotation = Number(snapshot.rotation) || 0;
+    ellipseState.segmentGaps = reconcileEllipseSegmentGaps(snapshot.segmentGaps, ellipseState.segments);
     ellipseState.wallTypeTool = snapshot.wallTypeTool;
     ellipseState.draggingHandle = null;
+    ellipseState.draggingVertex = null;
     ellipseState.initializing = false;
     ellipseState.initialOrigin = null;
     drawEllipsePreview();
@@ -2123,6 +2217,22 @@ function getEllipseHandleAt(point) {
   return index < 0 ? null : index;
 }
 
+function getEllipseVertexAt(point) {
+  if (!ellipseState.placed) return null;
+  const radius = getEllipseVertexHitRadius();
+  for (const vertex of getEllipseVertices()) {
+    if (Math.hypot(vertex.point.x - point.x, vertex.point.y - point.y) <= radius) {
+      return vertex;
+    }
+  }
+  return null;
+}
+
+function getEllipseVertexHitRadius() {
+  const style = getPreviewStyle();
+  return getScaledRadius(style.splitVertexSize + style.outlineWidth + 8);
+}
+
 function updateEllipseInitialHandles(event) {
   const origin = ellipseState.initialOrigin ?? ellipseState.handles[0];
   const destination = ellipseState.handles[1];
@@ -2150,6 +2260,7 @@ function updateEllipseInitialHandles(event) {
 function changeEllipseSegments(delta) {
   if (!isEllipseToolActive()) return;
   ellipseState.segments = clamp(ellipseState.segments + delta, 4, 96);
+  ellipseState.segmentGaps = reconcileEllipseSegmentGaps(ellipseState.segmentGaps, ellipseState.segments);
   drawEllipsePreview();
 }
 
@@ -2170,41 +2281,163 @@ function drawEllipsePreview() {
   if (!ellipseState.placed) return;
 
   const style = getPreviewStyle();
-  const points = getEllipsePoints(ellipseState.segments);
+  const segments = getEllipseSegments();
+  const allSegments = getAllEllipseSegments();
+  const gaps = getEllipseSegmentGaps();
   graphics.lineStyle(getScaledRadius(style.wallWidth), style.wallColor, 0.9);
-  graphics.moveTo(points[0].x, points[0].y);
-  for (let i = 1; i < points.length; i++) {
-    graphics.lineTo(points[i].x, points[i].y);
+  for (const {a, b} of segments) {
+    graphics.moveTo(a.x, a.y);
+    graphics.lineTo(b.x, b.y);
+  }
+
+  for (const segment of allSegments) {
+    if (!gaps.includes(segment.index)) continue;
+    graphics.lineStyle(getScaledRadius(Math.max(style.guideWidth, 1)), style.outlineColor, 0.22);
+    graphics.moveTo(segment.a.x, segment.a.y);
+    graphics.lineTo(segment.b.x, segment.b.y);
   }
 
   const [a, b] = ellipseState.handles;
   graphics.lineStyle(getScaledRadius(style.guideWidth), style.wallColor, 0.45);
   graphics.drawRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
 
-  for (const point of points) {
-    drawPreviewVertex(graphics, point, style);
+  for (const vertex of getEllipseVertices()) {
+    drawEllipseSplitVertex(graphics, vertex, style);
   }
   drawEndpoint(graphics, a, style);
   drawEndpoint(graphics, b, style);
 }
 
 function getEllipsePoints(segments) {
-  const [a, b] = ellipseState.handles;
-  const cx = (a.x + b.x) / 2;
-  const cy = (a.y + b.y) / 2;
-  const rx = Math.abs(b.x - a.x) / 2;
-  const ry = Math.abs(b.y - a.y) / 2;
+  const {cx, cy, rx, ry} = getEllipseGeometry();
+  const rotation = Number(ellipseState.rotation) || 0;
+  const cosRotation = Math.cos(rotation);
+  const sinRotation = Math.sin(rotation);
   const points = [];
 
   for (let i = 0; i <= segments; i++) {
     const angle = (Math.PI * 2 * i) / segments;
+    const x = Math.cos(angle) * rx;
+    const y = Math.sin(angle) * ry;
     points.push({
-      x: cx + Math.cos(angle) * rx,
-      y: cy + Math.sin(angle) * ry
+      x: cx + (x * cosRotation) - (y * sinRotation),
+      y: cy + (x * sinRotation) + (y * cosRotation)
     });
   }
 
   return points;
+}
+
+function getEllipseGeometry() {
+  const [a, b] = ellipseState.handles;
+  return {
+    cx: (a.x + b.x) / 2,
+    cy: (a.y + b.y) / 2,
+    rx: Math.abs(b.x - a.x) / 2,
+    ry: Math.abs(b.y - a.y) / 2
+  };
+}
+
+function getEllipseVertices() {
+  return getEllipsePoints(ellipseState.segments)
+    .slice(0, -1)
+    .map((point, index) => ({index, point}));
+}
+
+function getAllEllipseSegments() {
+  const points = getEllipsePoints(ellipseState.segments);
+  const segments = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    segments.push({index: i, a: points[i], b: points[i + 1]});
+  }
+  return segments;
+}
+
+function getEllipseSegments() {
+  const gaps = getEllipseSegmentGaps();
+  return getAllEllipseSegments().filter((segment) => !gaps.includes(segment.index));
+}
+
+function getEllipseSegmentGaps() {
+  const gaps = reconcileEllipseSegmentGaps(ellipseState.segmentGaps, ellipseState.segments);
+  ellipseState.segmentGaps = gaps;
+  return gaps;
+}
+
+function reconcileEllipseSegmentGaps(source, segmentCount) {
+  if (!Array.isArray(source)) return [];
+  return [...new Set(source
+    .map((index) => Number(index))
+    .filter((index) => Number.isInteger(index) && index >= 0 && index < segmentCount))]
+    .sort((a, b) => a - b);
+}
+
+function getEllipseSegmentAt(point) {
+  if (!ellipseState.placed) return null;
+  const style = getPreviewStyle();
+  const tolerance = getScaledRadius(Math.max(style.wallWidth + 6, 10));
+  let best = null;
+  let bestDistance = Infinity;
+
+  for (const segment of getAllEllipseSegments()) {
+    if (!isPointNearSegmentBounds(point, segment.a, segment.b, tolerance)) continue;
+    const distance = getPointSegmentDistance(point, segment.a, segment.b);
+    if (distance <= tolerance && distance < bestDistance) {
+      best = segment;
+      bestDistance = distance;
+    }
+  }
+
+  return best;
+}
+
+function editEllipseSegmentWithUndo(index, remove=false) {
+  const snapshot = getEditorSnapshot(ellipseState);
+  const edited = editEllipseSegment(index, remove);
+  if (edited) pushEditorUndoSnapshot(ellipseState, snapshot);
+  return edited;
+}
+
+function editEllipseSegment(index, remove=false) {
+  const gaps = getEllipseSegmentGaps();
+  if (remove) {
+    if (gaps.includes(index)) return false;
+    ellipseState.segmentGaps = [...gaps, index].sort((a, b) => a - b);
+    drawEllipsePreview();
+    return true;
+  }
+
+  if (!gaps.includes(index)) return false;
+  ellipseState.segmentGaps = gaps.filter((gap) => gap !== index);
+  drawEllipsePreview();
+  return true;
+}
+
+function setEllipseRotationFromVertex(vertex, point) {
+  if (!vertex || !Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return;
+  const {cx, cy, rx, ry} = getEllipseGeometry();
+  const pointerAngle = Math.atan2(point.y - cy, point.x - cx);
+  const vertexAngle = (Math.PI * 2 * vertex.index) / ellipseState.segments;
+  const baseAngle = Math.atan2(Math.sin(vertexAngle) * ry, Math.cos(vertexAngle) * rx);
+  ellipseState.rotation = normalizeAngle(pointerAngle - baseAngle);
+}
+
+function normalizeAngle(angle) {
+  const fullTurn = Math.PI * 2;
+  return ((angle % fullTurn) + fullTurn) % fullTurn;
+}
+
+function drawEllipseSplitVertex(graphics, vertex, style) {
+  const radius = getScaledRadius(style.splitVertexSize);
+  const highlighted = ellipseState.draggingVertex?.index === vertex.index;
+  graphics.beginFill(highlighted ? style.vertexActiveColor : style.vertexColor, 0.98);
+  graphics.lineStyle(
+    getScaledRadius(style.outlineWidth),
+    highlighted ? style.outlineColor : style.wallColor,
+    0.95
+  );
+  graphics.drawCircle(vertex.point.x, vertex.point.y, radius);
+  graphics.endFill();
 }
 
 function setRectangleHandle(index, point) {
@@ -2847,15 +3080,17 @@ async function applyEllipseWalls() {
   if (!isEllipseToolActive() || !ellipseState.placed) return;
 
   const wallData = WALL_TYPE_DATA[ellipseState.wallTypeTool]?.() ?? WALL_TYPE_DATA.walls();
-  const points = getEllipsePoints(ellipseState.segments);
+  const segments = getEllipseSegments();
+  const segmentGaps = getEllipseSegmentGaps();
   const ellipseId = ellipseState.ellipseId ?? foundry.utils.randomID();
   const walls = [];
+  const wallSegmentIndexes = [];
 
-  for (let i = 0; i < points.length - 1; i++) {
-    const a = points[i];
-    const b = points[i + 1];
+  for (const segment of segments) {
+    const {a, b} = segment;
     const c = [Math.round(a.x), Math.round(a.y), Math.round(b.x), Math.round(b.y)];
     if ((c[0] === c[2]) && (c[1] === c[3])) continue;
+    wallSegmentIndexes.push(segment.index);
     walls.push({
       ...wallData,
       c,
@@ -2863,10 +3098,12 @@ async function applyEllipseWalls() {
         [MODULE_ID]: {
           [ELLIPSE_FLAG]: {
             ellipseId,
-            index: i,
+            index: segment.index,
             wallIds: [],
             handles: clonePoints(ellipseState.handles),
             segments: ellipseState.segments,
+            rotation: ellipseState.rotation,
+            segmentGaps,
             wallTypeTool: ellipseState.wallTypeTool
           }
         }
@@ -2874,15 +3111,27 @@ async function applyEllipseWalls() {
     });
   }
 
-  if (!walls.length) return;
-
   const oldWallIds = getExistingEllipseWallIds();
   const oldWalls = oldWallIds.map((id) => canvas.scene.walls.get(id)).filter(Boolean);
+  if (!walls.length) {
+    if (oldWallIds.length) {
+      canvas.walls.storeHistory("delete", oldWalls.map((wall) => wall.toObject()));
+      oldWallIds.forEach((id) => ellipseState.replacingWallIds.add(id));
+      try {
+        await canvas.scene.deleteEmbeddedDocuments("Wall", oldWallIds);
+      } finally {
+        oldWallIds.forEach((id) => ellipseState.replacingWallIds.delete(id));
+      }
+    }
+    clearEllipsePreview();
+    return;
+  }
+
   const created = await canvas.scene.createEmbeddedDocuments("Wall", walls);
   const wallIds = created.map((wall) => wall.id);
   const flagUpdates = created.map((wall, index) => ({
     _id: wall.id,
-    [`flags.${MODULE_ID}.${ELLIPSE_FLAG}.index`]: index,
+    [`flags.${MODULE_ID}.${ELLIPSE_FLAG}.index`]: wallSegmentIndexes[index] ?? index,
     [`flags.${MODULE_ID}.${ELLIPSE_FLAG}.wallIds`]: wallIds
   }));
   await canvas.scene.updateEmbeddedDocuments("Wall", flagUpdates);
@@ -2985,8 +3234,11 @@ function clearEllipsePreview() {
   ellipseState.initializing = false;
   ellipseState.initialOrigin = null;
   ellipseState.draggingHandle = null;
+  ellipseState.draggingVertex = null;
   ellipseState.ellipseId = null;
   ellipseState.wallIds = [];
+  ellipseState.rotation = 0;
+  ellipseState.segmentGaps = [];
   ellipseState.graphics?.destroy();
   ellipseState.graphics = null;
   setEllipseEditingState(false);
@@ -3165,10 +3417,13 @@ function loadEllipseFromWall(wall) {
   ellipseState.initializing = false;
   ellipseState.initialOrigin = null;
   ellipseState.draggingHandle = null;
+  ellipseState.draggingVertex = null;
   ellipseState.ellipseId = ellipseData.ellipseId ?? null;
   ellipseState.wallIds = Array.isArray(ellipseData.wallIds) ? [...ellipseData.wallIds] : [wall.document.id];
   ellipseState.wallTypeTool = getWallTypeToolFromDocument(wall.document) ?? ellipseData.wallTypeTool ?? "walls";
   ellipseState.segments = clamp(Number(ellipseData.segments) || DEFAULT_ELLIPSE_SEGMENTS, 4, 96);
+  ellipseState.rotation = Number(ellipseData.rotation) || 0;
+  ellipseState.segmentGaps = reconcileEllipseSegmentGaps(ellipseData.segmentGaps, ellipseState.segments);
   ellipseState.handles = ellipseData.handles.map((handle) => ({
     x: Number(handle.x) || 0,
     y: Number(handle.y) || 0
