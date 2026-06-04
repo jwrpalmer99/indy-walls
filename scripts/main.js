@@ -1823,6 +1823,7 @@ function commitEditorOperation(state=getActiveEditorState()) {
 
   state.undoStack.push(before);
   state.redoStack = [];
+  updateEditButtonStates();
 }
 
 function cancelEditorOperation(state=getActiveEditorState()) {
@@ -1834,6 +1835,7 @@ function clearEditorHistory(state) {
   state.undoStack = [];
   state.redoStack = [];
   state.pendingUndoSnapshot = null;
+  updateEditButtonStates();
 }
 
 function undoActiveEditor() {
@@ -1844,6 +1846,7 @@ function undoActiveEditor() {
   const previous = state.undoStack.pop();
   state.redoStack.push(current);
   restoreEditorSnapshot(state, previous);
+  updateEditButtonStates();
 }
 
 function redoActiveEditor() {
@@ -1854,12 +1857,32 @@ function redoActiveEditor() {
   const next = state.redoStack.pop();
   state.undoStack.push(current);
   restoreEditorSnapshot(state, next);
+  updateEditButtonStates();
 }
 
 function pushEditorUndoSnapshot(state, snapshot) {
   if (!state || !snapshot || snapshotsEqual(snapshot, getEditorSnapshot(state))) return;
   state.undoStack.push(snapshot);
   state.redoStack = [];
+  updateEditButtonStates();
+}
+
+function updateEditButtonStates() {
+  const state = getActiveEditorState();
+  const canUndo = !!state?.undoStack.length;
+  const canRedo = !!state?.redoStack.length;
+  for (const id of [CUBIC_EDIT_BUTTONS_ID, ELLIPSE_EDIT_BUTTONS_ID, RECTANGLE_EDIT_BUTTONS_ID]) {
+    const controls = document.getElementById(id);
+    if (!controls) continue;
+    setEditButtonDisabled(controls, "indy-walls.Controls.UndoEdit", !canUndo);
+    setEditButtonDisabled(controls, "indy-walls.Controls.RedoEdit", !canRedo);
+  }
+}
+
+function setEditButtonDisabled(controls, titleKey, disabled) {
+  const title = game.i18n.localize(titleKey);
+  const button = Array.from(controls.querySelectorAll("button")).find((candidate) => candidate.title === title);
+  if (button) button.disabled = disabled;
 }
 
 function getEditorSnapshot(state) {
@@ -2991,6 +3014,7 @@ function setCubicEditingState(editing) {
   document.body?.classList.toggle("indy-walls-cubic-editing", editing);
   ensureCubicEditButtons();
   setEditButtonsVisible(CUBIC_EDIT_BUTTONS_ID, editing);
+  updateEditButtonStates();
   if (editing) positionCubicEditButtons();
 }
 
@@ -3016,6 +3040,7 @@ function setEllipseEditingState(editing) {
   document.body?.classList.toggle("indy-walls-ellipse-editing", editing);
   ensureEllipseEditButtons();
   setEditButtonsVisible(ELLIPSE_EDIT_BUTTONS_ID, editing);
+  updateEditButtonStates();
   if (editing) positionEllipseEditButtons();
 }
 
@@ -3041,6 +3066,7 @@ function setRectangleEditingState(editing) {
   document.body?.classList.toggle("indy-walls-rectangle-editing", editing);
   ensureRectangleEditButtons();
   setEditButtonsVisible(RECTANGLE_EDIT_BUTTONS_ID, editing);
+  updateEditButtonStates();
   if (editing) positionRectangleEditButtons();
 }
 

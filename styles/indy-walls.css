@@ -27,3 +27,15 @@
   border-color: #ff6400;
   color: #ffffff;
 }
+
+.indy-walls-edit-buttons button:disabled {
+  border-color: rgb(120 120 120 / 65%);
+  color: rgb(217 213 201 / 42%);
+  cursor: default;
+  opacity: 0.55;
+}
+
+.indy-walls-edit-buttons button:disabled:hover {
+  border-color: rgb(120 120 120 / 65%);
+  color: rgb(217 213 201 / 42%);
+}
