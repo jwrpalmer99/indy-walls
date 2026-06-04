@@ -550,8 +550,13 @@ function patchWallsLayer() {
         return;
       }
       if (ellipseState.draggingHandle === null) {
+        if (ellipseState.placed) {
+          consumeCanvasInteraction(event);
+          resetEditorCursor(event);
+          drawEllipsePreview();
+          return;
+        }
         beginEditorOperation(ellipseState, true);
-        if (ellipseState.placed) restoreEditSessionWalls();
         ellipseState.placed = false;
         ellipseState.initializing = true;
         ellipseState.initialOrigin = point;
@@ -603,8 +608,13 @@ function patchWallsLayer() {
       }
 
       if (rectangleState.draggingHandle === null) {
+        if (rectangleState.placed) {
+          consumeCanvasInteraction(event);
+          resetEditorCursor(event);
+          drawRectanglePreview();
+          return;
+        }
         beginEditorOperation(rectangleState, true);
-        if (rectangleState.placed) restoreEditSessionWalls();
         rectangleState.placed = false;
         rectangleState.initializing = true;
         rectangleState.draggingHandle = 1;
@@ -624,8 +634,13 @@ function patchWallsLayer() {
 
     cubicState.draggingHandle = getCubicHandleAt({x: hitPoint.x, y: hitPoint.y});
     if (cubicState.draggingHandle === null) {
+      if (cubicState.placed) {
+        consumeCanvasInteraction(event);
+        resetEditorCursor(event);
+        drawCubicPreview();
+        return;
+      }
       beginEditorOperation(cubicState, true);
-      if (cubicState.placed) restoreEditSessionWalls();
       cubicState.placed = false;
       cubicState.initializing = true;
       cubicState.draggingHandle = 3;
@@ -3251,7 +3266,7 @@ function getRectangleVertexHitRadius() {
 }
 
 function getSplitVertexHitRadius(style=getPreviewStyle()) {
-  return getScaledRadius(style.splitVertexSize + style.outlineWidth + 2);
+  return getScaledRadius(style.splitVertexSize + (style.outlineWidth / 2));
 }
 
 function getRectangleCornerHitRadius(style=getPreviewStyle()) {
