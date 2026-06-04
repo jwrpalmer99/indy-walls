@@ -36,15 +36,18 @@ const STYLE_SETTINGS = {
 const CUBIC_TOOL = "indyCubicBezier";
 const ELLIPSE_TOOL = "indyEllipseWall";
 const RECTANGLE_TOOL = "indyRectangleWall";
+const POLYLINE_TOOL = "indyPolylineWall";
 const DEFAULT_CUBIC_SEGMENTS = 10;
 const DEFAULT_ELLIPSE_SEGMENTS = 16;
 const DEFAULT_RECTANGLE_SEGMENTS = 1;
 const CUBIC_FLAG = "cubicBezier";
 const ELLIPSE_FLAG = "ellipse";
 const RECTANGLE_FLAG = "rectangle";
+const POLYLINE_FLAG = "polyline";
 const CUBIC_EDIT_BUTTONS_ID = "indy-walls-cubic-edit-buttons";
 const ELLIPSE_EDIT_BUTTONS_ID = "indy-walls-ellipse-edit-buttons";
 const RECTANGLE_EDIT_BUTTONS_ID = "indy-walls-rectangle-edit-buttons";
+const POLYLINE_EDIT_BUTTONS_ID = "indy-walls-polyline-edit-buttons";
 const SEGMENT_WALL_TYPE_KEYBINDINGS = {
   walls: {label: "Normal", key: "KeyX"},
   doors: {label: "Door", key: "KeyD"},
@@ -229,6 +232,27 @@ const rectangleState = {
   ]
 };
 
+const polylineState = {
+  active: false,
+  placed: false,
+  drawing: false,
+  closed: false,
+  draggingVertex: null,
+  hoveredVertex: null,
+  polylineId: null,
+  wallIds: [],
+  replacingWallIds: new Set(),
+  undoStack: [],
+  redoStack: [],
+  pendingUndoSnapshot: null,
+  wallTypeTool: "walls",
+  wallTypeBySegment: {},
+  segmentGaps: [],
+  graphics: null,
+  previewPoint: null,
+  points: []
+};
+
 const shapeLoadState = {
   allowControlWallLoad: false
 };
@@ -327,6 +351,7 @@ Hooks.on("deleteWall", (wallDocument) => {
   cancelCubicEditingForDeletedWall(wallDocument);
   cancelEllipseEditingForDeletedWall(wallDocument);
   cancelRectangleEditingForDeletedWall(wallDocument);
+  cancelPolylineEditingForDeletedWall(wallDocument);
 });
 
 Hooks.on("drawWall", (wall) => {
@@ -438,6 +463,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
       cubicState.wallTypeTool = toolName;
       ellipseState.wallTypeTool = toolName;
       rectangleState.wallTypeTool = toolName;
+      polylineState.wallTypeTool = toolName;
       if (isControlInteraction(event)) await updateSelectedWalls(toolName);
     };
     tool._indyWallsWrapped = true;
@@ -453,8 +479,10 @@ Hooks.on("getSceneControlButtons", (controls) => {
       if (active) {
         ellipseState.active = false;
         rectangleState.active = false;
+        polylineState.active = false;
         clearEllipsePreview();
         clearRectanglePreview();
+        clearPolylinePreview();
         canvas.walls.activate();
       }
       else clearCubicPreview();
@@ -477,8 +505,10 @@ Hooks.on("getSceneControlButtons", (controls) => {
       if (active) {
         cubicState.active = false;
         rectangleState.active = false;
+        polylineState.active = false;
         clearCubicPreview();
         clearRectanglePreview();
+        clearPolylinePreview();
         canvas.walls.activate();
       }
       else clearEllipsePreview();
@@ -501,8 +531,10 @@ Hooks.on("getSceneControlButtons", (controls) => {
       if (active) {
         cubicState.active = false;
         ellipseState.active = false;
+        polylineState.active = false;
         clearCubicPreview();
         clearEllipsePreview();
+        clearPolylinePreview();
         canvas.walls.activate();
       }
       else clearRectanglePreview();
@@ -514,12 +546,39 @@ Hooks.on("getSceneControlButtons", (controls) => {
       ]
     }
   };
+
+  wallTools[POLYLINE_TOOL] = {
+    name: POLYLINE_TOOL,
+    order: 16,
+    title: "indy-walls.Controls.Polyline",
+    icon: "fa-solid fa-draw-polygon",
+    onChange: (event, active) => {
+      polylineState.active = active;
+      if (active) {
+        cubicState.active = false;
+        ellipseState.active = false;
+        rectangleState.active = false;
+        clearCubicPreview();
+        clearEllipsePreview();
+        clearRectanglePreview();
+        canvas.walls.activate();
+      }
+      else clearPolylinePreview();
+    },
+    toolclip: {
+      heading: "indy-walls.Controls.Polyline",
+      items: [
+        {paragraph: "indy-walls.Tooltips.Polyline"}
+      ]
+    }
+  };
 });
 
 Hooks.on("renderSceneControls", () => {
   positionCubicEditButtons();
   positionEllipseEditButtons();
   positionRectangleEditButtons();
+  positionPolylineEditButtons();
 });
 
 async function updateSelectedWalls(toolName) {
@@ -543,6 +602,8 @@ async function updateSelectedWalls(toolName) {
     if (ellipseData) update[`flags.${MODULE_ID}.${ELLIPSE_FLAG}.wallTypeTool`] = toolName;
     const rectangleData = wall.document.getFlag(MODULE_ID, RECTANGLE_FLAG);
     if (rectangleData) update[`flags.${MODULE_ID}.${RECTANGLE_FLAG}.wallTypeTool`] = toolName;
+    const polylineData = wall.document.getFlag(MODULE_ID, POLYLINE_FLAG);
+    if (polylineData) update[`flags.${MODULE_ID}.${POLYLINE_FLAG}.wallTypeTool`] = toolName;
     return update;
   });
 
@@ -565,6 +626,7 @@ function registerWallTypeControlShortcuts() {
     cubicState.wallTypeTool = toolName;
     ellipseState.wallTypeTool = toolName;
     rectangleState.wallTypeTool = toolName;
+    polylineState.wallTypeTool = toolName;
     updateSelectedWalls(toolName);
   }, {capture: true});
 }
@@ -593,8 +655,13 @@ function patchWallsLayer() {
       editorActive: isAnyEditorToolActive()
     });
 
-    if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive()) {
+    if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive() && !isPolylineToolActive()) {
       return originalDragStart.call(this, event);
+    }
+    if (isPolylineToolActive()) {
+      consumeCanvasInteraction(event);
+      resetEditorCursor(event);
+      return;
     }
 
     event.interactionData.clearPreviewContainer = false;
@@ -727,9 +794,10 @@ function patchWallsLayer() {
   };
 
   WallsLayer.prototype._onDragLeftMove = function(event) {
-    if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive()) {
+    if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive() && !isPolylineToolActive()) {
       return originalDragMove.call(this, event);
     }
+    if (isPolylineToolActive()) return;
 
     if (isEllipseToolActive()) {
       if (ellipseState.draggingVertex) {
@@ -740,7 +808,7 @@ function patchWallsLayer() {
       }
       if (ellipseState.draggingHandle === null) return;
       const point = getEventPoint(this, event.interactionData.destination, event);
-      setEllipseHandle(ellipseState.draggingHandle, point);
+      setEllipseResizeHandle(ellipseState.draggingHandle, point, event);
       if (ellipseState.initializing) {
         updateEllipseInitialHandles(event);
       }
@@ -786,10 +854,16 @@ function patchWallsLayer() {
       ellipseDraggingHandle: ellipseState.draggingHandle,
       ellipseDraggingVertex: ellipseState.draggingVertex,
       rectangleDraggingHandle: rectangleState.draggingHandle,
-      rectangleDraggingVertex: rectangleState.draggingVertex
+      rectangleDraggingVertex: rectangleState.draggingVertex,
+      polylineDraggingVertex: polylineState.draggingVertex
     });
-    if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive()) {
+    if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive() && !isPolylineToolActive()) {
       return originalDragDrop.call(this, event);
+    }
+    if (isPolylineToolActive()) {
+      event.interactionData.clearPreviewContainer = false;
+      resetEditorCursor(event);
+      return;
     }
     if (isEllipseToolActive()) {
       const wasVertexDrag = !!ellipseState.draggingVertex;
@@ -832,10 +906,16 @@ function patchWallsLayer() {
       ellipseDraggingHandle: ellipseState.draggingHandle,
       ellipseDraggingVertex: ellipseState.draggingVertex,
       rectangleDraggingHandle: rectangleState.draggingHandle,
-      rectangleDraggingVertex: rectangleState.draggingVertex
+      rectangleDraggingVertex: rectangleState.draggingVertex,
+      polylineDraggingVertex: polylineState.draggingVertex
     });
-    if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive()) {
+    if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive() && !isPolylineToolActive()) {
       return originalDragCancel.call(this, event);
+    }
+    if (isPolylineToolActive()) {
+      event.interactionData.clearPreviewContainer = false;
+      resetEditorCursor(event);
+      return;
     }
     if (isEllipseToolActive()) {
       const wasVertexDrag = !!ellipseState.draggingVertex;
@@ -871,7 +951,7 @@ function patchWallsLayer() {
   };
 
   WallsLayer.prototype._onMouseWheel = function(event) {
-    if (!getActiveEditorState()?.placed || !event.ctrlKey) {
+    if (!getActiveEditorState()?.placed || !event.ctrlKey || isPolylineToolActive()) {
       return originalMouseWheel.call(this, event);
     }
 
@@ -954,6 +1034,9 @@ function shouldRouteWallObjectDragStartToEditor(event) {
     || getEllipseHandleAt(point) !== null
     || getEllipseVertexAt(point) !== null
     || getEllipseSegmentAt(point) !== null;
+  if (isPolylineToolActive()) return !polylineState.placed
+    || getPolylineVertexAt(point) !== null
+    || getPolylineSegmentAt(point) !== null;
   if (!isRectangleToolActive()) return false;
 
   return !rectangleState.placed
@@ -973,6 +1056,7 @@ function registerRectangleCanvasClickHandler() {
   view.addEventListener("mousedown", handleEditorCanvasMouseEvent, {capture: true});
   view.addEventListener("mouseup", handleEditorCanvasMouseEvent, {capture: true});
   view.addEventListener("click", handleRectangleCanvasClick, {capture: true});
+  view.addEventListener("dblclick", handlePolylineCanvasDoubleClick, {capture: true});
   rectangleCanvasClickViews.add(view);
   debugShapeSelection("registered rectangle canvas click handler", {
     tagName: view.tagName,
@@ -986,6 +1070,10 @@ function registerRectangleCanvasClickHandler() {
 function updateLastCanvasPointerPoint(event) {
   const point = getClientInteractionPoint(event);
   if (point) lastCanvasPointerState.point = point;
+  if (point && isPolylineToolActive() && polylineState.drawing) {
+    polylineState.previewPoint = point;
+    drawPolylinePreview();
+  }
 }
 
 function handleCanvasSegmentEditPointerDown(event) {
@@ -994,9 +1082,15 @@ function handleCanvasSegmentEditPointerDown(event) {
     startControlShapeSelect(event);
     return;
   }
+  if (isPolylineToolActive() && getEditorDomDragHit(event)) return;
 
   const pending = getActiveCanvasSegmentEdit(event);
   if (!pending) {
+    if (isPolylineToolActive()) {
+      if (getEditorDomDragHit(event)) return;
+      consumeCanvasInteraction(event);
+      scheduleEditorInteractionReset(event);
+    }
     return;
   }
 
@@ -1128,6 +1222,19 @@ function handleRectangleCanvasClick(event) {
     return;
   }
 
+  if (isPolylineToolActive()) {
+    debugShapeSelection("polyline canvas click", {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      altKey: !!event.altKey,
+      placed: polylineState.placed,
+      drawing: polylineState.drawing
+    });
+    consumeCanvasInteraction(event);
+    handlePolylineCanvasClick(event);
+    return;
+  }
+
   if (isPlacedEditorActive()) {
     debugShapeSelection("editor canvas click blocked", {
       clientX: event.clientX,
@@ -1204,6 +1311,48 @@ function handleRectangleCanvasClick(event) {
   commitRectangleSideEdit(edit, event);
 }
 
+function handlePolylineCanvasDoubleClick(event) {
+  if (Number.isFinite(event.button) && event.button !== 0) return;
+  if (!isPolylineToolActive() || !polylineState.drawing) return;
+
+  const snapshot = getEditorSnapshot(polylineState);
+  const close = shouldClosePolylineAtEvent(event);
+  debugShapeSelection("polyline canvas double click finish drawing", {
+    clientX: event.clientX,
+    clientY: event.clientY,
+    pointCount: polylineState.points.length,
+    close
+  });
+  consumeCanvasInteraction(event);
+  if (close) closePolyline();
+  polylineState.drawing = false;
+  polylineState.previewPoint = null;
+  drawPolylinePreview();
+  pushEditorUndoSnapshot(polylineState, snapshot);
+  scheduleEditorInteractionReset(event);
+}
+
+function shouldClosePolylineAtEvent(event) {
+  if (polylineState.points.length < 3) return false;
+  const point = getClientInteractionPoint(event);
+  return isPolylineClosePoint(point) || isPolylineClosePoint(polylineState.points.at(-1));
+}
+
+function isPolylineClosePoint(point) {
+  const first = polylineState.points[0];
+  if (!first || !Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return false;
+  return Math.hypot(first.x - point.x, first.y - point.y) <= getPolylineVertexHitRadius();
+}
+
+function closePolyline() {
+  if (polylineState.points.length < 3) return false;
+  if (isPolylineClosePoint(polylineState.points.at(-1))) polylineState.points.pop();
+  if (polylineState.points.length < 3) return false;
+  polylineState.closed = true;
+  polylineState.segmentGaps = reconcilePolylineSegmentGaps(polylineState.segmentGaps, getPolylineSegmentCount());
+  return true;
+}
+
 function getActiveCanvasSegmentEdit(event) {
   if (isCubicToolActive() && cubicState.placed && !isCubicSegmentClickSuppressed()) {
     const edit = getCubicSegmentEditFromEvent(event);
@@ -1218,6 +1367,11 @@ function getActiveCanvasSegmentEdit(event) {
   if (isRectangleToolActive() && rectangleState.placed) {
     const edit = getRectangleSideEditFromEvent(event);
     if (edit) return {tool: "rectangle", edit};
+  }
+
+  if (isPolylineToolActive() && polylineState.placed) {
+    const edit = getPolylineSegmentEditFromEvent(event);
+    if (edit) return {tool: "polyline", edit};
   }
 
   return null;
@@ -1264,6 +1418,7 @@ function commitCanvasSegmentEdit(tool, edit, event=null) {
   if (tool === "cubic") return commitCubicSegmentEdit(edit, event);
   if (tool === "ellipse") return commitEllipseSegmentEdit(edit, event);
   if (tool === "rectangle") return commitRectangleSideEdit(edit, event);
+  if (tool === "polyline") return commitPolylineSegmentEdit(edit, event);
   return false;
 }
 
@@ -1482,6 +1637,16 @@ function handleEditorDomPointerDown(event) {
     return;
   }
 
+  if (hit.tool === POLYLINE_TOOL && hit.vertex && event.altKey) {
+    const snapshot = getEditorSnapshot(polylineState);
+    const removed = removePolylineVertex(hit.vertex.index);
+    if (removed) pushEditorUndoSnapshot(polylineState, snapshot);
+    polylineState.draggingVertex = null;
+    polylineState.hoveredVertex = null;
+    scheduleEditorInteractionReset(event);
+    return;
+  }
+
   const state = getActiveEditorState();
   beginEditorOperation(state);
   editorDomDragState.active = true;
@@ -1503,6 +1668,7 @@ function handleEditorDomPointerDown(event) {
     ellipseState.draggingVertex = null;
     rectangleState.draggingHandle = null;
     rectangleState.draggingVertex = null;
+    polylineState.draggingVertex = null;
   }
   else if (hit.tool === CUBIC_TOOL) {
     cubicState.draggingHandle = hit.handle;
@@ -1512,6 +1678,9 @@ function handleEditorDomPointerDown(event) {
     ellipseState.draggingHandle = hit.handle;
     ellipseState.draggingVertex = hit.vertex;
     if (hit.vertex) markSuppressEllipseSegmentClick();
+  }
+  else if (hit.tool === POLYLINE_TOOL) {
+    polylineState.draggingVertex = hit.vertex;
   }
   else if (hit.handle !== null) {
     rectangleState.draggingHandle = hit.handle;
@@ -1553,10 +1722,14 @@ function handleEditorDomPointerMove(event) {
     if (editorDomDragState.vertex) {
       setEllipseRotationFromVertex(editorDomDragState.vertex, point);
     } else {
-      setEllipseHandle(editorDomDragState.handle, point);
+      setEllipseResizeHandle(editorDomDragState.handle, point, event);
     }
     ellipseState.placed = true;
     drawEllipsePreview();
+  } else if (editorDomDragState.tool === POLYLINE_TOOL && editorDomDragState.vertex) {
+    setPolylineVertex(editorDomDragState.vertex.index, point);
+    polylineState.previewPoint = null;
+    drawPolylinePreview();
   } else if (editorDomDragState.handle !== null) {
     setRectangleHandle(editorDomDragState.handle, point);
     rectangleState.placed = true;
@@ -1612,6 +1785,13 @@ function finalizeEditorDomDrag(event=null, cancelled=false) {
     if (cancelled) cancelEditorOperation(rectangleState);
     else commitEditorOperation(rectangleState);
     drawRectanglePreview();
+  } else if (editorDomDragState.tool === POLYLINE_TOOL) {
+    polylineState.draggingVertex = null;
+    polylineState.hoveredVertex = null;
+    if (cancelled) cancelEditorOperation(polylineState);
+    else commitEditorOperation(polylineState);
+    canvasSegmentEditState.ignoreClickUntil = Date.now() + 500;
+    drawPolylinePreview();
   }
 
   editorDomDragState.active = false;
@@ -1681,6 +1861,32 @@ function getEditorDomDragHit(event) {
       const vertex = getEllipseVertexAt(point);
       if (vertex) return withDomPointerDragData(event, {
         tool: ELLIPSE_TOOL,
+        handle: null,
+        vertex,
+        move: false,
+        coordinateLabel: label,
+        hitPoint: point,
+        editorPoint: vertex.point
+      });
+    }
+    return null;
+  }
+
+  if (isPolylineToolActive() && polylineState.placed) {
+    for (const {label, point} of getCanvasClickPointCandidates(event)) {
+      const movePoint = getEditorMoveHandleAt(POLYLINE_TOOL, point);
+      if (movePoint) return withDomPointerDragData(event, {
+        tool: POLYLINE_TOOL,
+        handle: null,
+        vertex: null,
+        move: true,
+        coordinateLabel: label,
+        hitPoint: point,
+        editorPoint: movePoint
+      });
+      const vertex = getPolylineVertexAt(point);
+      if (vertex) return withDomPointerDragData(event, {
+        tool: POLYLINE_TOOL,
         handle: null,
         vertex,
         move: false,
@@ -1782,13 +1988,14 @@ function isCanvasDomEvent(event) {
 }
 
 function isAnyEditorToolActive() {
-  return isCubicToolActive() || isEllipseToolActive() || isRectangleToolActive();
+  return isCubicToolActive() || isEllipseToolActive() || isRectangleToolActive() || isPolylineToolActive();
 }
 
 function isPlacedEditorActive() {
   return (isCubicToolActive() && cubicState.placed)
     || (isEllipseToolActive() && ellipseState.placed)
-    || (isRectangleToolActive() && rectangleState.placed);
+    || (isRectangleToolActive() && rectangleState.placed)
+    || (isPolylineToolActive() && polylineState.placed);
 }
 
 function registerEditorDragFallback() {
@@ -1811,7 +2018,8 @@ function scheduleEditorDragFallback(event, cancelled) {
       ellipseDraggingHandle: ellipseState.draggingHandle,
       ellipseDraggingVertex: ellipseState.draggingVertex,
       rectangleDraggingHandle: rectangleState.draggingHandle,
-      rectangleDraggingVertex: rectangleState.draggingVertex
+      rectangleDraggingVertex: rectangleState.draggingVertex,
+      polylineDraggingVertex: polylineState.draggingVertex
     });
     finalizeActiveEditorDrag(event, cancelled);
   }, 0);
@@ -1822,7 +2030,8 @@ function hasActiveEditorDrag() {
     || ellipseState.draggingHandle !== null
     || !!ellipseState.draggingVertex
     || rectangleState.draggingHandle !== null
-    || !!rectangleState.draggingVertex;
+    || !!rectangleState.draggingVertex
+    || !!polylineState.draggingVertex;
 }
 
 function finalizeActiveEditorDrag(event=null, cancelled=false) {
@@ -1848,6 +2057,13 @@ function finalizeActiveEditorDrag(event=null, cancelled=false) {
     if (cancelled) cancelEditorOperation(cubicState);
     else commitEditorOperation(cubicState);
     drawCubicPreview();
+  } else if (isPolylineToolActive() && polylineState.draggingVertex) {
+    polylineState.draggingVertex = null;
+    polylineState.hoveredVertex = null;
+    if (cancelled) cancelEditorOperation(polylineState);
+    else commitEditorOperation(polylineState);
+    canvasSegmentEditState.ignoreClickUntil = Date.now() + 500;
+    drawPolylinePreview();
   }
 
   scheduleEditorInteractionReset(event);
@@ -2015,7 +2231,8 @@ function isPointNearSegmentBounds(point, start, end, tolerance) {
 function hasIndyShapeFlag(wallDocument) {
   return !!(wallDocument?.getFlag(MODULE_ID, CUBIC_FLAG)
     || wallDocument?.getFlag(MODULE_ID, ELLIPSE_FLAG)
-    || wallDocument?.getFlag(MODULE_ID, RECTANGLE_FLAG));
+    || wallDocument?.getFlag(MODULE_ID, RECTANGLE_FLAG)
+    || wallDocument?.getFlag(MODULE_ID, POLYLINE_FLAG));
 }
 
 function getPointSegmentDistance(point, start, end) {
@@ -2037,22 +2254,26 @@ function loadShapeFromExistingWall(wall) {
   const cubicData = wall.document.getFlag(MODULE_ID, CUBIC_FLAG);
   const ellipseData = wall.document.getFlag(MODULE_ID, ELLIPSE_FLAG);
   const rectangleData = wall.document.getFlag(MODULE_ID, RECTANGLE_FLAG);
+  const polylineData = wall.document.getFlag(MODULE_ID, POLYLINE_FLAG);
   debugShapeSelection("loadShapeFromExistingWall flags", {
     wallId: wall.document.id,
     hasCubic: !!cubicData,
     hasEllipse: !!ellipseData,
-    hasRectangle: !!rectangleData
+    hasRectangle: !!rectangleData,
+    hasPolyline: !!polylineData
   });
-  if (!cubicData && !ellipseData && !rectangleData) return false;
+  if (!cubicData && !ellipseData && !rectangleData && !polylineData) return false;
 
   clearCubicPreview();
   clearEllipsePreview();
   clearRectanglePreview();
+  clearPolylinePreview();
 
   shapeLoadState.allowControlWallLoad = true;
   try {
     if (rectangleData) loadRectangleFromWall(wall);
     else if (ellipseData) loadEllipseFromWall(wall);
+    else if (polylineData) loadPolylineFromWall(wall);
     else loadCubicCurveFromWall(wall);
   } finally {
     shapeLoadState.allowControlWallLoad = false;
@@ -2319,7 +2540,7 @@ function addUniqueInteractionPoint(points, label, point) {
 
 function registerCurveEditorShortcuts() {
   window.addEventListener("wheel", (event) => {
-    if (!getActiveEditorState()?.placed || !event.ctrlKey) return;
+    if (!getActiveEditorState()?.placed || !event.ctrlKey || isPolylineToolActive()) return;
 
     event.preventDefault();
     event.stopPropagation();
@@ -2368,6 +2589,7 @@ function registerCurveEditorShortcuts() {
       cubicState.active = false;
       ellipseState.active = false;
       rectangleState.active = false;
+      polylineState.active = false;
       canvas.walls.activate({tool: "select"});
     } else if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault();
@@ -2394,10 +2616,15 @@ function isRectangleToolActive() {
   return game.user.isGM && game.activeTool === RECTANGLE_TOOL && rectangleState.active;
 }
 
+function isPolylineToolActive() {
+  return game.user.isGM && game.activeTool === POLYLINE_TOOL && polylineState.active;
+}
+
 function getActiveEditorState() {
   if (isCubicToolActive()) return cubicState;
   if (isEllipseToolActive()) return ellipseState;
   if (isRectangleToolActive()) return rectangleState;
+  if (isPolylineToolActive()) return polylineState;
   return null;
 }
 
@@ -2405,6 +2632,7 @@ function getActiveEditorTool() {
   if (isCubicToolActive()) return CUBIC_TOOL;
   if (isEllipseToolActive()) return ELLIPSE_TOOL;
   if (isRectangleToolActive()) return RECTANGLE_TOOL;
+  if (isPolylineToolActive()) return POLYLINE_TOOL;
   return null;
 }
 
@@ -2412,6 +2640,7 @@ function getEditorStateForTool(tool) {
   if (tool === CUBIC_TOOL) return cubicState;
   if (tool === ELLIPSE_TOOL) return ellipseState;
   if (tool === RECTANGLE_TOOL) return rectangleState;
+  if (tool === POLYLINE_TOOL) return polylineState;
   return null;
 }
 
@@ -2438,9 +2667,11 @@ function pasteCopiedEditorShape() {
   clearCubicPreview();
   clearEllipsePreview();
   clearRectanglePreview();
+  clearPolylinePreview();
   cubicState.active = tool === CUBIC_TOOL;
   ellipseState.active = tool === ELLIPSE_TOOL;
   rectangleState.active = tool === RECTANGLE_TOOL;
+  polylineState.active = tool === POLYLINE_TOOL;
   canvas.walls.activate({tool});
 
   const state = getEditorStateForTool(tool);
@@ -2449,6 +2680,7 @@ function pasteCopiedEditorShape() {
   if (tool === CUBIC_TOOL) state.curveId = null;
   else if (tool === ELLIPSE_TOOL) state.ellipseId = null;
   else if (tool === RECTANGLE_TOOL) state.rectangleId = null;
+  else if (tool === POLYLINE_TOOL) state.polylineId = null;
 
   const pastePoint = getLastCanvasPointerPoint();
   const center = getEditorShapeCenter(tool);
@@ -2518,6 +2750,7 @@ function changeHoveredSegmentWallType(toolName) {
 function getHoveredEditorSegment(point) {
   if (isCubicToolActive()) return getCubicSegmentAt(point);
   if (isEllipseToolActive()) return getEllipseSegmentAt(point);
+  if (isPolylineToolActive()) return getPolylineSegmentAt(point);
   if (isRectangleToolActive()) {
     const side = getRectangleSideAt(point);
     if (!side) return null;
@@ -2533,12 +2766,14 @@ function applyActiveWalls() {
   if (isCubicToolActive()) applyCubicWalls();
   else if (isEllipseToolActive()) applyEllipseWalls();
   else if (isRectangleToolActive()) applyRectangleWalls();
+  else if (isPolylineToolActive()) applyPolylineWalls();
 }
 
 function clearActivePreview() {
   if (isCubicToolActive()) clearCubicPreview();
   else if (isEllipseToolActive()) clearEllipsePreview();
   else if (isRectangleToolActive()) clearRectanglePreview();
+  else if (isPolylineToolActive()) clearPolylinePreview();
 }
 
 async function deleteActiveEditorWalls() {
@@ -2566,6 +2801,7 @@ async function deleteActiveEditorWalls() {
   cubicState.active = false;
   ellipseState.active = false;
   rectangleState.active = false;
+  polylineState.active = false;
   canvas.walls.activate({tool: "select"});
 }
 
@@ -2573,6 +2809,7 @@ function getExistingActiveEditorWallIds() {
   if (isCubicToolActive()) return getExistingCurveWallIds();
   if (isEllipseToolActive()) return getExistingEllipseWallIds();
   if (isRectangleToolActive()) return getExistingRectangleWallIds();
+  if (isPolylineToolActive()) return getExistingPolylineWallIds();
   return [];
 }
 
@@ -2639,7 +2876,7 @@ function updateEditButtonStates() {
   const state = getActiveEditorState();
   const canUndo = !!state?.undoStack.length;
   const canRedo = !!state?.redoStack.length;
-  for (const id of [CUBIC_EDIT_BUTTONS_ID, ELLIPSE_EDIT_BUTTONS_ID, RECTANGLE_EDIT_BUTTONS_ID]) {
+  for (const id of [CUBIC_EDIT_BUTTONS_ID, ELLIPSE_EDIT_BUTTONS_ID, RECTANGLE_EDIT_BUTTONS_ID, POLYLINE_EDIT_BUTTONS_ID]) {
     const controls = document.getElementById(id);
     if (!controls) continue;
     setEditButtonDisabled(controls, "indy-walls.Controls.UndoEdit", !canUndo);
@@ -2674,6 +2911,18 @@ function getEditorSnapshot(state) {
       segmentGaps: [...ellipseState.segmentGaps],
       wallTypeBySegment: cloneWallTypeBySegment(ellipseState.wallTypeBySegment),
       wallTypeTool: ellipseState.wallTypeTool
+    };
+  }
+
+  if (state === polylineState) {
+    return {
+      placed: polylineState.placed,
+      drawing: polylineState.drawing,
+      closed: polylineState.closed,
+      points: clonePoints(polylineState.points),
+      segmentGaps: [...polylineState.segmentGaps],
+      wallTypeBySegment: cloneWallTypeBySegment(polylineState.wallTypeBySegment),
+      wallTypeTool: polylineState.wallTypeTool
     };
   }
 
@@ -2716,6 +2965,21 @@ function restoreEditorSnapshot(state, snapshot) {
     ellipseState.initializing = false;
     ellipseState.initialOrigin = null;
     drawEllipsePreview();
+    return;
+  }
+
+  if (state === polylineState) {
+    polylineState.placed = snapshot.placed;
+    polylineState.drawing = !!snapshot.drawing;
+    polylineState.closed = !!snapshot.closed;
+    polylineState.points = clonePoints(snapshot.points ?? []);
+    polylineState.segmentGaps = reconcilePolylineSegmentGaps(snapshot.segmentGaps, getPolylineSegmentCount());
+    polylineState.wallTypeBySegment = cloneWallTypeBySegment(snapshot.wallTypeBySegment);
+    polylineState.wallTypeTool = snapshot.wallTypeTool;
+    polylineState.draggingVertex = null;
+    polylineState.hoveredVertex = null;
+    polylineState.previewPoint = null;
+    drawPolylinePreview();
     return;
   }
 
@@ -2811,6 +3075,7 @@ function redrawActivePreview() {
   if (cubicState.placed) drawCubicPreview();
   if (ellipseState.placed) drawEllipsePreview();
   if (rectangleState.placed) drawRectanglePreview();
+  if (polylineState.placed) drawPolylinePreview();
 }
 
 function getPreviewStyle() {
@@ -2909,6 +3174,9 @@ function getEditorShapeCenter(tool) {
   if (tool === CUBIC_TOOL && cubicState.placed) {
     return getPointsCenter(getCubicPoints(cubicState.segments));
   }
+  if (tool === POLYLINE_TOOL && polylineState.placed) {
+    return getPointsCenter(polylineState.points);
+  }
   return null;
 }
 
@@ -2942,6 +3210,7 @@ function translateEditorShape(tool, dx, dy) {
   if (tool === CUBIC_TOOL) cubicState.handles = translatePoints(cubicState.handles, dx, dy);
   else if (tool === ELLIPSE_TOOL) ellipseState.handles = translatePoints(ellipseState.handles, dx, dy);
   else if (tool === RECTANGLE_TOOL) rectangleState.handles = translatePoints(rectangleState.handles, dx, dy);
+  else if (tool === POLYLINE_TOOL) polylineState.points = translatePoints(polylineState.points, dx, dy);
 }
 
 function translatePoints(points, dx, dy) {
@@ -2952,6 +3221,7 @@ function drawEditorPreview(tool) {
   if (tool === CUBIC_TOOL) drawCubicPreview();
   else if (tool === ELLIPSE_TOOL) drawEllipsePreview();
   else if (tool === RECTANGLE_TOOL) drawRectanglePreview();
+  else if (tool === POLYLINE_TOOL) drawPolylinePreview();
 }
 
 function setHandle(index, point) {
@@ -3130,6 +3400,23 @@ function editCubicSegment(index, remove=false) {
 
 function setEllipseHandle(index, point) {
   ellipseState.handles[index] = {x: point.x, y: point.y};
+}
+
+function setEllipseResizeHandle(index, point, event=null) {
+  if (!isAltInteraction(event)) {
+    setEllipseHandle(index, point);
+    return;
+  }
+
+  const oppositeIndex = index === 0 ? 1 : 0;
+  const opposite = ellipseState.handles[oppositeIndex];
+  const dx = point.x - opposite.x;
+  const dy = point.y - opposite.y;
+  const size = Math.max(Math.abs(dx), Math.abs(dy));
+  setEllipseHandle(index, {
+    x: opposite.x + Math.sign(dx || 1) * size,
+    y: opposite.y + Math.sign(dy || 1) * size
+  });
 }
 
 function getEllipseHandleAt(point) {
@@ -3956,6 +4243,474 @@ function getSidePoints(side, start, end) {
   ];
 }
 
+function handlePolylineCanvasClick(event) {
+  const point = getClientInteractionPoint(event);
+  if (!point) return false;
+
+  const snapshot = getEditorSnapshot(polylineState);
+  if (!polylineState.placed) {
+    polylineState.placed = true;
+    polylineState.drawing = true;
+    polylineState.polylineId = null;
+    polylineState.wallIds = [];
+    polylineState.wallTypeBySegment = {};
+    polylineState.segmentGaps = [];
+    polylineState.closed = false;
+    polylineState.points = [point];
+    polylineState.previewPoint = point;
+    clearEditorHistory(polylineState);
+    drawPolylinePreview();
+    return true;
+  }
+
+  if (!polylineState.drawing) return false;
+  if (polylineState.points.length >= 3 && isPolylineClosePoint(point)) {
+    polylineState.previewPoint = polylineState.points[0];
+    drawPolylinePreview();
+    return true;
+  }
+
+  const last = polylineState.points.at(-1);
+  const minDistance = getScaledRadius(Math.max(getPreviewStyle().vertexSize, 4));
+  if (!last || Math.hypot(last.x - point.x, last.y - point.y) > minDistance) {
+    polylineState.points = [...polylineState.points, point];
+    polylineState.segmentGaps = reconcilePolylineSegmentGaps(polylineState.segmentGaps, getPolylineSegmentCount());
+    pushEditorUndoSnapshot(polylineState, snapshot);
+  }
+  polylineState.previewPoint = point;
+  drawPolylinePreview();
+  return true;
+}
+
+function drawPolylinePreview() {
+  const layer = canvas?.walls;
+  if (!layer) return;
+
+  if (!polylineState.graphics || polylineState.graphics._destroyed) {
+    polylineState.graphics = new PIXI.Graphics();
+    layer.preview.addChild(polylineState.graphics);
+  } else if (!polylineState.graphics.parent) {
+    layer.preview.addChild(polylineState.graphics);
+  }
+
+  const graphics = polylineState.graphics;
+  graphics.clear();
+  setPolylineEditingState(polylineState.placed);
+  if (!polylineState.placed) return;
+
+  const style = getPreviewStyle();
+  const segments = getPolylineSegments();
+  const allSegments = getAllPolylineSegments();
+  const gaps = getPolylineSegmentGaps();
+  for (const segment of segments) {
+    graphics.lineStyle(getScaledRadius(style.wallWidth), getSegmentPreviewColor(polylineState, segment, style), 0.9);
+    graphics.moveTo(segment.a.x, segment.a.y);
+    graphics.lineTo(segment.b.x, segment.b.y);
+  }
+
+  for (const segment of allSegments) {
+    if (!gaps.includes(segment.index)) continue;
+    graphics.lineStyle(
+      getScaledRadius(Math.max(style.guideWidth, 1)),
+      getSegmentPreviewColor(polylineState, segment, style),
+      0.22
+    );
+    graphics.moveTo(segment.a.x, segment.a.y);
+    graphics.lineTo(segment.b.x, segment.b.y);
+  }
+
+  const last = polylineState.points.at(-1);
+  const preview = polylineState.previewPoint;
+  if (polylineState.drawing && last && preview && Math.hypot(last.x - preview.x, last.y - preview.y) > 0.1) {
+    const previewSegment = {index: getPolylineSegmentCount(), a: last, b: preview};
+    graphics.lineStyle(getScaledRadius(style.wallWidth), getSegmentPreviewColor(polylineState, previewSegment, style), 0.55);
+    graphics.moveTo(last.x, last.y);
+    graphics.lineTo(preview.x, preview.y);
+    drawPreviewVertex(graphics, preview, style);
+  }
+
+  for (const vertex of getPolylineVertices()) {
+    drawPolylineVertex(graphics, vertex, style);
+  }
+  if (polylineState.points.length > 1) drawMoveHandle(graphics, getEditorShapeCenter(POLYLINE_TOOL), style);
+}
+
+function getPolylineVertices() {
+  return polylineState.points.map((point, index) => ({index, point}));
+}
+
+function getPolylineVertexAt(point) {
+  if (!polylineState.placed) return null;
+  const radius = getPolylineVertexHitRadius();
+  for (const vertex of getPolylineVertices()) {
+    if (Math.hypot(vertex.point.x - point.x, vertex.point.y - point.y) <= radius) {
+      return vertex;
+    }
+  }
+  return null;
+}
+
+function getPolylineVertexHitRadius() {
+  return getSplitVertexHitRadius(getPreviewStyle());
+}
+
+function setPolylineVertex(index, point) {
+  if (!Number.isInteger(index) || !polylineState.points[index]) return;
+  polylineState.points[index] = {x: point.x, y: point.y};
+}
+
+function drawPolylineVertex(graphics, vertex, style) {
+  const radius = getScaledRadius(style.splitVertexSize);
+  const highlighted = polylineState.draggingVertex?.index === vertex.index || polylineState.hoveredVertex?.index === vertex.index;
+  graphics.beginFill(highlighted ? style.vertexActiveColor : style.vertexColor, 0.98);
+  graphics.lineStyle(
+    getScaledRadius(style.outlineWidth),
+    highlighted ? style.outlineColor : style.wallColor,
+    0.95
+  );
+  graphics.drawCircle(vertex.point.x, vertex.point.y, radius);
+  graphics.endFill();
+}
+
+function getPolylineSegmentCount() {
+  if (polylineState.closed && polylineState.points.length > 2) return polylineState.points.length;
+  return Math.max(polylineState.points.length - 1, 0);
+}
+
+function getAllPolylineSegments() {
+  const segments = [];
+  for (let i = 0; i < polylineState.points.length - 1; i++) {
+    segments.push({index: i, a: polylineState.points[i], b: polylineState.points[i + 1]});
+  }
+  if (polylineState.closed && polylineState.points.length > 2) {
+    segments.push({
+      index: polylineState.points.length - 1,
+      a: polylineState.points.at(-1),
+      b: polylineState.points[0]
+    });
+  }
+  return segments;
+}
+
+function getPolylineSegments() {
+  const gaps = getPolylineSegmentGaps();
+  return getAllPolylineSegments().filter((segment) => !gaps.includes(segment.index));
+}
+
+function getPolylineSegmentGaps() {
+  const gaps = reconcilePolylineSegmentGaps(polylineState.segmentGaps, getPolylineSegmentCount());
+  polylineState.segmentGaps = gaps;
+  return gaps;
+}
+
+function reconcilePolylineSegmentGaps(source, segmentCount) {
+  if (!Array.isArray(source)) return [];
+  return [...new Set(source
+    .map((index) => Number(index))
+    .filter((index) => Number.isInteger(index) && index >= 0 && index < segmentCount))]
+    .sort((a, b) => a - b);
+}
+
+function getPolylineSegmentAt(point) {
+  if (!polylineState.placed) return null;
+  const style = getPreviewStyle();
+  const tolerance = getScaledRadius(Math.max(style.wallWidth + 6, 10));
+  let best = null;
+  let bestDistance = Infinity;
+
+  for (const segment of getAllPolylineSegments()) {
+    if (!isPointNearSegmentBounds(point, segment.a, segment.b, tolerance)) continue;
+    const distance = getPointSegmentDistance(point, segment.a, segment.b);
+    if (distance <= tolerance && distance < bestDistance) {
+      best = segment;
+      bestDistance = distance;
+    }
+  }
+
+  return best;
+}
+
+function getPolylineSegmentEditFromEvent(event) {
+  const point = getClientInteractionPoint(event);
+  const segment = point ? getPolylineSegmentAt(point) : null;
+  if (!segment) return null;
+  return {
+    index: segment.index,
+    point,
+    remove: event.altKey
+  };
+}
+
+function commitPolylineSegmentEdit(edit, event=null) {
+  if (!edit) return false;
+  const edited = editPolylineSegmentWithUndo(edit.index, edit.remove, edit.point);
+  if (edited) {
+    debugShapeSelection("polyline segment edit", {
+      index: edit.index,
+      remove: edit.remove,
+      eventType: event?.type
+    });
+    scheduleEditorInteractionReset(event);
+  }
+  return edited;
+}
+
+function editPolylineSegmentWithUndo(index, remove=false, point=null) {
+  const snapshot = getEditorSnapshot(polylineState);
+  const edited = editPolylineSegment(index, remove, point);
+  if (edited) pushEditorUndoSnapshot(polylineState, snapshot);
+  return edited;
+}
+
+function editPolylineSegment(index, remove=false, point=null) {
+  const gaps = getPolylineSegmentGaps();
+  if (remove) {
+    if (gaps.includes(index)) return false;
+    polylineState.segmentGaps = [...gaps, index].sort((a, b) => a - b);
+    drawPolylinePreview();
+    return true;
+  }
+
+  if (gaps.includes(index)) {
+    polylineState.segmentGaps = gaps.filter((gap) => gap !== index);
+    drawPolylinePreview();
+    return true;
+  }
+
+  return addPolylineVertexAtSegment(index, point);
+}
+
+function addPolylineVertexAtSegment(index, point) {
+  if (!Number.isInteger(index) || !Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return false;
+  if (index < 0 || index >= getPolylineSegmentCount()) return false;
+
+  const segment = getAllPolylineSegments()[index];
+  if (!segment) return false;
+  const minDistance = getScaledRadius(Math.max(getPreviewStyle().vertexSize, 4));
+  if (Math.hypot(segment.a.x - point.x, segment.a.y - point.y) <= minDistance) return false;
+  if (Math.hypot(segment.b.x - point.x, segment.b.y - point.y) <= minDistance) return false;
+
+  const insertIndex = polylineState.closed && index === polylineState.points.length - 1
+    ? polylineState.points.length
+    : index + 1;
+  polylineState.points.splice(insertIndex, 0, {x: point.x, y: point.y});
+  polylineState.segmentGaps = shiftPolylineGapsForInsert(polylineState.segmentGaps, index);
+  polylineState.wallTypeBySegment = shiftPolylineWallTypesForInsert(polylineState.wallTypeBySegment, index);
+  polylineState.previewPoint = null;
+  drawPolylinePreview();
+  return true;
+}
+
+function removePolylineVertex(index) {
+  if (!Number.isInteger(index) || !polylineState.points[index]) return false;
+  if (polylineState.points.length <= (polylineState.closed ? 3 : 2)) return false;
+
+  const pointCountBefore = polylineState.points.length;
+  const closed = polylineState.closed;
+  polylineState.points.splice(index, 1);
+  polylineState.segmentGaps = shiftPolylineGapsForRemove(polylineState.segmentGaps, index, pointCountBefore, closed);
+  polylineState.wallTypeBySegment = shiftPolylineWallTypesForRemove(polylineState.wallTypeBySegment, index, pointCountBefore, closed);
+  polylineState.previewPoint = null;
+  drawPolylinePreview();
+  return true;
+}
+
+function shiftPolylineGapsForInsert(source, splitIndex) {
+  return [...new Set((source ?? []).map((gap) => {
+    const index = Number(gap);
+    if (!Number.isInteger(index)) return null;
+    return index > splitIndex ? index + 1 : index;
+  }).filter((index) => index !== null))]
+    .sort((a, b) => a - b);
+}
+
+function shiftPolylineGapsForRemove(source, vertexIndex, pointCountBefore, closed=false) {
+  if (closed) return shiftClosedPolylineGapsForRemove(source, vertexIndex, pointCountBefore);
+
+  const result = new Set();
+  const segmentCountBefore = Math.max(pointCountBefore - 1, 0);
+  const segmentCountAfter = Math.max(pointCountBefore - 2, 0);
+  for (const gap of source ?? []) {
+    const index = Number(gap);
+    if (!Number.isInteger(index)) continue;
+    if (vertexIndex === 0) {
+      if (index > 0) result.add(index - 1);
+    } else if (vertexIndex === pointCountBefore - 1) {
+      if (index < segmentCountBefore - 1) result.add(index);
+    } else if (index === vertexIndex || index === vertexIndex - 1) {
+      result.add(vertexIndex - 1);
+    } else if (index > vertexIndex) {
+      result.add(index - 1);
+    } else {
+      result.add(index);
+    }
+  }
+  return [...result].filter((index) => index >= 0 && index < segmentCountAfter).sort((a, b) => a - b);
+}
+
+function shiftClosedPolylineGapsForRemove(source, vertexIndex, pointCountBefore) {
+  const result = new Set();
+  const segmentCountAfter = Math.max(pointCountBefore - 1, 0);
+  const previousSegment = vertexIndex === 0 ? pointCountBefore - 1 : vertexIndex - 1;
+  const nextSegment = vertexIndex;
+  const mergedSegment = vertexIndex === 0 ? segmentCountAfter - 1 : vertexIndex - 1;
+
+  for (const gap of source ?? []) {
+    const index = Number(gap);
+    if (!Number.isInteger(index)) continue;
+    if (index === previousSegment || index === nextSegment) {
+      result.add(mergedSegment);
+    } else if (index > vertexIndex) {
+      result.add(index - 1);
+    } else {
+      result.add(index);
+    }
+  }
+  return [...result].filter((index) => index >= 0 && index < segmentCountAfter).sort((a, b) => a - b);
+}
+
+function shiftPolylineWallTypesForInsert(source={}, splitIndex) {
+  const result = {};
+  const splitKey = String(splitIndex);
+  const splitType = source?.[splitKey];
+  for (const [key, value] of Object.entries(source ?? {})) {
+    const index = Number(key);
+    if (!Number.isInteger(index)) continue;
+    result[String(index > splitIndex ? index + 1 : index)] = value;
+  }
+  if (splitType) result[String(splitIndex + 1)] = splitType;
+  return result;
+}
+
+function shiftPolylineWallTypesForRemove(source={}, vertexIndex, pointCountBefore, closed=false) {
+  if (closed) return shiftClosedPolylineWallTypesForRemove(source, vertexIndex, pointCountBefore);
+
+  const result = {};
+  const segmentCountBefore = Math.max(pointCountBefore - 1, 0);
+  const segmentCountAfter = Math.max(pointCountBefore - 2, 0);
+  const previousType = source?.[String(vertexIndex - 1)];
+  const nextType = source?.[String(vertexIndex)];
+  for (const [key, value] of Object.entries(source ?? {})) {
+    const index = Number(key);
+    if (!Number.isInteger(index)) continue;
+    if (vertexIndex === 0) {
+      if (index > 0) result[String(index - 1)] = value;
+    } else if (vertexIndex === pointCountBefore - 1) {
+      if (index < segmentCountBefore - 1) result[String(index)] = value;
+    } else if (index === vertexIndex || index === vertexIndex - 1) {
+      continue;
+    } else {
+      result[String(index > vertexIndex ? index - 1 : index)] = value;
+    }
+  }
+  const mergedType = previousType ?? nextType;
+  if (mergedType && vertexIndex > 0 && vertexIndex < pointCountBefore - 1) result[String(vertexIndex - 1)] = mergedType;
+  return Object.fromEntries(Object.entries(result)
+    .filter(([key]) => {
+      const index = Number(key);
+      return Number.isInteger(index) && index >= 0 && index < segmentCountAfter;
+    }));
+}
+
+function shiftClosedPolylineWallTypesForRemove(source={}, vertexIndex, pointCountBefore) {
+  const result = {};
+  const segmentCountAfter = Math.max(pointCountBefore - 1, 0);
+  const previousSegment = vertexIndex === 0 ? pointCountBefore - 1 : vertexIndex - 1;
+  const nextSegment = vertexIndex;
+  const mergedSegment = vertexIndex === 0 ? segmentCountAfter - 1 : vertexIndex - 1;
+  const mergedType = source?.[String(previousSegment)] ?? source?.[String(nextSegment)];
+
+  for (const [key, value] of Object.entries(source ?? {})) {
+    const index = Number(key);
+    if (!Number.isInteger(index)) continue;
+    if (index === previousSegment || index === nextSegment) continue;
+    result[String(index > vertexIndex ? index - 1 : index)] = value;
+  }
+  if (mergedType) result[String(mergedSegment)] = mergedType;
+  return Object.fromEntries(Object.entries(result)
+    .filter(([key]) => {
+      const index = Number(key);
+      return Number.isInteger(index) && index >= 0 && index < segmentCountAfter;
+    }));
+}
+
+async function applyPolylineWalls() {
+  if (!isPolylineToolActive() || !polylineState.placed || polylineState.points.length < 2) return;
+
+  const segments = getPolylineSegments();
+  const segmentGaps = getPolylineSegmentGaps();
+  const polylineId = polylineState.polylineId ?? foundry.utils.randomID();
+  const walls = [];
+  const wallSegmentIndexes = [];
+
+  for (const segment of segments) {
+    const {a, b} = segment;
+    const wallData = getSegmentWallData(polylineState, getSegmentKey(segment));
+    const c = [Math.round(a.x), Math.round(a.y), Math.round(b.x), Math.round(b.y)];
+    if ((c[0] === c[2]) && (c[1] === c[3])) continue;
+    wallSegmentIndexes.push(segment.index);
+    walls.push({
+      ...wallData,
+      c,
+      flags: {
+        [MODULE_ID]: {
+          [POLYLINE_FLAG]: {
+            polylineId,
+            index: segment.index,
+            wallIds: [],
+            points: clonePoints(polylineState.points),
+            closed: polylineState.closed,
+            segmentGaps,
+            wallTypeBySegment: cloneWallTypeBySegment(polylineState.wallTypeBySegment),
+            wallTypeTool: polylineState.wallTypeTool
+          }
+        }
+      }
+    });
+  }
+
+  const oldWallIds = getExistingPolylineWallIds();
+  const oldWalls = oldWallIds.map((id) => canvas.scene.walls.get(id)).filter(Boolean);
+  if (!walls.length) {
+    if (oldWallIds.length) {
+      canvas.walls.storeHistory("delete", oldWalls.map((wall) => wall.toObject()));
+      oldWallIds.forEach((id) => polylineState.replacingWallIds.add(id));
+      try {
+        await canvas.scene.deleteEmbeddedDocuments("Wall", oldWallIds);
+      } finally {
+        oldWallIds.forEach((id) => polylineState.replacingWallIds.delete(id));
+      }
+    }
+    clearPolylinePreview();
+    return;
+  }
+
+  const created = await canvas.scene.createEmbeddedDocuments("Wall", walls);
+  const wallIds = created.map((wall) => wall.id);
+  const flagUpdates = created.map((wall, index) => ({
+    _id: wall.id,
+    [`flags.${MODULE_ID}.${POLYLINE_FLAG}.index`]: wallSegmentIndexes[index] ?? index,
+    [`flags.${MODULE_ID}.${POLYLINE_FLAG}.wallIds`]: wallIds
+  }));
+  await canvas.scene.updateEmbeddedDocuments("Wall", flagUpdates);
+
+  if (oldWallIds.length) {
+    canvas.walls.storeHistory("delete", oldWalls.map((wall) => wall.toObject()));
+    oldWallIds.forEach((id) => polylineState.replacingWallIds.add(id));
+    try {
+      await canvas.scene.deleteEmbeddedDocuments("Wall", oldWallIds);
+    } finally {
+      oldWallIds.forEach((id) => polylineState.replacingWallIds.delete(id));
+    }
+  }
+
+  canvas.walls.storeHistory("create", created.map((wall) => wall.toObject()));
+  ui.notifications.info(game.i18n.format("indy-walls.Notifications.PolylineWallsCreated", {
+    count: created.length
+  }));
+  clearPolylinePreview();
+}
+
 async function applyRectangleWalls() {
   if (!isRectangleToolActive() || !rectangleState.placed) return;
 
@@ -4234,6 +4989,25 @@ function clearRectanglePreview() {
   setRectangleEditingState(false);
 }
 
+function clearPolylinePreview() {
+  restoreEditSessionWalls();
+  clearEditorHistory(polylineState);
+  polylineState.placed = false;
+  polylineState.drawing = false;
+  polylineState.draggingVertex = null;
+  polylineState.hoveredVertex = null;
+  polylineState.polylineId = null;
+  polylineState.wallIds = [];
+  polylineState.wallTypeBySegment = {};
+  polylineState.segmentGaps = [];
+  polylineState.closed = false;
+  polylineState.previewPoint = null;
+  polylineState.points = [];
+  polylineState.graphics?.destroy();
+  polylineState.graphics = null;
+  setPolylineEditingState(false);
+}
+
 function setCubicEditingState(editing) {
   document.body?.classList.toggle("indy-walls-cubic-editing", editing);
   ensureCubicEditButtons();
@@ -4313,6 +5087,30 @@ function positionRectangleEditButtons() {
   positionEditButtons({id: RECTANGLE_EDIT_BUTTONS_ID, toolName: RECTANGLE_TOOL, fallbackTop: 200});
 }
 
+function setPolylineEditingState(editing) {
+  document.body?.classList.toggle("indy-walls-polyline-editing", editing);
+  ensurePolylineEditButtons();
+  setEditButtonsVisible(POLYLINE_EDIT_BUTTONS_ID, editing);
+  updateEditButtonStates();
+  if (editing) positionPolylineEditButtons();
+}
+
+function ensurePolylineEditButtons() {
+  ensureEditButtons({
+    id: POLYLINE_EDIT_BUTTONS_ID,
+    buttons: [
+      ["indy-walls.Controls.UndoEdit", "fa-solid fa-rotate-left", () => undoActiveEditor()],
+      ["indy-walls.Controls.RedoEdit", "fa-solid fa-rotate-right", () => redoActiveEditor()],
+      ["indy-walls.Controls.ApplyPolyline", "fa-solid fa-check", () => applyPolylineWalls()],
+      ["indy-walls.Controls.CancelPolyline", "fa-solid fa-xmark", () => clearPolylinePreview()]
+    ]
+  });
+}
+
+function positionPolylineEditButtons() {
+  positionEditButtons({id: POLYLINE_EDIT_BUTTONS_ID, toolName: POLYLINE_TOOL, fallbackTop: 240});
+}
+
 function cancelCubicEditingForDeletedWall(wallDocument) {
   if (!cubicState.placed || !cubicState.curveId) return;
   if (cubicState.replacingWallIds.has(wallDocument.id)) return;
@@ -4352,6 +5150,19 @@ function cancelRectangleEditingForDeletedWall(wallDocument) {
   if (game.activeTool === RECTANGLE_TOOL) canvas.walls.activate({tool: "select"});
 }
 
+function cancelPolylineEditingForDeletedWall(wallDocument) {
+  if (!polylineState.placed || !polylineState.polylineId) return;
+  if (polylineState.replacingWallIds.has(wallDocument.id)) return;
+
+  const polylineData = wallDocument.getFlag(MODULE_ID, POLYLINE_FLAG);
+  const samePolyline = polylineData?.polylineId === polylineState.polylineId;
+  const knownWall = polylineState.wallIds.includes(wallDocument.id);
+  if (!samePolyline && !knownWall) return;
+
+  clearPolylinePreview();
+  if (game.activeTool === POLYLINE_TOOL) canvas.walls.activate({tool: "select"});
+}
+
 function loadCubicCurveFromWall(wall) {
   const cubicData = wall.document.getFlag(MODULE_ID, CUBIC_FLAG);
   if (!Array.isArray(cubicData?.handles) || cubicData.handles.length !== 4) return;
@@ -4359,6 +5170,7 @@ function loadCubicCurveFromWall(wall) {
   cubicState.active = true;
   ellipseState.active = false;
   rectangleState.active = false;
+  polylineState.active = false;
   clearEditorHistory(cubicState);
   cubicState.placed = true;
   cubicState.initializing = false;
@@ -4391,6 +5203,7 @@ function loadEllipseFromWall(wall) {
   cubicState.active = false;
   ellipseState.active = true;
   rectangleState.active = false;
+  polylineState.active = false;
   clearEditorHistory(ellipseState);
   ellipseState.placed = true;
   ellipseState.initializing = false;
@@ -4426,6 +5239,7 @@ function loadRectangleFromWall(wall) {
   cubicState.active = false;
   ellipseState.active = false;
   rectangleState.active = true;
+  polylineState.active = false;
   clearEditorHistory(rectangleState);
   rectangleState.placed = true;
   rectangleState.initializing = false;
@@ -4453,6 +5267,39 @@ function loadRectangleFromWall(wall) {
   drawRectanglePreview();
 }
 
+function loadPolylineFromWall(wall) {
+  const polylineData = wall.document.getFlag(MODULE_ID, POLYLINE_FLAG);
+  if (!Array.isArray(polylineData?.points) || polylineData.points.length < 2) return;
+
+  cubicState.active = false;
+  ellipseState.active = false;
+  rectangleState.active = false;
+  polylineState.active = true;
+  clearEditorHistory(polylineState);
+  polylineState.placed = true;
+  polylineState.drawing = false;
+  polylineState.draggingVertex = null;
+  polylineState.hoveredVertex = null;
+  polylineState.polylineId = polylineData.polylineId ?? null;
+  polylineState.wallIds = Array.isArray(polylineData.wallIds) ? [...polylineData.wallIds] : [wall.document.id];
+  polylineState.wallTypeTool = getWallTypeToolFromDocument(wall.document) ?? polylineData.wallTypeTool ?? "walls";
+  polylineState.points = polylineData.points.map((point) => ({
+    x: Number(point.x) || 0,
+    y: Number(point.y) || 0
+  }));
+  polylineState.closed = !!polylineData.closed;
+  polylineState.segmentGaps = reconcilePolylineSegmentGaps(polylineData.segmentGaps, getPolylineSegmentCount());
+  polylineState.previewPoint = null;
+  polylineState.wallTypeBySegment = {
+    ...cloneWallTypeBySegment(polylineData.wallTypeBySegment),
+    ...getShapeWallTypeByIndexedFlag(polylineState.wallIds, POLYLINE_FLAG)
+  };
+
+  canvas.walls.activate({tool: POLYLINE_TOOL});
+  hideEditSessionWalls(polylineState.wallIds);
+  drawPolylinePreview();
+}
+
 function cloneHandles() {
   return clonePoints(cubicState.handles);
 }
@@ -4467,6 +5314,10 @@ function getExistingEllipseWallIds() {
 
 function getExistingRectangleWallIds() {
   return rectangleState.wallIds.filter((id) => canvas.scene.walls.has(id));
+}
+
+function getExistingPolylineWallIds() {
+  return polylineState.wallIds.filter((id) => canvas.scene.walls.has(id));
 }
 
 function normalizeRectangleSideSegments(source={}) {
