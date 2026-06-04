@@ -1,8 +1,6 @@
 import {
   clamp,
   clonePoints,
-  drawHandle,
-  drawVertex,
   ensureEditButtons,
   getEventPoint,
   getHandleAt as getHandleIndexAt,
@@ -12,21 +10,67 @@ import {
   setEditButtonsVisible
 } from "./curve-common.js";
 import {
+  beginEditorOperation as beginSessionEditorOperation,
+  cancelEditorOperation as cancelSessionEditorOperation,
+  clearEditorHistory as clearSessionEditorHistory,
+  cloneWallTypeBySegment,
+  commitEditorOperation as commitSessionEditorOperation,
+  pushEditorUndoSnapshot as pushSessionEditorUndoSnapshot
+} from "./editor-session.js";
+import {
+  configureInteractionHelpers,
+  consumeCanvasInteraction,
+  debugInteractionManagers,
+  getClientInteractionPoint,
+  getClientInteractionPoints,
+  getInteractionPoint,
+  resetCanvasCursor,
+  resetEditorCursor,
+  scheduleEditorInteractionReset
+} from "./interaction.js";
+import {
+  configurePreviewStyle,
+  drawBezierHandle,
+  drawEndpoint,
+  drawMoveHandle,
+  drawPreviewVertex,
+  getPreviewStyle,
+  getSplitVertexHitRadius,
+  registerStyleSettings
+} from "./preview-style.js";
+import {
+  applyCubicWalls as applyCubicWallsImpl,
+  cancelCubicEditingForDeletedWall as cancelCubicEditingForDeletedWallImpl,
+  changeCubicSegments as changeCubicSegmentsImpl,
+  clearCubicPreview as clearCubicPreviewImpl,
   CUBIC_EDIT_BUTTONS_ID,
   CUBIC_FLAG,
   CUBIC_TOOL,
   DEFAULT_CUBIC_SEGMENTS,
   cubicState,
+  drawCubicPreview as drawCubicPreviewImpl,
+  editCubicSegment as editCubicSegmentImpl,
+  editCubicSegmentWithUndo as editCubicSegmentWithUndoImpl,
   getAllCubicSegments,
+  getCubicSegmentAt as getCubicSegmentAtImpl,
   getCubicPoints,
   getCubicSegmentGaps,
   getCubicSegments,
+  getExistingCurveWallIds as getExistingCurveWallIdsImpl,
   initializeCubicControls,
+  loadCubicCurveFromWall as loadCubicCurveFromWallImpl,
   reconcileCubicSegmentGaps,
   setHandle
 } from "./shapes/cubic.js";
 import {
+  applyEllipseWalls as applyEllipseWallsImpl,
+  cancelEllipseEditingForDeletedWall as cancelEllipseEditingForDeletedWallImpl,
+  changeEllipseSegments as changeEllipseSegmentsImpl,
+  clearEllipsePreview as clearEllipsePreviewImpl,
   DEFAULT_ELLIPSE_SEGMENTS,
+  drawEllipsePreview as drawEllipsePreviewImpl,
+  editEllipseSegment as editEllipseSegmentImpl,
+  editEllipseSegmentWithUndo as editEllipseSegmentWithUndoImpl,
   ELLIPSE_EDIT_BUTTONS_ID,
   ELLIPSE_FLAG,
   ELLIPSE_TOOL,
@@ -34,9 +78,14 @@ import {
   getAllEllipseSegments,
   getEllipseGeometry,
   getEllipsePoints,
+  getEllipseSegmentAt as getEllipseSegmentAtImpl,
   getEllipseSegmentGaps,
   getEllipseSegments,
+  getEllipseVertexAt as getEllipseVertexAtImpl,
+  getEllipseVertexHitRadius as getEllipseVertexHitRadiusImpl,
   getEllipseVertices,
+  getExistingEllipseWallIds as getExistingEllipseWallIdsImpl,
+  loadEllipseFromWall as loadEllipseFromWallImpl,
   reconcileEllipseSegmentGaps,
   setEllipseHandle,
   setEllipseResizeHandle,
@@ -44,131 +93,74 @@ import {
   updateEllipseInitialHandles
 } from "./shapes/ellipse.js";
 import {
+  cloneRectangleSideEnabled,
+  cloneRectangleSideGaps,
+  cloneRectangleSideRatios,
   DEFAULT_RECTANGLE_SEGMENTS,
+  getAllSideSegments,
+  getDefaultRectangleSideEnabled,
+  getDefaultRectangleSideGaps,
+  getDefaultRectangleSideRatios,
+  getRectangleBounds,
+  getRectangleBoundsSides,
+  getRectangleRatioSpacing,
+  getRectangleSegmentIndexAt,
+  getRectangleSegmentKey,
+  getRectangleSegments,
+  getRectangleSideAt as getRectangleSideAtWithTolerance,
+  getRectangleSideGaps,
+  getRectangleSideRatios,
+  getRectangleSideVertices,
+  reconcileRectangleSideGaps,
+  reconcileRectangleSideRatios,
   RECTANGLE_EDIT_BUTTONS_ID,
   RECTANGLE_FLAG,
   RECTANGLE_TOOL,
-  rectangleState
+  rectangleState,
+  setRectangleHandle,
+  setRectangleVertex
 } from "./shapes/rectangle.js";
 import {
+  applyPolylineWalls as applyPolylineWallsImpl,
+  cancelPolylineEditingForDeletedWall as cancelPolylineEditingForDeletedWallImpl,
+  clearPolylinePreview as clearPolylinePreviewImpl,
+  closePolyline as closePolylineImpl,
+  commitPolylineSegmentEdit as commitPolylineSegmentEditImpl,
+  drawPolylinePreview as drawPolylinePreviewImpl,
+  editPolylineSegment as editPolylineSegmentImpl,
+  editPolylineSegmentWithUndo as editPolylineSegmentWithUndoImpl,
+  getExistingPolylineWallIds as getExistingPolylineWallIdsImpl,
   POLYLINE_EDIT_BUTTONS_ID,
   POLYLINE_FLAG,
   POLYLINE_TOOL,
   getAllPolylineSegments,
   getPolylineSegmentCount,
+  getPolylineSegmentAt as getPolylineSegmentAtImpl,
+  getPolylineSegmentEditFromEvent as getPolylineSegmentEditFromEventImpl,
   getPolylineSegmentGaps,
   getPolylineSegments,
+  getPolylineVertexAt as getPolylineVertexAtImpl,
+  getPolylineVertexHitRadius as getPolylineVertexHitRadiusImpl,
+  getPolylineVertices as getPolylineVerticesImpl,
+  handlePolylineCanvasClick as handlePolylineCanvasClickImpl,
+  isPolylineClosePoint as isPolylineClosePointImpl,
+  loadPolylineFromWall as loadPolylineFromWallImpl,
   polylineState,
   reconcilePolylineSegmentGaps,
-  shiftPolylineGapsForInsert,
-  shiftPolylineGapsForRemove,
-  shiftPolylineWallTypesForInsert,
-  shiftPolylineWallTypesForRemove
+  removePolylineVertex as removePolylineVertexImpl,
+  setPolylineVertex as setPolylineVertexImpl
 } from "./shapes/polyline.js";
+import {
+  getSegmentWallData,
+  getWallTypeToolFromDocument,
+  getWallTypeToolName,
+  SEGMENT_WALL_TYPE_KEYBINDINGS,
+  WALL_TYPE_DATA
+} from "./wall-types.js";
 
 const MODULE_ID = "indy-walls";
 const QUICK_WALL_TYPE_SETTING = "quickWallTypeChange";
 const DEBUG_SETTING = "debugShapeSelection";
-const STYLE_SETTINGS = {
-  wallColor: "previewWallColor",
-  windowWallColor: "previewWindowWallColor",
-  doorWallColor: "previewDoorWallColor",
-  secretWallColor: "previewSecretWallColor",
-  invisibleWallColor: "previewInvisibleWallColor",
-  terrainWallColor: "previewTerrainWallColor",
-  wallWidth: "previewWallWidth",
-  vertexColor: "previewVertexColor",
-  vertexActiveColor: "previewVertexActiveColor",
-  vertexSize: "previewVertexSize",
-  endpointColor: "previewEndpointColor",
-  endpointSize: "previewEndpointSize",
-  handleColor: "previewHandleColor",
-  handleSize: "previewHandleSize",
-  outlineColor: "previewOutlineColor",
-  outlineWidth: "previewOutlineWidth"
-};
-const SEGMENT_WALL_TYPE_KEYBINDINGS = {
-  walls: {label: "Normal", key: "KeyX"},
-  doors: {label: "Door", key: "KeyD"},
-  windows: {label: "Window", key: "KeyW"},
-  invisible: {label: "Invisible", key: "KeyI"},
-  secret: {label: "Secret", key: "KeyS"},
-  terrain: {label: "Terrain", key: "KeyT"}
-};
-
-const WALL_TYPE_DATA = {
-  walls: () => ({
-    light: CONST.WALL_SENSE_TYPES.NORMAL,
-    sight: CONST.WALL_SENSE_TYPES.NORMAL,
-    sound: CONST.WALL_SENSE_TYPES.NORMAL,
-    move: CONST.WALL_MOVEMENT_TYPES.NORMAL,
-    door: CONST.WALL_DOOR_TYPES.NONE,
-    ds: CONST.WALL_DOOR_STATES.CLOSED
-  }),
-  terrain: () => ({
-    light: CONST.WALL_SENSE_TYPES.LIMITED,
-    sight: CONST.WALL_SENSE_TYPES.LIMITED,
-    sound: CONST.WALL_SENSE_TYPES.LIMITED,
-    move: CONST.WALL_MOVEMENT_TYPES.NORMAL,
-    door: CONST.WALL_DOOR_TYPES.NONE,
-    ds: CONST.WALL_DOOR_STATES.CLOSED
-  }),
-  invisible: () => ({
-    light: CONST.WALL_SENSE_TYPES.NONE,
-    sight: CONST.WALL_SENSE_TYPES.NONE,
-    sound: CONST.WALL_SENSE_TYPES.NONE,
-    move: CONST.WALL_MOVEMENT_TYPES.NORMAL,
-    door: CONST.WALL_DOOR_TYPES.NONE,
-    ds: CONST.WALL_DOOR_STATES.CLOSED
-  }),
-  ethereal: () => ({
-    light: CONST.WALL_SENSE_TYPES.NORMAL,
-    sight: CONST.WALL_SENSE_TYPES.NORMAL,
-    sound: CONST.WALL_SENSE_TYPES.NONE,
-    move: CONST.WALL_MOVEMENT_TYPES.NONE,
-    door: CONST.WALL_DOOR_TYPES.NONE,
-    ds: CONST.WALL_DOOR_STATES.CLOSED
-  }),
-  windows: () => ({
-    light: CONST.WALL_SENSE_TYPES.NORMAL,
-    sight: CONST.WALL_SENSE_TYPES.NORMAL,
-    sound: CONST.WALL_SENSE_TYPES.NORMAL,
-    move: CONST.WALL_MOVEMENT_TYPES.NONE,
-    door: CONST.WALL_DOOR_TYPES.NONE,
-    ds: CONST.WALL_DOOR_STATES.CLOSED
-  }),
-  doors: () => ({
-    light: CONST.WALL_SENSE_TYPES.NORMAL,
-    sight: CONST.WALL_SENSE_TYPES.NORMAL,
-    sound: CONST.WALL_SENSE_TYPES.NORMAL,
-    move: CONST.WALL_MOVEMENT_TYPES.NORMAL,
-    door: CONST.WALL_DOOR_TYPES.DOOR,
-    ds: CONST.WALL_DOOR_STATES.CLOSED
-  }),
-  secret: () => ({
-    light: CONST.WALL_SENSE_TYPES.NORMAL,
-    sight: CONST.WALL_SENSE_TYPES.NORMAL,
-    sound: CONST.WALL_SENSE_TYPES.NORMAL,
-    move: CONST.WALL_MOVEMENT_TYPES.NORMAL,
-    door: CONST.WALL_DOOR_TYPES.SECRET,
-    ds: CONST.WALL_DOOR_STATES.CLOSED
-  })
-};
-const WALL_TYPE_TOOL_ALIASES = {
-  wall: "walls",
-  normal: "walls",
-  terrainWall: "terrain",
-  invisibleWall: "invisible",
-  etherealWall: "ethereal",
-  window: "windows",
-  windowWall: "windows",
-  windowWalls: "windows",
-  door: "doors",
-  doorWall: "doors",
-  secretDoor: "secret",
-  secretDoorWall: "secret"
-};
-
 const shapeLoadState = {
   allowControlWallLoad: false
 };
@@ -216,6 +208,8 @@ const rectangleCanvasClickViews = new WeakSet();
 const editorDomDragViews = new WeakSet();
 
 Hooks.once("init", () => {
+  configurePreviewStyle({moduleId: MODULE_ID, onChange: redrawActivePreview});
+  configureInteractionHelpers({moduleId: MODULE_ID, debugSetting: DEBUG_SETTING, debug: debugShapeSelection});
   game.settings.register(MODULE_ID, QUICK_WALL_TYPE_SETTING, {
     name: game.i18n.localize("indy-walls.Settings.QuickWallTypeChange.Name"),
     hint: game.i18n.localize("indy-walls.Settings.QuickWallTypeChange.Hint"),
@@ -281,75 +275,6 @@ Hooks.on("drawWall", (wall) => {
 Hooks.on("refreshWall", (wall) => {
   applyHiddenEditWallState(wall);
 });
-
-function registerStyleSettings() {
-  for (const [key, data] of Object.entries({
-    wallColor: ["PreviewWallColor", String, "#c10e56ff"],
-    windowWallColor: ["PreviewWindowWallColor", String, "#b784a7ff"],
-    doorWallColor: ["PreviewDoorWallColor", String, "#123c69ff"],
-    secretWallColor: ["PreviewSecretWallColor", String, "#7a3db8ff"],
-    invisibleWallColor: ["PreviewInvisibleWallColor", String, "#8ecae6ff"],
-    terrainWallColor: ["PreviewTerrainWallColor", String, "#3f9b4fff"],
-    vertexColor: ["PreviewVertexColor", String, "#ffffff"],
-    vertexActiveColor: ["PreviewVertexActiveColor", String, "#aaff44"],
-    endpointColor: ["PreviewEndpointColor", String, "#ff4444"],
-    handleColor: ["PreviewHandleColor", String, "#aaff44"],
-    outlineColor: ["PreviewOutlineColor", String, "#111111"]
-  })) {
-    registerColorStyleSetting(key, data);
-  }
-
-  for (const [key, data] of Object.entries({
-    wallWidth: ["PreviewWallWidth", Number, 4, {min: 1, max: 12, step: 1}],
-    vertexSize: ["PreviewVertexSize", Number, 5, {min: 2, max: 20, step: 1}],
-    endpointSize: ["PreviewEndpointSize", Number, 12, {min: 4, max: 32, step: 1}],
-    handleSize: ["PreviewHandleSize", Number, 12, {min: 4, max: 32, step: 1}],
-    outlineWidth: ["PreviewOutlineWidth", Number, 2, {min: 0, max: 8, step: 0.5}]
-  })) {
-    const [label, type, defaultValue, range] = data;
-    game.settings.register(MODULE_ID, STYLE_SETTINGS[key], {
-      name: game.i18n.localize(`indy-walls.Settings.${label}.Name`),
-      hint: game.i18n.localize(`indy-walls.Settings.${label}.Hint`),
-      scope: "client",
-      config: true,
-      type,
-      default: defaultValue,
-      range,
-      onChange: redrawActivePreview
-    });
-  }
-}
-
-function registerColorStyleSetting(key, data) {
-  const [label, type, defaultValue] = data;
-  const settingKey = STYLE_SETTINGS[key];
-  const name = game.i18n.localize(`indy-walls.Settings.${label}.Name`);
-  const hint = game.i18n.localize(`indy-walls.Settings.${label}.Hint`);
-  const ColorSetting = window.Ardittristan?.ColorSetting;
-
-  if (ColorSetting) {
-    new ColorSetting(MODULE_ID, settingKey, {
-      name,
-      hint,
-      label: game.i18n.localize("indy-walls.Settings.ColorPickerLabel"),
-      restricted: false,
-      defaultColor: defaultValue,
-      scope: "client",
-      onChange: redrawActivePreview
-    });
-    return;
-  }
-
-  game.settings.register(MODULE_ID, settingKey, {
-    name,
-    hint,
-    scope: "client",
-    config: true,
-    type,
-    default: defaultValue,
-    onChange: redrawActivePreview
-  });
-}
 
 function registerSegmentWallTypeKeybindings() {
   if (!game.keybindings?.register) return;
@@ -548,13 +473,6 @@ function registerWallTypeControlShortcuts() {
     polylineState.wallTypeTool = toolName;
     updateSelectedWalls(toolName);
   }, {capture: true});
-}
-
-function getWallTypeToolName(toolName) {
-  if (!toolName) return null;
-  if (WALL_TYPE_DATA[toolName]) return toolName;
-  const alias = WALL_TYPE_TOOL_ALIASES[toolName];
-  return WALL_TYPE_DATA[alias] ? alias : null;
 }
 
 function patchWallsLayer() {
@@ -1281,18 +1199,11 @@ function shouldClosePolylineAtEvent(event) {
 }
 
 function isPolylineClosePoint(point) {
-  const first = polylineState.points[0];
-  if (!first || !Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return false;
-  return Math.hypot(first.x - point.x, first.y - point.y) <= getPolylineVertexHitRadius();
+  return isPolylineClosePointImpl(point, getPolylineDeps());
 }
 
 function closePolyline() {
-  if (polylineState.points.length < 3) return false;
-  if (isPolylineClosePoint(polylineState.points.at(-1))) polylineState.points.pop();
-  if (polylineState.points.length < 3) return false;
-  polylineState.closed = true;
-  polylineState.segmentGaps = reconcilePolylineSegmentGaps(polylineState.segmentGaps, getPolylineSegmentCount());
-  return true;
+  return closePolylineImpl(getPolylineDeps());
 }
 
 function getActiveCanvasSegmentEdit(event) {
@@ -2445,215 +2356,6 @@ function getWallPlaceable(id) {
   return canvas?.walls?.placeables?.find((wall) => wall.document?.id === id || wall.id === id) ?? null;
 }
 
-function consumeCanvasInteraction(event) {
-  event.stopImmediatePropagation?.();
-  event.stopPropagation?.();
-  event.preventDefault?.();
-  event.data?.originalEvent?.stopImmediatePropagation?.();
-  event.data?.originalEvent?.stopPropagation?.();
-  event.data?.originalEvent?.preventDefault?.();
-  event.originalEvent?.stopImmediatePropagation?.();
-  event.originalEvent?.stopPropagation?.();
-  event.originalEvent?.preventDefault?.();
-  if (event.interactionData) event.interactionData.clearPreviewContainer = false;
-}
-
-function resetCanvasCursor(event=null) {
-  clearMouseInteractionManagerDragState(event);
-  if (canvas?.app?.view?.style) canvas.app.view.style.cursor = "";
-  if (document.body?.style) document.body.style.cursor = "";
-}
-
-function resetEditorCursor(event=null) {
-  clearMouseInteractionManagerDragState(event, {includeCanvas: false});
-  if (canvas?.app?.view?.style) canvas.app.view.style.cursor = "";
-  if (document.body?.style) document.body.style.cursor = "";
-}
-
-function scheduleCanvasInteractionReset(event=null) {
-  debugInteractionManagers("schedule interaction reset start", event);
-  resetCanvasCursor(event);
-  debugInteractionManagers("after immediate interaction reset", event);
-  globalThis.queueMicrotask?.(() => {
-    resetCanvasCursor(event);
-    debugInteractionManagers("after microtask interaction reset", event);
-  });
-  setTimeout(() => {
-    resetCanvasCursor(event);
-    debugInteractionManagers("after timeout 0 interaction reset", event);
-  }, 0);
-  setTimeout(() => {
-    resetCanvasCursor(event);
-    debugInteractionManagers("after timeout 50 interaction reset", event);
-  }, 50);
-}
-
-function scheduleEditorInteractionReset(event=null) {
-  debugInteractionManagers("schedule editor interaction reset start", event);
-  resetEditorCursor(event);
-  debugInteractionManagers("after immediate editor interaction reset", event);
-  globalThis.queueMicrotask?.(() => {
-    resetEditorCursor(event);
-    debugInteractionManagers("after microtask editor interaction reset", event);
-  });
-  setTimeout(() => {
-    resetEditorCursor(event);
-    debugInteractionManagers("after timeout 0 editor interaction reset", event);
-  }, 0);
-}
-
-function clearMouseInteractionManagerDragState(event=null, {includeCanvas=true}={}) {
-  for (const {label, manager} of getCanvasInteractionManagers(event)) {
-    if (!includeCanvas && label === "canvas") continue;
-    manager.cursor = null;
-    manager._dragging = false;
-    manager.dragging = false;
-    manager._dragLeft = false;
-    manager._dragRight = false;
-    manager._dragged = false;
-    manager._pendingDrag = false;
-    const noneState = manager.constructor?.INTERACTION_STATES?.NONE;
-    if (Number.isFinite(noneState)) manager.state = noneState;
-  }
-}
-
-function debugInteractionManagers(message, event=null, extra={}) {
-  try {
-    if (!game?.settings?.get(MODULE_ID, DEBUG_SETTING)) return;
-  } catch (_error) {
-    return;
-  }
-
-  console.debug(`${MODULE_ID} | ${message}`, {
-    ...extra,
-    eventType: event?.type,
-    eventButton: event?.button,
-    interactionData: {
-      clearPreviewContainer: event?.interactionData?.clearPreviewContainer,
-      origin: event?.interactionData?.origin,
-      destination: event?.interactionData?.destination,
-      objectId: event?.interactionData?.object?.document?.id ?? event?.interactionData?.object?.id
-    },
-    managers: getCanvasInteractionManagers(event).map(({label, manager}) => ({
-      label,
-      state: manager.state,
-      dragging: manager.dragging,
-      _dragging: manager._dragging,
-      cursor: manager.cursor,
-      targetId: manager.object?.document?.id ?? manager.object?.id
-    }))
-  });
-}
-
-function getCanvasInteractionManagers(event=null) {
-  const interactionObject = event?.interactionData?.object;
-  const entries = [
-    ["canvas", canvas?.mouseInteractionManager],
-    ["walls", canvas?.walls?.mouseInteractionManager],
-    ["walls._", canvas?.walls?._mouseInteractionManager],
-    ["interactionObject", interactionObject?.mouseInteractionManager],
-    ["interactionObject._", interactionObject?._mouseInteractionManager],
-    ["event.target", event?.target?.mouseInteractionManager],
-    ["event.target._", event?.target?._mouseInteractionManager],
-    ["event.currentTarget", event?.currentTarget?.mouseInteractionManager],
-    ["event.currentTarget._", event?.currentTarget?._mouseInteractionManager]
-  ];
-
-  for (const wall of canvas?.walls?.controlled ?? []) {
-    entries.push([`controlled:${wall.document?.id ?? wall.id}`, wall?.mouseInteractionManager]);
-    entries.push([`controlled:${wall.document?.id ?? wall.id}._`, wall?._mouseInteractionManager]);
-  }
-  for (const wall of canvas?.walls?.placeables ?? []) {
-    if (!wall?.hover) continue;
-    entries.push([`hover:${wall.document?.id ?? wall.id}`, wall?.mouseInteractionManager]);
-    entries.push([`hover:${wall.document?.id ?? wall.id}._`, wall?._mouseInteractionManager]);
-  }
-
-  const seen = new Set();
-  const managers = [];
-  for (const [label, manager] of entries) {
-    if (!manager || seen.has(manager)) continue;
-    seen.add(manager);
-    managers.push({label, manager});
-  }
-  return managers;
-}
-
-function getInteractionPoint(event) {
-  const source = event.data ?? event;
-  const point = source.getLocalPosition?.(canvas?.stage);
-  if (point) return {x: point.x, y: point.y};
-
-  const global = source.global ?? event.global;
-  const transform = canvas?.stage?.worldTransform;
-  const inverse = global && transform?.applyInverse?.(global);
-  if (inverse) return {x: inverse.x, y: inverse.y};
-
-  const clientPoint = getClientInteractionPoint(event);
-  if (clientPoint) return clientPoint;
-
-  const origin = event.interactionData?.origin;
-  return origin ? {x: origin.x, y: origin.y} : null;
-}
-
-function getClientInteractionPoint(event) {
-  return getClientInteractionPoints(event)[0]?.point ?? null;
-}
-
-function getClientInteractionPoints(event) {
-  const original = event.data?.originalEvent ?? event.originalEvent ?? event;
-  if (!Number.isFinite(original?.clientX) || !Number.isFinite(original?.clientY)) return [];
-
-  const view = canvas?.app?.view;
-  const rect = view?.getBoundingClientRect?.();
-  const transform = canvas?.stage?.worldTransform;
-  if (!view || !rect || !transform?.applyInverse) return [];
-
-  const scaleX = view.width / Math.max(rect.width, 1);
-  const scaleY = view.height / Math.max(rect.height, 1);
-  const localX = original.clientX - rect.left;
-  const localY = original.clientY - rect.top;
-  const pixiPoint = getPixiMappedClientPoint(original);
-  const candidates = [
-    ...(pixiPoint ? [["pixi.mapPositionToPoint", pixiPoint]] : []),
-    ["scaled", new PIXI.Point(localX * scaleX, localY * scaleY)],
-    ["unscaled", new PIXI.Point(localX, localY)]
-  ];
-  const points = [];
-
-  for (const [label, screenPoint] of candidates) {
-    const worldPoint = transform.applyInverse(screenPoint);
-    addUniqueInteractionPoint(points, label, {x: worldPoint.x, y: worldPoint.y});
-  }
-
-  return points;
-}
-
-function getPixiMappedClientPoint(original) {
-  const renderer = canvas?.app?.renderer;
-  const transform = canvas?.stage?.worldTransform;
-  const mapped = new PIXI.Point();
-  const mapper = renderer?.events?.mapPositionToPoint ?? renderer?.plugins?.interaction?.mapPositionToPoint;
-  if (!mapper || !transform?.applyInverse) return null;
-
-  try {
-    mapper.call(renderer.events ?? renderer.plugins.interaction, mapped, original.clientX, original.clientY);
-    return mapped;
-  } catch (error) {
-    debugShapeSelection("pixi mapPositionToPoint failed", {message: error?.message});
-    return null;
-  }
-}
-
-function addUniqueInteractionPoint(points, label, point) {
-  if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return;
-  const duplicate = points.some((candidate) =>
-    Math.abs(candidate.point.x - point.x) < 0.01
-    && Math.abs(candidate.point.y - point.y) < 0.01
-  );
-  if (!duplicate) points.push({label, point});
-}
-
 function registerCurveEditorShortcuts() {
   window.addEventListener("wheel", (event) => {
     if (!getActiveEditorState()?.placed || !event.ctrlKey || isPolylineToolActive()) return;
@@ -2930,33 +2632,19 @@ function getExistingActiveEditorWallIds() {
 }
 
 function beginEditorOperation(state=getActiveEditorState(), includeUnplaced=false) {
-  if (!state || (!state.placed && !includeUnplaced) || state.pendingUndoSnapshot) return;
-  state.pendingUndoSnapshot = getEditorSnapshot(state);
+  beginSessionEditorOperation(state, getEditorSnapshot, includeUnplaced);
 }
 
 function commitEditorOperation(state=getActiveEditorState()) {
-  if (!state?.pendingUndoSnapshot) return;
-
-  const before = state.pendingUndoSnapshot;
-  state.pendingUndoSnapshot = null;
-  const after = getEditorSnapshot(state);
-  if (snapshotsEqual(before, after)) return;
-
-  state.undoStack.push(before);
-  state.redoStack = [];
-  updateEditButtonStates();
+  commitSessionEditorOperation(state, getEditorSnapshot, updateEditButtonStates);
 }
 
 function cancelEditorOperation(state=getActiveEditorState()) {
-  if (state) state.pendingUndoSnapshot = null;
+  cancelSessionEditorOperation(state);
 }
 
 function clearEditorHistory(state) {
-  if (!state) return;
-  state.undoStack = [];
-  state.redoStack = [];
-  state.pendingUndoSnapshot = null;
-  updateEditButtonStates();
+  clearSessionEditorHistory(state, updateEditButtonStates);
 }
 
 function undoActiveEditor() {
@@ -2982,10 +2670,7 @@ function redoActiveEditor() {
 }
 
 function pushEditorUndoSnapshot(state, snapshot) {
-  if (!state || !snapshot || snapshotsEqual(snapshot, getEditorSnapshot(state))) return;
-  state.undoStack.push(snapshot);
-  state.redoStack = [];
-  updateEditButtonStates();
+  pushSessionEditorUndoSnapshot(state, snapshot, getEditorSnapshot, updateEditButtonStates);
 }
 
 function updateEditButtonStates() {
@@ -3114,19 +2799,6 @@ function restoreEditorSnapshot(state, snapshot) {
   drawRectanglePreview();
 }
 
-function snapshotsEqual(a, b) {
-  return JSON.stringify(a) === JSON.stringify(b);
-}
-
-function cloneWallTypeBySegment(source={}) {
-  return {...(source ?? {})};
-}
-
-function getSegmentWallData(state, key) {
-  const tool = state?.wallTypeBySegment?.[key] ?? state?.wallTypeTool ?? "walls";
-  return WALL_TYPE_DATA[tool]?.() ?? WALL_TYPE_DATA.walls();
-}
-
 function getSegmentWallType(state, segment) {
   return state?.wallTypeBySegment?.[getSegmentKey(segment)] ?? state?.wallTypeTool ?? "walls";
 }
@@ -3192,82 +2864,6 @@ function redrawActivePreview() {
   if (ellipseState.placed) drawEllipsePreview();
   if (rectangleState.placed) drawRectanglePreview();
   if (polylineState.placed) drawPolylinePreview();
-}
-
-function getPreviewStyle() {
-  const outlineWidth = getStyleNumber(STYLE_SETTINGS.outlineWidth, 2, 0, 8);
-  const outlineColor = getStyleColor(STYLE_SETTINGS.outlineColor, 0x111111);
-  return {
-    wallColor: getStyleColor(STYLE_SETTINGS.wallColor, 0xc10e56),
-    wallTypeColors: {
-      windows: getStyleColor(STYLE_SETTINGS.windowWallColor, 0xb784a7),
-      doors: getStyleColor(STYLE_SETTINGS.doorWallColor, 0x123c69),
-      secret: getStyleColor(STYLE_SETTINGS.secretWallColor, 0x7a3db8),
-      invisible: getStyleColor(STYLE_SETTINGS.invisibleWallColor, 0x8ecae6),
-      terrain: getStyleColor(STYLE_SETTINGS.terrainWallColor, 0x3f9b4f)
-    },
-    wallWidth: getStyleNumber(STYLE_SETTINGS.wallWidth, 4, 1, 12),
-    guideWidth: Math.max(getStyleNumber(STYLE_SETTINGS.wallWidth, 4, 1, 12) / 2, 1),
-    vertexColor: getStyleColor(STYLE_SETTINGS.vertexColor, 0xffffff),
-    vertexActiveColor: getStyleColor(STYLE_SETTINGS.vertexActiveColor, 0xaaff44),
-    vertexSize: getStyleNumber(STYLE_SETTINGS.vertexSize, 5, 2, 20),
-    splitVertexSize: Math.max(getStyleNumber(STYLE_SETTINGS.vertexSize, 5, 2, 20) + 3, 4),
-    endpointColor: getStyleColor(STYLE_SETTINGS.endpointColor, 0xff4444),
-    endpointSize: getStyleNumber(STYLE_SETTINGS.endpointSize, 12, 4, 32),
-    handleColor: getStyleColor(STYLE_SETTINGS.handleColor, 0xaaff44),
-    handleSize: getStyleNumber(STYLE_SETTINGS.handleSize, 12, 4, 32),
-    outlineColor,
-    outlineWidth
-  };
-}
-
-function getStyleNumber(setting, fallback, min, max) {
-  const value = Number(game.settings.get(MODULE_ID, setting));
-  if (!Number.isFinite(value)) return fallback;
-  return clamp(value, min, max);
-}
-
-function getStyleColor(setting, fallback) {
-  return colorStringToNumber(game.settings.get(MODULE_ID, setting), fallback);
-}
-
-function colorStringToNumber(value, fallback) {
-  if (typeof value !== "string") return fallback;
-  const match = value.trim().match(/^#?([0-9a-f]{6})(?:[0-9a-f]{2})?$/i);
-  return match ? parseInt(match[1], 16) : fallback;
-}
-
-function drawPreviewVertex(graphics, point, style=getPreviewStyle()) {
-  drawVertex(graphics, point, {
-    color: style.vertexColor,
-    radius: style.vertexSize,
-    outlineColor: style.outlineColor,
-    outlineWidth: style.outlineWidth
-  });
-}
-
-function drawEndpoint(graphics, point, style=getPreviewStyle()) {
-  drawHandle(graphics, point, style.endpointColor, {
-    radius: style.endpointSize,
-    outlineColor: style.outlineColor,
-    outlineWidth: style.outlineWidth
-  });
-}
-
-function drawBezierHandle(graphics, point, style=getPreviewStyle()) {
-  drawHandle(graphics, point, style.handleColor, {
-    radius: style.handleSize,
-    outlineColor: style.outlineColor,
-    outlineWidth: style.outlineWidth
-  });
-}
-
-function drawMoveHandle(graphics, point, style=getPreviewStyle()) {
-  drawHandle(graphics, point, style.vertexActiveColor, {
-    radius: Math.max(style.handleSize * 0.75, style.splitVertexSize),
-    outlineColor: style.outlineColor,
-    outlineWidth: style.outlineWidth
-  });
 }
 
 function getEditorMoveHandleAt(tool, point) {
@@ -3349,107 +2945,23 @@ function getCubicHandleAt(point) {
 }
 
 function changeCubicSegments(delta) {
-  if (!isCubicToolActive()) return;
-  cubicState.segments = clamp(cubicState.segments + delta, 2, 64);
-  cubicState.segmentGaps = reconcileCubicSegmentGaps(cubicState.segmentGaps, cubicState.segments);
-  drawCubicPreview();
+  return changeCubicSegmentsImpl(delta, getCubicDeps());
 }
 
 function drawCubicPreview() {
-  const layer = canvas?.walls;
-  if (!layer) return;
-
-  if (!cubicState.graphics || cubicState.graphics._destroyed) {
-    cubicState.graphics = new PIXI.Graphics();
-    layer.preview.addChild(cubicState.graphics);
-  } else if (!cubicState.graphics.parent) {
-    layer.preview.addChild(cubicState.graphics);
-  }
-
-  const graphics = cubicState.graphics;
-  graphics.clear();
-  setCubicEditingState(cubicState.placed);
-  if (!cubicState.placed) return;
-
-  const style = getPreviewStyle();
-  const points = getCubicPoints(cubicState.segments);
-  const segments = getCubicSegments();
-  const allSegments = getAllCubicSegments();
-  const gaps = getCubicSegmentGaps();
-  for (const segment of segments) {
-    const {a, b} = segment;
-    graphics.lineStyle(getScaledRadius(style.wallWidth), getSegmentPreviewColor(cubicState, segment, style), 0.9);
-    graphics.moveTo(a.x, a.y);
-    graphics.lineTo(b.x, b.y);
-  }
-
-  for (const segment of allSegments) {
-    if (!gaps.includes(segment.index)) continue;
-    graphics.lineStyle(
-      getScaledRadius(Math.max(style.guideWidth, 1)),
-      getSegmentPreviewColor(cubicState, segment, style),
-      0.22
-    );
-    graphics.moveTo(segment.a.x, segment.a.y);
-    graphics.lineTo(segment.b.x, segment.b.y);
-  }
-
-  const [start, controlA, controlB, end] = cubicState.handles;
-  graphics.lineStyle(getScaledRadius(style.guideWidth), style.wallColor, 0.65);
-  graphics.moveTo(start.x, start.y);
-  graphics.lineTo(controlA.x, controlA.y);
-  graphics.moveTo(end.x, end.y);
-  graphics.lineTo(controlB.x, controlB.y);
-
-  for (const point of points) {
-    drawPreviewVertex(graphics, point, style);
-  }
-  drawEndpoint(graphics, start, style);
-  drawEndpoint(graphics, end, style);
-  drawBezierHandle(graphics, controlA, style);
-  drawBezierHandle(graphics, controlB, style);
-  drawMoveHandle(graphics, getEditorShapeCenter(CUBIC_TOOL), style);
+  return drawCubicPreviewImpl(getCubicDeps());
 }
 
 function getCubicSegmentAt(point) {
-  if (!cubicState.placed) return null;
-  const style = getPreviewStyle();
-  const tolerance = getScaledRadius(Math.max(style.wallWidth + 6, 10));
-  let best = null;
-  let bestDistance = Infinity;
-
-  for (const segment of getAllCubicSegments()) {
-    if (!isPointNearSegmentBounds(point, segment.a, segment.b, tolerance)) continue;
-    const distance = getPointSegmentDistance(point, segment.a, segment.b);
-    if (distance <= tolerance && distance < bestDistance) {
-      best = segment;
-      bestDistance = distance;
-    }
-  }
-
-  return best;
+  return getCubicSegmentAtImpl(point, getCubicDeps());
 }
 
 function editCubicSegmentWithUndo(index, remove=false) {
-  const snapshot = getEditorSnapshot(cubicState);
-  const edited = editCubicSegment(index, remove);
-  if (edited) pushEditorUndoSnapshot(cubicState, snapshot);
-  return edited;
+  return editCubicSegmentWithUndoImpl(index, remove, getCubicDeps());
 }
 
 function editCubicSegment(index, remove=false) {
-  const gaps = getCubicSegmentGaps();
-  if (remove) {
-    if (gaps.includes(index)) return false;
-    cubicState.segmentGaps = [...gaps, index].sort((a, b) => a - b);
-    drawCubicPreview();
-    return true;
-  }
-
-  if (!gaps.includes(index)) return false;
-  cubicState.segmentGaps = gaps.filter((gap) => gap !== index);
-  drawCubicPreview();
-  return true;
+  return editCubicSegmentImpl(index, remove, getCubicDeps());
 }
 
 function getEllipseHandleAt(point) {
@@ -3460,134 +2972,31 @@ function getEllipseHandleAt(point) {
 }
 
 function getEllipseVertexAt(point) {
-  if (!ellipseState.placed) return null;
-  const radius = getEllipseVertexHitRadius();
-  for (const vertex of getEllipseVertices()) {
-    if (Math.hypot(vertex.point.x - point.x, vertex.point.y - point.y) <= radius) {
-      return vertex;
-    }
-  }
-  return null;
+  return getEllipseVertexAtImpl(point, getEllipseDeps());
 }
 
 function getEllipseVertexHitRadius() {
-  const style = getPreviewStyle();
-  return getSplitVertexHitRadius(style);
+  return getEllipseVertexHitRadiusImpl(getEllipseDeps());
 }
 
 function changeEllipseSegments(delta) {
-  if (!isEllipseToolActive()) return;
-  ellipseState.segments = clamp(ellipseState.segments + delta, 4, 96);
-  ellipseState.segmentGaps = reconcileEllipseSegmentGaps(ellipseState.segmentGaps, ellipseState.segments);
-  drawEllipsePreview();
+  return changeEllipseSegmentsImpl(delta, getEllipseDeps());
 }
 
 function drawEllipsePreview() {
-  const layer = canvas?.walls;
-  if (!layer) return;
-
-  if (!ellipseState.graphics || ellipseState.graphics._destroyed) {
-    ellipseState.graphics = new PIXI.Graphics();
-    layer.preview.addChild(ellipseState.graphics);
-  } else if (!ellipseState.graphics.parent) {
-    layer.preview.addChild(ellipseState.graphics);
-  }
-
-  const graphics = ellipseState.graphics;
-  graphics.clear();
-  setEllipseEditingState(ellipseState.placed);
-  if (!ellipseState.placed) return;
-
-  const style = getPreviewStyle();
-  const segments = getEllipseSegments();
-  const allSegments = getAllEllipseSegments();
-  const gaps = getEllipseSegmentGaps();
-  for (const segment of segments) {
-    const {a, b} = segment;
-    graphics.lineStyle(getScaledRadius(style.wallWidth), getSegmentPreviewColor(ellipseState, segment, style), 0.9);
-    graphics.moveTo(a.x, a.y);
-    graphics.lineTo(b.x, b.y);
-  }
-
-  for (const segment of allSegments) {
-    if (!gaps.includes(segment.index)) continue;
-    graphics.lineStyle(
-      getScaledRadius(Math.max(style.guideWidth, 1)),
-      getSegmentPreviewColor(ellipseState, segment, style),
-      0.22
-    );
-    graphics.moveTo(segment.a.x, segment.a.y);
-    graphics.lineTo(segment.b.x, segment.b.y);
-  }
-
-  const [a, b] = ellipseState.handles;
-  graphics.lineStyle(getScaledRadius(style.guideWidth), style.wallColor, 0.45);
-  graphics.drawRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
-
-  for (const vertex of getEllipseVertices()) {
-    drawEllipseSplitVertex(graphics, vertex, style);
-  }
-  drawEndpoint(graphics, a, style);
-  drawEndpoint(graphics, b, style);
-  drawMoveHandle(graphics, getEditorShapeCenter(ELLIPSE_TOOL), style);
+  return drawEllipsePreviewImpl(getEllipseDeps());
 }
 
 function getEllipseSegmentAt(point) {
-  if (!ellipseState.placed) return null;
-  const style = getPreviewStyle();
-  const tolerance = getScaledRadius(Math.max(style.wallWidth + 6, 10));
-  let best = null;
-  let bestDistance = Infinity;
-
-  for (const segment of getAllEllipseSegments()) {
-    if (!isPointNearSegmentBounds(point, segment.a, segment.b, tolerance)) continue;
-    const distance = getPointSegmentDistance(point, segment.a, segment.b);
-    if (distance <= tolerance && distance < bestDistance) {
-      best = segment;
-      bestDistance = distance;
-    }
-  }
-
-  return best;
+  return getEllipseSegmentAtImpl(point, getEllipseDeps());
 }
 
 function editEllipseSegmentWithUndo(index, remove=false) {
-  const snapshot = getEditorSnapshot(ellipseState);
-  const edited = editEllipseSegment(index, remove);
-  if (edited) pushEditorUndoSnapshot(ellipseState, snapshot);
-  return edited;
+  return editEllipseSegmentWithUndoImpl(index, remove, getEllipseDeps());
 }
 
 function editEllipseSegment(index, remove=false) {
-  const gaps = getEllipseSegmentGaps();
-  if (remove) {
-    if (gaps.includes(index)) return false;
-    ellipseState.segmentGaps = [...gaps, index].sort((a, b) => a - b);
-    drawEllipsePreview();
-    return true;
-  }
-
-  if (!gaps.includes(index)) return false;
-  ellipseState.segmentGaps = gaps.filter((gap) => gap !== index);
-  drawEllipsePreview();
-  return true;
-}
-
-function drawEllipseSplitVertex(graphics, vertex, style) {
-  const radius = getScaledRadius(style.splitVertexSize);
-  const highlighted = ellipseState.draggingVertex?.index === vertex.index;
-  graphics.beginFill(highlighted ? style.vertexActiveColor : style.vertexColor, 0.98);
-  graphics.lineStyle(
-    getScaledRadius(style.outlineWidth),
-    highlighted ? style.outlineColor : style.wallColor,
-    0.95
-  );
-  graphics.drawCircle(vertex.point.x, vertex.point.y, radius);
-  graphics.endFill();
-}
-
-function setRectangleHandle(index, point) {
-  rectangleState.handles[index] = {x: point.x, y: point.y};
+  return editEllipseSegmentImpl(index, remove, getEllipseDeps());
 }
 
 function getRectangleHandleAt(point) {
@@ -3625,17 +3034,6 @@ function updateRectangleHoveredVertex(point) {
 
   rectangleState.hoveredVertex = hovered;
   drawRectanglePreview();
-}
-
-function setRectangleVertex(vertex, point) {
-  const ratios = getRectangleSideRatios(vertex.side);
-  const ratio = getRectangleRatioForPoint(vertex.side, point);
-  const previous = vertex.index > 0 ? ratios[vertex.index - 1] : 0;
-  const next = vertex.index < ratios.length - 1 ? ratios[vertex.index + 1] : 1;
-  const spacing = getRectangleRatioSpacing(rectangleState.sideSegments[vertex.side]);
-  if ((next - previous) <= (spacing * 2)) return;
-  ratios[vertex.index] = clamp(ratio, previous + spacing, next - spacing);
-  rectangleState.sideRatios[vertex.side] = ratios;
 }
 
 function changeRectangleSegments(delta, side=null) {
@@ -3743,21 +3141,6 @@ function restoreRectangleSegmentAt({side, ratio}) {
   return true;
 }
 
-function getRectangleSegmentIndexAt(side, ratio) {
-  const ratios = getRectangleSideRatios(side);
-  const points = [0, ...ratios, 1];
-  for (let i = 0; i < points.length - 1; i++) {
-    if (ratio >= points[i] && ratio <= points[i + 1]) return i;
-  }
-  return Math.max(rectangleState.sideSegments[side] - 1, 0);
-}
-
-function getRectangleSideGaps(side) {
-  const gaps = reconcileRectangleSideGaps(rectangleState.sideGaps?.[side], rectangleState.sideSegments[side]);
-  rectangleState.sideGaps[side] = gaps;
-  return gaps;
-}
-
 function removeRectangleVertex({side, index}) {
   const ratios = getRectangleSideRatios(side);
   if (ratios[index] === undefined) return false;
@@ -3784,43 +3167,9 @@ function disableRectangleSide(side) {
 }
 
 function getRectangleSideAt(point) {
-  const bounds = getRectangleBounds();
   const style = getPreviewStyle();
   const tolerance = getScaledRadius(Math.max(style.wallWidth + 6, 10));
-  const hits = [
-    {
-      side: "top",
-      distance: Math.abs(point.y - bounds.minY),
-      ratio: getBoundedRatio(point.x, bounds.minX, bounds.maxX),
-      inRange: isBetween(point.x, bounds.minX, bounds.maxX)
-    },
-    {
-      side: "right",
-      distance: Math.abs(point.x - bounds.maxX),
-      ratio: getBoundedRatio(point.y, bounds.minY, bounds.maxY),
-      inRange: isBetween(point.y, bounds.minY, bounds.maxY)
-    },
-    {
-      side: "bottom",
-      distance: Math.abs(point.y - bounds.maxY),
-      ratio: getBoundedRatio(point.x, bounds.maxX, bounds.minX),
-      inRange: isBetween(point.x, bounds.minX, bounds.maxX)
-    },
-    {
-      side: "left",
-      distance: Math.abs(point.x - bounds.minX),
-      ratio: getBoundedRatio(point.y, bounds.maxY, bounds.minY),
-      inRange: isBetween(point.y, bounds.minY, bounds.maxY)
-    }
-  ].filter((hit) => hit.inRange && hit.distance <= tolerance);
-
-  hits.sort((a, b) => a.distance - b.distance);
-  const hit = hits[0];
-  return hit ? {side: hit.side, ratio: hit.ratio} : null;
-}
-
-function isBetween(value, a, b) {
-  return value >= Math.min(a, b) && value <= Math.max(a, b);
+  return getRectangleSideAtWithTolerance(point, tolerance);
 }
 
 function drawRectanglePreview() {
@@ -3951,10 +3300,6 @@ function getRectangleVertexHitRadius() {
   return getSplitVertexHitRadius(style);
 }
 
-function getSplitVertexHitRadius(style=getPreviewStyle()) {
-  return getScaledRadius(style.splitVertexSize + (style.outlineWidth / 2));
-}
-
 function getRectangleCornerHitRadius(style=getPreviewStyle()) {
   return getScaledRadius(Math.max(style.endpointSize + style.outlineWidth + 8, style.wallWidth + 16));
 }
@@ -3990,498 +3335,166 @@ function sameRectangleVertex(a, b) {
   return !!a && !!b && a.side === b.side && a.index === b.index;
 }
 
-function getRectangleBounds() {
-  const [a, b] = rectangleState.handles;
-  const minX = Math.min(a.x, b.x);
-  const minY = Math.min(a.y, b.y);
-  const maxX = Math.max(a.x, b.x);
-  const maxY = Math.max(a.y, b.y);
-  return {
-    minX,
-    minY,
-    maxX,
-    maxY,
-    width: maxX - minX,
-    height: maxY - minY
-  };
-}
-
-function getDefaultRectangleSideRatios() {
-  return {
-    top: [],
-    right: [],
-    bottom: [],
-    left: []
-  };
-}
-
-function getDefaultRectangleSideEnabled() {
-  return {
-    top: true,
-    right: true,
-    bottom: true,
-    left: true
-  };
-}
-
-function getDefaultRectangleSideGaps() {
-  return {
-    top: [],
-    right: [],
-    bottom: [],
-    left: []
-  };
-}
-
-function cloneRectangleSideRatios(source) {
-  return {
-    top: [...(source?.top ?? [])],
-    right: [...(source?.right ?? [])],
-    bottom: [...(source?.bottom ?? [])],
-    left: [...(source?.left ?? [])]
-  };
-}
-
-function cloneRectangleSideGaps(source) {
-  return {
-    top: [...(source?.top ?? [])],
-    right: [...(source?.right ?? [])],
-    bottom: [...(source?.bottom ?? [])],
-    left: [...(source?.left ?? [])]
-  };
-}
-
-function cloneRectangleSideEnabled(source) {
-  return {
-    top: source?.top !== false,
-    right: source?.right !== false,
-    bottom: source?.bottom !== false,
-    left: source?.left !== false
-  };
-}
-
-function getRectangleSideRatios(side) {
-  const count = rectangleState.sideSegments[side] ?? DEFAULT_RECTANGLE_SEGMENTS;
-  const ratios = reconcileRectangleSideRatios(rectangleState.sideRatios?.[side], count);
-  rectangleState.sideRatios[side] = ratios;
-  return ratios;
-}
-
-function reconcileRectangleSideRatios(source, segmentCount) {
-  const vertexCount = Math.max(segmentCount - 1, 0);
-  const ratios = Array.isArray(source)
-    ? source.map((ratio) => Number(ratio)).filter((ratio) => Number.isFinite(ratio))
-    : [];
-
-  ratios.sort((a, b) => a - b);
-  const result = [];
-  for (let i = 0; i < vertexCount; i++) {
-    result.push(clamp(ratios[i] ?? ((i + 1) / segmentCount), 0, 1));
-  }
-
-  const spacing = getRectangleRatioSpacing(segmentCount);
-  for (let i = 0; i < result.length; i++) {
-    const min = i === 0 ? spacing : result[i - 1] + spacing;
-    const max = i === result.length - 1 ? 1 - spacing : result[i + 1] - spacing;
-    result[i] = clamp(result[i], min, max);
-  }
-
-  return result;
-}
-
-function reconcileRectangleSideGaps(source, segmentCount) {
-  if (!Array.isArray(source)) return [];
-  return [...new Set(source
-    .map((index) => Number(index))
-    .filter((index) => Number.isInteger(index) && index >= 0 && index < segmentCount))]
-    .sort((a, b) => a - b);
-}
-
-function getRectangleRatioSpacing(segmentCount) {
-  return Math.min(0.02, 0.45 / Math.max(segmentCount, 1));
-}
-
-function getRectangleRatioForPoint(side, point) {
-  const bounds = getRectangleBounds();
-  if (side === "top") return getBoundedRatio(point.x, bounds.minX, bounds.maxX);
-  if (side === "right") return getBoundedRatio(point.y, bounds.minY, bounds.maxY);
-  if (side === "bottom") return getBoundedRatio(point.x, bounds.maxX, bounds.minX);
-  return getBoundedRatio(point.y, bounds.maxY, bounds.minY);
-}
-
-function getBoundedRatio(value, start, end) {
-  const length = end - start;
-  if (!length) return 0;
-  return clamp((value - start) / length, 0, 1);
-}
-
-function getRectangleSegments() {
-  const bounds = getRectangleBounds();
-  return getRectangleBoundsSides(bounds).flatMap(([side, start, end]) => getSideSegments(side, start, end));
-}
-
-function getRectangleSideVertices() {
-  const bounds = getRectangleBounds();
-  return getRectangleBoundsSides(bounds).flatMap(([side, start, end]) => getSideVertices(side, start, end));
-}
-
-function getRectangleBoundsSides(bounds) {
-  return [
-    ["top", {x: bounds.minX, y: bounds.minY}, {x: bounds.maxX, y: bounds.minY}],
-    ["right", {x: bounds.maxX, y: bounds.minY}, {x: bounds.maxX, y: bounds.maxY}],
-    ["bottom", {x: bounds.maxX, y: bounds.maxY}, {x: bounds.minX, y: bounds.maxY}],
-    ["left", {x: bounds.minX, y: bounds.maxY}, {x: bounds.minX, y: bounds.minY}]
-  ];
-}
-
 function getSegmentKey(segment) {
   return segment.side ? getRectangleSegmentKey(segment) : String(segment.index);
 }
 
-function getRectangleSegmentKey(segment) {
-  return `${segment.side}:${segment.index}`;
-}
-
-function getSideSegments(side, start, end) {
-  if (!rectangleState.sideEnabled[side]) return [];
-
-  const gaps = getRectangleSideGaps(side);
-  return getAllSideSegments(side, start, end).filter((segment) => !gaps.includes(segment.index));
-}
-
-function getAllSideSegments(side, start, end) {
-  const points = getSidePoints(side, start, end);
-  const segments = [];
-  for (let i = 0; i < points.length - 1; i++) {
-    segments.push({side, index: i, a: points[i], b: points[i + 1]});
-  }
-  return segments;
-}
-
-function getSideVertices(side, start, end) {
-  if (!rectangleState.sideEnabled[side]) return [];
-  return getSidePoints(side, start, end).slice(1, -1).map((point, index) => ({side, index, point}));
-}
-
-function getSidePoints(side, start, end) {
-  return [
-    start,
-    ...getRectangleSideRatios(side).map((ratio) => ({
-      x: start.x + ((end.x - start.x) * ratio),
-      y: start.y + ((end.y - start.y) * ratio)
-    })),
-    end
-  ];
-}
-
-function handlePolylineCanvasClick(event) {
-  const point = getClientInteractionPoint(event);
-  if (!point) return false;
-
-  const snapshot = getEditorSnapshot(polylineState);
-  if (!polylineState.placed) {
-    polylineState.placed = true;
-    polylineState.drawing = true;
-    polylineState.polylineId = null;
-    polylineState.wallIds = [];
-    polylineState.wallTypeBySegment = {};
-    polylineState.segmentGaps = [];
-    polylineState.closed = false;
-    polylineState.points = [point];
-    polylineState.previewPoint = point;
-    clearEditorHistory(polylineState);
-    drawPolylinePreview();
-    return true;
-  }
-
-  if (!polylineState.drawing) return false;
-  if (polylineState.points.length >= 3 && isPolylineClosePoint(point)) {
-    polylineState.previewPoint = polylineState.points[0];
-    drawPolylinePreview();
-    return true;
-  }
-
-  const last = polylineState.points.at(-1);
-  const minDistance = getScaledRadius(Math.max(getPreviewStyle().vertexSize, 4));
-  if (!last || Math.hypot(last.x - point.x, last.y - point.y) > minDistance) {
-    polylineState.points = [...polylineState.points, point];
-    polylineState.segmentGaps = reconcilePolylineSegmentGaps(polylineState.segmentGaps, getPolylineSegmentCount());
-    pushEditorUndoSnapshot(polylineState, snapshot);
-  }
-  polylineState.previewPoint = point;
-  drawPolylinePreview();
-  return true;
-}
-
-function drawPolylinePreview() {
-  const layer = canvas?.walls;
-  if (!layer) return;
-
-  if (!polylineState.graphics || polylineState.graphics._destroyed) {
-    polylineState.graphics = new PIXI.Graphics();
-    layer.preview.addChild(polylineState.graphics);
-  } else if (!polylineState.graphics.parent) {
-    layer.preview.addChild(polylineState.graphics);
-  }
-
-  const graphics = polylineState.graphics;
-  graphics.clear();
-  setPolylineEditingState(polylineState.placed);
-  if (!polylineState.placed) return;
-
-  const style = getPreviewStyle();
-  const segments = getPolylineSegments();
-  const allSegments = getAllPolylineSegments();
-  const gaps = getPolylineSegmentGaps();
-  for (const segment of segments) {
-    graphics.lineStyle(getScaledRadius(style.wallWidth), getSegmentPreviewColor(polylineState, segment, style), 0.9);
-    graphics.moveTo(segment.a.x, segment.a.y);
-    graphics.lineTo(segment.b.x, segment.b.y);
-  }
-
-  for (const segment of allSegments) {
-    if (!gaps.includes(segment.index)) continue;
-    graphics.lineStyle(
-      getScaledRadius(Math.max(style.guideWidth, 1)),
-      getSegmentPreviewColor(polylineState, segment, style),
-      0.22
-    );
-    graphics.moveTo(segment.a.x, segment.a.y);
-    graphics.lineTo(segment.b.x, segment.b.y);
-  }
-
-  const last = polylineState.points.at(-1);
-  const preview = polylineState.previewPoint;
-  if (polylineState.drawing && last && preview && Math.hypot(last.x - preview.x, last.y - preview.y) > 0.1) {
-    const previewSegment = {index: getPolylineSegmentCount(), a: last, b: preview};
-    graphics.lineStyle(getScaledRadius(style.wallWidth), getSegmentPreviewColor(polylineState, previewSegment, style), 0.55);
-    graphics.moveTo(last.x, last.y);
-    graphics.lineTo(preview.x, preview.y);
-    drawPreviewVertex(graphics, preview, style);
-  }
-
-  for (const vertex of getPolylineVertices()) {
-    drawPolylineVertex(graphics, vertex, style);
-  }
-  if (polylineState.points.length > 1) drawMoveHandle(graphics, getEditorShapeCenter(POLYLINE_TOOL), style);
-}
-
-function getPolylineVertices() {
-  return polylineState.points.map((point, index) => ({index, point}));
-}
-
-function getPolylineVertexAt(point) {
-  if (!polylineState.placed) return null;
-  const radius = getPolylineVertexHitRadius();
-  for (const vertex of getPolylineVertices()) {
-    if (Math.hypot(vertex.point.x - point.x, vertex.point.y - point.y) <= radius) {
-      return vertex;
-    }
-  }
-  return null;
-}
-
-function getPolylineVertexHitRadius() {
-  return getSplitVertexHitRadius(getPreviewStyle());
-}
-
-function setPolylineVertex(index, point) {
-  if (!Number.isInteger(index) || !polylineState.points[index]) return;
-  polylineState.points[index] = {x: point.x, y: point.y};
-}
-
-function drawPolylineVertex(graphics, vertex, style) {
-  const radius = getScaledRadius(style.splitVertexSize);
-  const highlighted = polylineState.draggingVertex?.index === vertex.index || polylineState.hoveredVertex?.index === vertex.index;
-  graphics.beginFill(highlighted ? style.vertexActiveColor : style.vertexColor, 0.98);
-  graphics.lineStyle(
-    getScaledRadius(style.outlineWidth),
-    highlighted ? style.outlineColor : style.wallColor,
-    0.95
-  );
-  graphics.drawCircle(vertex.point.x, vertex.point.y, radius);
-  graphics.endFill();
-}
-
-function getPolylineSegmentAt(point) {
-  if (!polylineState.placed) return null;
-  const style = getPreviewStyle();
-  const tolerance = getScaledRadius(Math.max(style.wallWidth + 6, 10));
-  let best = null;
-  let bestDistance = Infinity;
-
-  for (const segment of getAllPolylineSegments()) {
-    if (!isPointNearSegmentBounds(point, segment.a, segment.b, tolerance)) continue;
-    const distance = getPointSegmentDistance(point, segment.a, segment.b);
-    if (distance <= tolerance && distance < bestDistance) {
-      best = segment;
-      bestDistance = distance;
-    }
-  }
-
-  return best;
-}
-
-function getPolylineSegmentEditFromEvent(event) {
-  const point = getClientInteractionPoint(event);
-  const segment = point ? getPolylineSegmentAt(point) : null;
-  if (!segment) return null;
+function getPolylineDeps() {
   return {
-    index: segment.index,
-    point,
-    remove: event.altKey
+    MODULE_ID,
+    clearEditorHistory,
+    clearPolylinePreview,
+    clonePoints,
+    cloneWallTypeBySegment,
+    debugShapeSelection,
+    deactivateOtherShapeStates,
+    drawMoveHandle,
+    drawPolylinePreview,
+    drawPreviewVertex,
+    getClientInteractionPoint,
+    getEditorShapeCenter,
+    getEditorSnapshot,
+    getPointSegmentDistance,
+    getPreviewStyle,
+    getScaledRadius,
+    getSegmentKey,
+    getSegmentPreviewColor,
+    getSegmentWallData,
+    getShapeWallTypeByIndexedFlag,
+    getSplitVertexHitRadius,
+    getWallTypeToolFromDocument,
+    hideEditSessionWalls,
+    isPointNearSegmentBounds,
+    isPolylineToolActive,
+    pushEditorUndoSnapshot,
+    restoreEditSessionWalls,
+    scheduleEditorInteractionReset,
+    setPolylineEditingState
   };
 }
 
+function deactivateOtherShapeStates(activeState) {
+  cubicState.active = activeState === cubicState;
+  ellipseState.active = activeState === ellipseState;
+  rectangleState.active = activeState === rectangleState;
+  polylineState.active = activeState === polylineState;
+}
+
+function getCubicDeps() {
+  return {
+    MODULE_ID,
+    clamp,
+    clearCubicPreview,
+    clearEditorHistory,
+    clonePoints,
+    cloneWallTypeBySegment,
+    deactivateOtherShapeStates,
+    drawBezierHandle,
+    drawCubicPreview,
+    drawEndpoint,
+    drawMoveHandle,
+    drawPreviewVertex,
+    getEditorShapeCenter,
+    getEditorSnapshot,
+    getPointSegmentDistance,
+    getPreviewStyle,
+    getScaledRadius,
+    getSegmentKey,
+    getSegmentPreviewColor,
+    getSegmentWallData,
+    getShapeWallTypeByIndexedFlag,
+    getWallTypeToolFromDocument,
+    hideEditSessionWalls,
+    isCubicToolActive,
+    isPointNearSegmentBounds,
+    pushEditorUndoSnapshot,
+    restoreEditSessionWalls,
+    setCubicEditingState
+  };
+}
+
+function getEllipseDeps() {
+  return {
+    MODULE_ID,
+    clamp,
+    clearEditorHistory,
+    clearEllipsePreview,
+    clonePoints,
+    cloneWallTypeBySegment,
+    deactivateOtherShapeStates,
+    drawEndpoint,
+    drawEllipsePreview,
+    drawMoveHandle,
+    getEditorShapeCenter,
+    getEditorSnapshot,
+    getPointSegmentDistance,
+    getPreviewStyle,
+    getScaledRadius,
+    getSegmentKey,
+    getSegmentPreviewColor,
+    getSegmentWallData,
+    getShapeWallTypeByIndexedFlag,
+    getSplitVertexHitRadius,
+    getWallTypeToolFromDocument,
+    hideEditSessionWalls,
+    isEllipseToolActive,
+    isPointNearSegmentBounds,
+    pushEditorUndoSnapshot,
+    restoreEditSessionWalls,
+    setEllipseEditingState
+  };
+}
+
+function handlePolylineCanvasClick(event) {
+  return handlePolylineCanvasClickImpl(event, getPolylineDeps());
+}
+
+function drawPolylinePreview() {
+  return drawPolylinePreviewImpl(getPolylineDeps());
+}
+
+function getPolylineVertices() {
+  return getPolylineVerticesImpl();
+}
+
+function getPolylineVertexAt(point) {
+  return getPolylineVertexAtImpl(point, getPolylineDeps());
+}
+
+function getPolylineVertexHitRadius() {
+  return getPolylineVertexHitRadiusImpl(getPolylineDeps());
+}
+
+function setPolylineVertex(index, point) {
+  return setPolylineVertexImpl(index, point);
+}
+
+function getPolylineSegmentAt(point) {
+  return getPolylineSegmentAtImpl(point, getPolylineDeps());
+}
+
+function getPolylineSegmentEditFromEvent(event) {
+  return getPolylineSegmentEditFromEventImpl(event, getPolylineDeps());
+}
+
 function commitPolylineSegmentEdit(edit, event=null) {
-  if (!edit) return false;
-  const edited = editPolylineSegmentWithUndo(edit.index, edit.remove, edit.point);
-  if (edited) {
-    debugShapeSelection("polyline segment edit", {
-      index: edit.index,
-      remove: edit.remove,
-      eventType: event?.type
-    });
-    scheduleEditorInteractionReset(event);
-  }
-  return edited;
+  return commitPolylineSegmentEditImpl(edit, event, getPolylineDeps());
 }
 
 function editPolylineSegmentWithUndo(index, remove=false, point=null) {
-  const snapshot = getEditorSnapshot(polylineState);
-  const edited = editPolylineSegment(index, remove, point);
-  if (edited) pushEditorUndoSnapshot(polylineState, snapshot);
-  return edited;
+  return editPolylineSegmentWithUndoImpl(index, remove, point, getPolylineDeps());
 }
 
 function editPolylineSegment(index, remove=false, point=null) {
-  const gaps = getPolylineSegmentGaps();
-  if (remove) {
-    if (gaps.includes(index)) return false;
-    polylineState.segmentGaps = [...gaps, index].sort((a, b) => a - b);
-    drawPolylinePreview();
-    return true;
-  }
-
-  if (gaps.includes(index)) {
-    polylineState.segmentGaps = gaps.filter((gap) => gap !== index);
-    drawPolylinePreview();
-    return true;
-  }
-
-  return addPolylineVertexAtSegment(index, point);
-}
-
-function addPolylineVertexAtSegment(index, point) {
-  if (!Number.isInteger(index) || !Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return false;
-  if (index < 0 || index >= getPolylineSegmentCount()) return false;
-
-  const segment = getAllPolylineSegments()[index];
-  if (!segment) return false;
-  const minDistance = getScaledRadius(Math.max(getPreviewStyle().vertexSize, 4));
-  if (Math.hypot(segment.a.x - point.x, segment.a.y - point.y) <= minDistance) return false;
-  if (Math.hypot(segment.b.x - point.x, segment.b.y - point.y) <= minDistance) return false;
-
-  const insertIndex = polylineState.closed && index === polylineState.points.length - 1
-    ? polylineState.points.length
-    : index + 1;
-  polylineState.points.splice(insertIndex, 0, {x: point.x, y: point.y});
-  polylineState.segmentGaps = shiftPolylineGapsForInsert(polylineState.segmentGaps, index);
-  polylineState.wallTypeBySegment = shiftPolylineWallTypesForInsert(polylineState.wallTypeBySegment, index);
-  polylineState.previewPoint = null;
-  drawPolylinePreview();
-  return true;
+  return editPolylineSegmentImpl(index, remove, point, getPolylineDeps());
 }
 
 function removePolylineVertex(index) {
-  if (!Number.isInteger(index) || !polylineState.points[index]) return false;
-  if (polylineState.points.length <= (polylineState.closed ? 3 : 2)) return false;
-
-  const pointCountBefore = polylineState.points.length;
-  const closed = polylineState.closed;
-  polylineState.points.splice(index, 1);
-  polylineState.segmentGaps = shiftPolylineGapsForRemove(polylineState.segmentGaps, index, pointCountBefore, closed);
-  polylineState.wallTypeBySegment = shiftPolylineWallTypesForRemove(polylineState.wallTypeBySegment, index, pointCountBefore, closed);
-  polylineState.previewPoint = null;
-  drawPolylinePreview();
-  return true;
+  return removePolylineVertexImpl(index, getPolylineDeps());
 }
 
 async function applyPolylineWalls() {
-  if (!isPolylineToolActive() || !polylineState.placed || polylineState.points.length < 2) return;
-
-  const segments = getPolylineSegments();
-  const segmentGaps = getPolylineSegmentGaps();
-  const polylineId = polylineState.polylineId ?? foundry.utils.randomID();
-  const walls = [];
-  const wallSegmentIndexes = [];
-
-  for (const segment of segments) {
-    const {a, b} = segment;
-    const wallData = getSegmentWallData(polylineState, getSegmentKey(segment));
-    const c = [Math.round(a.x), Math.round(a.y), Math.round(b.x), Math.round(b.y)];
-    if ((c[0] === c[2]) && (c[1] === c[3])) continue;
-    wallSegmentIndexes.push(segment.index);
-    walls.push({
-      ...wallData,
-      c,
-      flags: {
-        [MODULE_ID]: {
-          [POLYLINE_FLAG]: {
-            polylineId,
-            index: segment.index,
-            wallIds: [],
-            points: clonePoints(polylineState.points),
-            closed: polylineState.closed,
-            segmentGaps,
-            wallTypeBySegment: cloneWallTypeBySegment(polylineState.wallTypeBySegment),
-            wallTypeTool: polylineState.wallTypeTool
-          }
-        }
-      }
-    });
-  }
-
-  const oldWallIds = getExistingPolylineWallIds();
-  const oldWalls = oldWallIds.map((id) => canvas.scene.walls.get(id)).filter(Boolean);
-  if (!walls.length) {
-    if (oldWallIds.length) {
-      canvas.walls.storeHistory("delete", oldWalls.map((wall) => wall.toObject()));
-      oldWallIds.forEach((id) => polylineState.replacingWallIds.add(id));
-      try {
-        await canvas.scene.deleteEmbeddedDocuments("Wall", oldWallIds);
-      } finally {
-        oldWallIds.forEach((id) => polylineState.replacingWallIds.delete(id));
-      }
-    }
-    clearPolylinePreview();
-    return;
-  }
-
-  const created = await canvas.scene.createEmbeddedDocuments("Wall", walls);
-  const wallIds = created.map((wall) => wall.id);
-  const flagUpdates = created.map((wall, index) => ({
-    _id: wall.id,
-    [`flags.${MODULE_ID}.${POLYLINE_FLAG}.index`]: wallSegmentIndexes[index] ?? index,
-    [`flags.${MODULE_ID}.${POLYLINE_FLAG}.wallIds`]: wallIds
-  }));
-  await canvas.scene.updateEmbeddedDocuments("Wall", flagUpdates);
-
-  if (oldWallIds.length) {
-    canvas.walls.storeHistory("delete", oldWalls.map((wall) => wall.toObject()));
-    oldWallIds.forEach((id) => polylineState.replacingWallIds.add(id));
-    try {
-      await canvas.scene.deleteEmbeddedDocuments("Wall", oldWallIds);
-    } finally {
-      oldWallIds.forEach((id) => polylineState.replacingWallIds.delete(id));
-    }
-  }
-
-  canvas.walls.storeHistory("create", created.map((wall) => wall.toObject()));
-  ui.notifications.info(game.i18n.format("indy-walls.Notifications.PolylineWallsCreated", {
-    count: created.length
-  }));
-  clearPolylinePreview();
+  return applyPolylineWallsImpl(getPolylineDeps());
 }
 
 async function applyRectangleWalls() {
@@ -4552,195 +3565,19 @@ async function applyRectangleWalls() {
 }
 
 async function applyEllipseWalls() {
-  if (!isEllipseToolActive() || !ellipseState.placed) return;
-
-  const segments = getEllipseSegments();
-  const segmentGaps = getEllipseSegmentGaps();
-  const ellipseId = ellipseState.ellipseId ?? foundry.utils.randomID();
-  const walls = [];
-  const wallSegmentIndexes = [];
-
-  for (const segment of segments) {
-    const {a, b} = segment;
-    const wallData = getSegmentWallData(ellipseState, getSegmentKey(segment));
-    const c = [Math.round(a.x), Math.round(a.y), Math.round(b.x), Math.round(b.y)];
-    if ((c[0] === c[2]) && (c[1] === c[3])) continue;
-    wallSegmentIndexes.push(segment.index);
-    walls.push({
-      ...wallData,
-      c,
-      flags: {
-        [MODULE_ID]: {
-          [ELLIPSE_FLAG]: {
-            ellipseId,
-            index: segment.index,
-            wallIds: [],
-            handles: clonePoints(ellipseState.handles),
-            segments: ellipseState.segments,
-            rotation: ellipseState.rotation,
-            segmentGaps,
-            wallTypeBySegment: cloneWallTypeBySegment(ellipseState.wallTypeBySegment),
-            wallTypeTool: ellipseState.wallTypeTool
-          }
-        }
-      }
-    });
-  }
-
-  const oldWallIds = getExistingEllipseWallIds();
-  const oldWalls = oldWallIds.map((id) => canvas.scene.walls.get(id)).filter(Boolean);
-  if (!walls.length) {
-    if (oldWallIds.length) {
-      canvas.walls.storeHistory("delete", oldWalls.map((wall) => wall.toObject()));
-      oldWallIds.forEach((id) => ellipseState.replacingWallIds.add(id));
-      try {
-        await canvas.scene.deleteEmbeddedDocuments("Wall", oldWallIds);
-      } finally {
-        oldWallIds.forEach((id) => ellipseState.replacingWallIds.delete(id));
-      }
-    }
-    clearEllipsePreview();
-    return;
-  }
-
-  const created = await canvas.scene.createEmbeddedDocuments("Wall", walls);
-  const wallIds = created.map((wall) => wall.id);
-  const flagUpdates = created.map((wall, index) => ({
-    _id: wall.id,
-    [`flags.${MODULE_ID}.${ELLIPSE_FLAG}.index`]: wallSegmentIndexes[index] ?? index,
-    [`flags.${MODULE_ID}.${ELLIPSE_FLAG}.wallIds`]: wallIds
-  }));
-  await canvas.scene.updateEmbeddedDocuments("Wall", flagUpdates);
-
-  if (oldWallIds.length) {
-    canvas.walls.storeHistory("delete", oldWalls.map((wall) => wall.toObject()));
-    oldWallIds.forEach((id) => ellipseState.replacingWallIds.add(id));
-    try {
-      await canvas.scene.deleteEmbeddedDocuments("Wall", oldWallIds);
-    } finally {
-      oldWallIds.forEach((id) => ellipseState.replacingWallIds.delete(id));
-    }
-  }
-
-  canvas.walls.storeHistory("create", created.map((wall) => wall.toObject()));
-  ui.notifications.info(game.i18n.format("indy-walls.Notifications.EllipseWallsCreated", {
-    count: created.length
-  }));
-  clearEllipsePreview();
+  return applyEllipseWallsImpl(getEllipseDeps());
 }
 
 async function applyCubicWalls() {
-  if (!isCubicToolActive() || !cubicState.placed) return;
-
-  const segments = getCubicSegments();
-  const segmentGaps = getCubicSegmentGaps();
-  const curveId = cubicState.curveId ?? foundry.utils.randomID();
-  const walls = [];
-  const wallSegmentIndexes = [];
-
-  for (const segment of segments) {
-    const {a, b} = segment;
-    const wallData = getSegmentWallData(cubicState, getSegmentKey(segment));
-    const c = [Math.round(a.x), Math.round(a.y), Math.round(b.x), Math.round(b.y)];
-    if ((c[0] === c[2]) && (c[1] === c[3])) continue;
-    wallSegmentIndexes.push(segment.index);
-    walls.push({
-      ...wallData,
-      c,
-      flags: {
-        [MODULE_ID]: {
-          [CUBIC_FLAG]: {
-            curveId,
-            index: segment.index,
-            wallIds: [],
-            handles: cloneHandles(),
-            segments: cubicState.segments,
-            segmentGaps,
-            wallTypeBySegment: cloneWallTypeBySegment(cubicState.wallTypeBySegment),
-            wallTypeTool: cubicState.wallTypeTool
-          }
-        }
-      }
-    });
-  }
-
-  const oldWallIds = getExistingCurveWallIds();
-  const oldWalls = oldWallIds.map((id) => canvas.scene.walls.get(id)).filter(Boolean);
-  if (!walls.length) {
-    if (oldWallIds.length) {
-      canvas.walls.storeHistory("delete", oldWalls.map((wall) => wall.toObject()));
-      oldWallIds.forEach((id) => cubicState.replacingWallIds.add(id));
-      try {
-        await canvas.scene.deleteEmbeddedDocuments("Wall", oldWallIds);
-      } finally {
-        oldWallIds.forEach((id) => cubicState.replacingWallIds.delete(id));
-      }
-    }
-    clearCubicPreview();
-    return;
-  }
-
-  const created = await canvas.scene.createEmbeddedDocuments("Wall", walls);
-  const wallIds = created.map((wall) => wall.id);
-  const flagUpdates = created.map((wall, index) => ({
-    _id: wall.id,
-    [`flags.${MODULE_ID}.${CUBIC_FLAG}.index`]: wallSegmentIndexes[index] ?? index,
-    [`flags.${MODULE_ID}.${CUBIC_FLAG}.wallIds`]: wallIds
-  }));
-  await canvas.scene.updateEmbeddedDocuments("Wall", flagUpdates);
-
-  if (oldWallIds.length) {
-    canvas.walls.storeHistory("delete", oldWalls.map((wall) => wall.toObject()));
-    oldWallIds.forEach((id) => cubicState.replacingWallIds.add(id));
-    try {
-      await canvas.scene.deleteEmbeddedDocuments("Wall", oldWallIds);
-    } finally {
-      oldWallIds.forEach((id) => cubicState.replacingWallIds.delete(id));
-    }
-  }
-
-  canvas.walls.storeHistory("create", created.map((wall) => wall.toObject()));
-  ui.notifications.info(game.i18n.format("indy-walls.Notifications.CubicWallsCreated", {
-    count: created.length
-  }));
-  clearCubicPreview();
+  return applyCubicWallsImpl(getCubicDeps());
 }
 
 function clearCubicPreview() {
-  restoreEditSessionWalls();
-  clearEditorHistory(cubicState);
-  cubicState.placed = false;
-  cubicState.initializing = false;
-  cubicState.draggingHandle = null;
-  cubicState.lastSegmentEditAction = 0;
-  cubicState.suppressNextSegmentEditClick = false;
-  cubicState.curveId = null;
-  cubicState.wallIds = [];
-  cubicState.wallTypeBySegment = {};
-  cubicState.segmentGaps = [];
-  cubicState.graphics?.destroy();
-  cubicState.graphics = null;
-  setCubicEditingState(false);
+  return clearCubicPreviewImpl(getCubicDeps());
 }
 
 function clearEllipsePreview() {
-  restoreEditSessionWalls();
-  clearEditorHistory(ellipseState);
-  ellipseState.placed = false;
-  ellipseState.initializing = false;
-  ellipseState.initialOrigin = null;
-  ellipseState.draggingHandle = null;
-  ellipseState.draggingVertex = null;
-  ellipseState.lastSegmentEditAction = 0;
-  ellipseState.suppressNextSegmentEditClick = false;
-  ellipseState.ellipseId = null;
-  ellipseState.wallIds = [];
-  ellipseState.wallTypeBySegment = {};
-  ellipseState.rotation = 0;
-  ellipseState.segmentGaps = [];
-  ellipseState.graphics?.destroy();
-  ellipseState.graphics = null;
-  setEllipseEditingState(false);
+  return clearEllipsePreviewImpl(getEllipseDeps());
 }
 
 function clearRectanglePreview() {
@@ -4763,22 +3600,7 @@ function clearRectanglePreview() {
 }
 
 function clearPolylinePreview() {
-  restoreEditSessionWalls();
-  clearEditorHistory(polylineState);
-  polylineState.placed = false;
-  polylineState.drawing = false;
-  polylineState.draggingVertex = null;
-  polylineState.hoveredVertex = null;
-  polylineState.polylineId = null;
-  polylineState.wallIds = [];
-  polylineState.wallTypeBySegment = {};
-  polylineState.segmentGaps = [];
-  polylineState.closed = false;
-  polylineState.previewPoint = null;
-  polylineState.points = [];
-  polylineState.graphics?.destroy();
-  polylineState.graphics = null;
-  setPolylineEditingState(false);
+  return clearPolylinePreviewImpl(getPolylineDeps());
 }
 
 function setCubicEditingState(editing) {
@@ -4885,29 +3707,11 @@ function positionPolylineEditButtons() {
 }
 
 function cancelCubicEditingForDeletedWall(wallDocument) {
-  if (!cubicState.placed || !cubicState.curveId) return;
-  if (cubicState.replacingWallIds.has(wallDocument.id)) return;
-
-  const cubicData = wallDocument.getFlag(MODULE_ID, CUBIC_FLAG);
-  const sameCurve = cubicData?.curveId === cubicState.curveId;
-  const knownWall = cubicState.wallIds.includes(wallDocument.id);
-  if (!sameCurve && !knownWall) return;
-
-  clearCubicPreview();
-  if (game.activeTool === CUBIC_TOOL) canvas.walls.activate({tool: "select"});
+  return cancelCubicEditingForDeletedWallImpl(wallDocument, getCubicDeps());
 }
 
 function cancelEllipseEditingForDeletedWall(wallDocument) {
-  if (!ellipseState.placed || !ellipseState.ellipseId) return;
-  if (ellipseState.replacingWallIds.has(wallDocument.id)) return;
-
-  const ellipseData = wallDocument.getFlag(MODULE_ID, ELLIPSE_FLAG);
-  const sameEllipse = ellipseData?.ellipseId === ellipseState.ellipseId;
-  const knownWall = ellipseState.wallIds.includes(wallDocument.id);
-  if (!sameEllipse && !knownWall) return;
-
-  clearEllipsePreview();
-  if (game.activeTool === ELLIPSE_TOOL) canvas.walls.activate({tool: "select"});
+  return cancelEllipseEditingForDeletedWallImpl(wallDocument, getEllipseDeps());
 }
 
 function cancelRectangleEditingForDeletedWall(wallDocument) {
@@ -4924,85 +3728,15 @@ function cancelRectangleEditingForDeletedWall(wallDocument) {
 }
 
 function cancelPolylineEditingForDeletedWall(wallDocument) {
-  if (!polylineState.placed || !polylineState.polylineId) return;
-  if (polylineState.replacingWallIds.has(wallDocument.id)) return;
-
-  const polylineData = wallDocument.getFlag(MODULE_ID, POLYLINE_FLAG);
-  const samePolyline = polylineData?.polylineId === polylineState.polylineId;
-  const knownWall = polylineState.wallIds.includes(wallDocument.id);
-  if (!samePolyline && !knownWall) return;
-
-  clearPolylinePreview();
-  if (game.activeTool === POLYLINE_TOOL) canvas.walls.activate({tool: "select"});
+  return cancelPolylineEditingForDeletedWallImpl(wallDocument, getPolylineDeps());
 }
 
 function loadCubicCurveFromWall(wall) {
-  const cubicData = wall.document.getFlag(MODULE_ID, CUBIC_FLAG);
-  if (!Array.isArray(cubicData?.handles) || cubicData.handles.length !== 4) return;
-
-  cubicState.active = true;
-  ellipseState.active = false;
-  rectangleState.active = false;
-  polylineState.active = false;
-  clearEditorHistory(cubicState);
-  cubicState.placed = true;
-  cubicState.initializing = false;
-  cubicState.draggingHandle = null;
-  cubicState.lastSegmentEditAction = 0;
-  cubicState.suppressNextSegmentEditClick = false;
-  cubicState.curveId = cubicData.curveId ?? null;
-  cubicState.wallIds = Array.isArray(cubicData.wallIds) ? [...cubicData.wallIds] : [wall.document.id];
-  cubicState.wallTypeTool = getWallTypeToolFromDocument(wall.document) ?? cubicData.wallTypeTool ?? "walls";
-  cubicState.segments = clamp(Number(cubicData.segments) || DEFAULT_CUBIC_SEGMENTS, 2, 64);
-  cubicState.segmentGaps = reconcileCubicSegmentGaps(cubicData.segmentGaps, cubicState.segments);
-  cubicState.handles = cubicData.handles.map((handle) => ({
-    x: Number(handle.x) || 0,
-    y: Number(handle.y) || 0
-  }));
-  cubicState.wallTypeBySegment = {
-    ...cloneWallTypeBySegment(cubicData.wallTypeBySegment),
-    ...getShapeWallTypeByIndexedFlag(cubicState.wallIds, CUBIC_FLAG)
-  };
-
-  canvas.walls.activate({tool: CUBIC_TOOL});
-  hideEditSessionWalls(cubicState.wallIds);
-  drawCubicPreview();
+  return loadCubicCurveFromWallImpl(wall, getCubicDeps());
 }
 
 function loadEllipseFromWall(wall) {
-  const ellipseData = wall.document.getFlag(MODULE_ID, ELLIPSE_FLAG);
-  if (!Array.isArray(ellipseData?.handles) || ellipseData.handles.length !== 2) return;
-
-  cubicState.active = false;
-  ellipseState.active = true;
-  rectangleState.active = false;
-  polylineState.active = false;
-  clearEditorHistory(ellipseState);
-  ellipseState.placed = true;
-  ellipseState.initializing = false;
-  ellipseState.initialOrigin = null;
-  ellipseState.draggingHandle = null;
-  ellipseState.draggingVertex = null;
-  ellipseState.lastSegmentEditAction = 0;
-  ellipseState.suppressNextSegmentEditClick = false;
-  ellipseState.ellipseId = ellipseData.ellipseId ?? null;
-  ellipseState.wallIds = Array.isArray(ellipseData.wallIds) ? [...ellipseData.wallIds] : [wall.document.id];
-  ellipseState.wallTypeTool = getWallTypeToolFromDocument(wall.document) ?? ellipseData.wallTypeTool ?? "walls";
-  ellipseState.segments = clamp(Number(ellipseData.segments) || DEFAULT_ELLIPSE_SEGMENTS, 4, 96);
-  ellipseState.rotation = Number(ellipseData.rotation) || 0;
-  ellipseState.segmentGaps = reconcileEllipseSegmentGaps(ellipseData.segmentGaps, ellipseState.segments);
-  ellipseState.handles = ellipseData.handles.map((handle) => ({
-    x: Number(handle.x) || 0,
-    y: Number(handle.y) || 0
-  }));
-  ellipseState.wallTypeBySegment = {
-    ...cloneWallTypeBySegment(ellipseData.wallTypeBySegment),
-    ...getShapeWallTypeByIndexedFlag(ellipseState.wallIds, ELLIPSE_FLAG)
-  };
-
-  canvas.walls.activate({tool: ELLIPSE_TOOL});
-  hideEditSessionWalls(ellipseState.wallIds);
-  drawEllipsePreview();
+  return loadEllipseFromWallImpl(wall, getEllipseDeps());
 }
 
 function loadRectangleFromWall(wall) {
@@ -5041,48 +3775,15 @@ function loadRectangleFromWall(wall) {
 }
 
 function loadPolylineFromWall(wall) {
-  const polylineData = wall.document.getFlag(MODULE_ID, POLYLINE_FLAG);
-  if (!Array.isArray(polylineData?.points) || polylineData.points.length < 2) return;
-
-  cubicState.active = false;
-  ellipseState.active = false;
-  rectangleState.active = false;
-  polylineState.active = true;
-  clearEditorHistory(polylineState);
-  polylineState.placed = true;
-  polylineState.drawing = false;
-  polylineState.draggingVertex = null;
-  polylineState.hoveredVertex = null;
-  polylineState.polylineId = polylineData.polylineId ?? null;
-  polylineState.wallIds = Array.isArray(polylineData.wallIds) ? [...polylineData.wallIds] : [wall.document.id];
-  polylineState.wallTypeTool = getWallTypeToolFromDocument(wall.document) ?? polylineData.wallTypeTool ?? "walls";
-  polylineState.points = polylineData.points.map((point) => ({
-    x: Number(point.x) || 0,
-    y: Number(point.y) || 0
-  }));
-  polylineState.closed = !!polylineData.closed;
-  polylineState.segmentGaps = reconcilePolylineSegmentGaps(polylineData.segmentGaps, getPolylineSegmentCount());
-  polylineState.previewPoint = null;
-  polylineState.wallTypeBySegment = {
-    ...cloneWallTypeBySegment(polylineData.wallTypeBySegment),
-    ...getShapeWallTypeByIndexedFlag(polylineState.wallIds, POLYLINE_FLAG)
-  };
-
-  canvas.walls.activate({tool: POLYLINE_TOOL});
-  hideEditSessionWalls(polylineState.wallIds);
-  drawPolylinePreview();
-}
-
-function cloneHandles() {
-  return clonePoints(cubicState.handles);
+  return loadPolylineFromWallImpl(wall, getPolylineDeps());
 }
 
 function getExistingCurveWallIds() {
-  return cubicState.wallIds.filter((id) => canvas.scene.walls.has(id));
+  return getExistingCurveWallIdsImpl();
 }
 
 function getExistingEllipseWallIds() {
-  return ellipseState.wallIds.filter((id) => canvas.scene.walls.has(id));
+  return getExistingEllipseWallIdsImpl();
 }
 
 function getExistingRectangleWallIds() {
@@ -5090,7 +3791,7 @@ function getExistingRectangleWallIds() {
 }
 
 function getExistingPolylineWallIds() {
-  return polylineState.wallIds.filter((id) => canvas.scene.walls.has(id));
+  return getExistingPolylineWallIdsImpl();
 }
 
 function normalizeRectangleSideSegments(source={}) {
@@ -5122,25 +3823,4 @@ function normalizeRectangleSideGaps(source={}, sideSegments=normalizeRectangleSi
     bottom: reconcileRectangleSideGaps(source.bottom, sideSegments.bottom),
     left: reconcileRectangleSideGaps(source.left, sideSegments.left)
   };
-}
-
-function getWallTypeToolFromDocument(wallDocument) {
-  const senses = CONST.WALL_SENSE_TYPES;
-  const movement = CONST.WALL_MOVEMENT_TYPES;
-  const doors = CONST.WALL_DOOR_TYPES;
-  const {light, sight, sound, move, door} = wallDocument;
-
-  if (door === doors.DOOR) return "doors";
-  if (door === doors.SECRET) return "secret";
-  if ((light === senses.LIMITED) && (sight === senses.LIMITED) && (sound === senses.LIMITED)
-    && (move === movement.NORMAL)) return "terrain";
-  if ((light === senses.NONE) && (sight === senses.NONE) && (sound === senses.NONE)
-    && (move === movement.NORMAL)) return "invisible";
-  if ((light === senses.NORMAL) && (sight === senses.NORMAL) && (sound === senses.NONE)
-    && (move === movement.NONE)) return "ethereal";
-  if ((light === senses.NORMAL) && (sight === senses.NORMAL) && (sound === senses.NORMAL)
-    && (move === movement.NONE)) return "windows";
-  if ((light === senses.NORMAL) && (sight === senses.NORMAL) && (sound === senses.NORMAL)
-    && (move === movement.NORMAL)) return "walls";
-  return null;
 }

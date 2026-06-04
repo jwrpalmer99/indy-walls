@@ -91,3 +91,253 @@ export function reconcileCubicSegmentGaps(source, segmentCount) {
     .filter((index) => Number.isInteger(index) && index >= 0 && index < segmentCount))]
     .sort((a, b) => a - b);
 }
+
+export function changeCubicSegments(delta, deps) {
+  if (!deps.isCubicToolActive()) return;
+  cubicState.segments = deps.clamp(cubicState.segments + delta, 2, 64);
+  cubicState.segmentGaps = reconcileCubicSegmentGaps(cubicState.segmentGaps, cubicState.segments);
+  deps.drawCubicPreview();
+}
+
+export function drawCubicPreview(deps) {
+  const layer = canvas?.walls;
+  if (!layer) return;
+
+  if (!cubicState.graphics || cubicState.graphics._destroyed) {
+    cubicState.graphics = new PIXI.Graphics();
+    layer.preview.addChild(cubicState.graphics);
+  } else if (!cubicState.graphics.parent) {
+    layer.preview.addChild(cubicState.graphics);
+  }
+
+  const graphics = cubicState.graphics;
+  graphics.clear();
+  deps.setCubicEditingState(cubicState.placed);
+  if (!cubicState.placed) return;
+
+  const style = deps.getPreviewStyle();
+  const points = getCubicPoints(cubicState.segments);
+  const segments = getCubicSegments();
+  const allSegments = getAllCubicSegments();
+  const gaps = getCubicSegmentGaps();
+  for (const segment of segments) {
+    const {a, b} = segment;
+    graphics.lineStyle(deps.getScaledRadius(style.wallWidth), deps.getSegmentPreviewColor(cubicState, segment, style), 0.9);
+    graphics.moveTo(a.x, a.y);
+    graphics.lineTo(b.x, b.y);
+  }
+
+  for (const segment of allSegments) {
+    if (!gaps.includes(segment.index)) continue;
+    graphics.lineStyle(
+      deps.getScaledRadius(Math.max(style.guideWidth, 1)),
+      deps.getSegmentPreviewColor(cubicState, segment, style),
+      0.22
+    );
+    graphics.moveTo(segment.a.x, segment.a.y);
+    graphics.lineTo(segment.b.x, segment.b.y);
+  }
+
+  const [start, controlA, controlB, end] = cubicState.handles;
+  graphics.lineStyle(deps.getScaledRadius(style.guideWidth), style.wallColor, 0.65);
+  graphics.moveTo(start.x, start.y);
+  graphics.lineTo(controlA.x, controlA.y);
+  graphics.moveTo(end.x, end.y);
+  graphics.lineTo(controlB.x, controlB.y);
+
+  for (const point of points) {
+    deps.drawPreviewVertex(graphics, point, style);
+  }
+  deps.drawEndpoint(graphics, start, style);
+  deps.drawEndpoint(graphics, end, style);
+  deps.drawBezierHandle(graphics, controlA, style);
+  deps.drawBezierHandle(graphics, controlB, style);
+  deps.drawMoveHandle(graphics, deps.getEditorShapeCenter(CUBIC_TOOL), style);
+}
+
+export function getCubicSegmentAt(point, deps) {
+  if (!cubicState.placed) return null;
+  const style = deps.getPreviewStyle();
+  const tolerance = deps.getScaledRadius(Math.max(style.wallWidth + 6, 10));
+  let best = null;
+  let bestDistance = Infinity;
+
+  for (const segment of getAllCubicSegments()) {
+    if (!deps.isPointNearSegmentBounds(point, segment.a, segment.b, tolerance)) continue;
+    const distance = deps.getPointSegmentDistance(point, segment.a, segment.b);
+    if (distance <= tolerance && distance < bestDistance) {
+      best = segment;
+      bestDistance = distance;
+    }
+  }
+
+  return best;
+}
+
+export function editCubicSegmentWithUndo(index, remove=false, deps) {
+  const snapshot = deps.getEditorSnapshot(cubicState);
+  const edited = editCubicSegment(index, remove, deps);
+  if (edited) deps.pushEditorUndoSnapshot(cubicState, snapshot);
+  return edited;
+}
+
+export function editCubicSegment(index, remove=false, deps) {
+  const gaps = getCubicSegmentGaps();
+  if (remove) {
+    if (gaps.includes(index)) return false;
+    cubicState.segmentGaps = [...gaps, index].sort((a, b) => a - b);
+    deps.drawCubicPreview();
+    return true;
+  }
+
+  if (!gaps.includes(index)) return false;
+  cubicState.segmentGaps = gaps.filter((gap) => gap !== index);
+  deps.drawCubicPreview();
+  return true;
+}
+
+export async function applyCubicWalls(deps) {
+  if (!deps.isCubicToolActive() || !cubicState.placed) return;
+
+  const segments = getCubicSegments();
+  const segmentGaps = getCubicSegmentGaps();
+  const curveId = cubicState.curveId ?? foundry.utils.randomID();
+  const walls = [];
+  const wallSegmentIndexes = [];
+
+  for (const segment of segments) {
+    const {a, b} = segment;
+    const wallData = deps.getSegmentWallData(cubicState, deps.getSegmentKey(segment));
+    const c = [Math.round(a.x), Math.round(a.y), Math.round(b.x), Math.round(b.y)];
+    if ((c[0] === c[2]) && (c[1] === c[3])) continue;
+    wallSegmentIndexes.push(segment.index);
+    walls.push({
+      ...wallData,
+      c,
+      flags: {
+        [deps.MODULE_ID]: {
+          [CUBIC_FLAG]: {
+            curveId,
+            index: segment.index,
+            wallIds: [],
+            handles: cloneHandles(deps),
+            segments: cubicState.segments,
+            segmentGaps,
+            wallTypeBySegment: deps.cloneWallTypeBySegment(cubicState.wallTypeBySegment),
+            wallTypeTool: cubicState.wallTypeTool
+          }
+        }
+      }
+    });
+  }
+
+  const oldWallIds = getExistingCurveWallIds();
+  const oldWalls = oldWallIds.map((id) => canvas.scene.walls.get(id)).filter(Boolean);
+  if (!walls.length) {
+    if (oldWallIds.length) {
+      canvas.walls.storeHistory("delete", oldWalls.map((wall) => wall.toObject()));
+      oldWallIds.forEach((id) => cubicState.replacingWallIds.add(id));
+      try {
+        await canvas.scene.deleteEmbeddedDocuments("Wall", oldWallIds);
+      } finally {
+        oldWallIds.forEach((id) => cubicState.replacingWallIds.delete(id));
+      }
+    }
+    deps.clearCubicPreview();
+    return;
+  }
+
+  const created = await canvas.scene.createEmbeddedDocuments("Wall", walls);
+  const wallIds = created.map((wall) => wall.id);
+  const flagUpdates = created.map((wall, index) => ({
+    _id: wall.id,
+    [`flags.${deps.MODULE_ID}.${CUBIC_FLAG}.index`]: wallSegmentIndexes[index] ?? index,
+    [`flags.${deps.MODULE_ID}.${CUBIC_FLAG}.wallIds`]: wallIds
+  }));
+  await canvas.scene.updateEmbeddedDocuments("Wall", flagUpdates);
+
+  if (oldWallIds.length) {
+    canvas.walls.storeHistory("delete", oldWalls.map((wall) => wall.toObject()));
+    oldWallIds.forEach((id) => cubicState.replacingWallIds.add(id));
+    try {
+      await canvas.scene.deleteEmbeddedDocuments("Wall", oldWallIds);
+    } finally {
+      oldWallIds.forEach((id) => cubicState.replacingWallIds.delete(id));
+    }
+  }
+
+  canvas.walls.storeHistory("create", created.map((wall) => wall.toObject()));
+  ui.notifications.info(game.i18n.format("indy-walls.Notifications.CubicWallsCreated", {
+    count: created.length
+  }));
+  deps.clearCubicPreview();
+}
+
+export function clearCubicPreview(deps) {
+  deps.restoreEditSessionWalls();
+  deps.clearEditorHistory(cubicState);
+  cubicState.placed = false;
+  cubicState.initializing = false;
+  cubicState.draggingHandle = null;
+  cubicState.lastSegmentEditAction = 0;
+  cubicState.suppressNextSegmentEditClick = false;
+  cubicState.curveId = null;
+  cubicState.wallIds = [];
+  cubicState.wallTypeBySegment = {};
+  cubicState.segmentGaps = [];
+  cubicState.graphics?.destroy();
+  cubicState.graphics = null;
+  deps.setCubicEditingState(false);
+}
+
+export function cancelCubicEditingForDeletedWall(wallDocument, deps) {
+  if (!cubicState.placed || !cubicState.curveId) return;
+  if (cubicState.replacingWallIds.has(wallDocument.id)) return;
+
+  const cubicData = wallDocument.getFlag(deps.MODULE_ID, CUBIC_FLAG);
+  const sameCurve = cubicData?.curveId === cubicState.curveId;
+  const knownWall = cubicState.wallIds.includes(wallDocument.id);
+  if (!sameCurve && !knownWall) return;
+
+  deps.clearCubicPreview();
+  if (game.activeTool === CUBIC_TOOL) canvas.walls.activate({tool: "select"});
+}
+
+export function loadCubicCurveFromWall(wall, deps) {
+  const cubicData = wall.document.getFlag(deps.MODULE_ID, CUBIC_FLAG);
+  if (!Array.isArray(cubicData?.handles) || cubicData.handles.length !== 4) return;
+
+  deps.deactivateOtherShapeStates(cubicState);
+  cubicState.active = true;
+  deps.clearEditorHistory(cubicState);
+  cubicState.placed = true;
+  cubicState.initializing = false;
+  cubicState.draggingHandle = null;
+  cubicState.lastSegmentEditAction = 0;
+  cubicState.suppressNextSegmentEditClick = false;
+  cubicState.curveId = cubicData.curveId ?? null;
+  cubicState.wallIds = Array.isArray(cubicData.wallIds) ? [...cubicData.wallIds] : [wall.document.id];
+  cubicState.wallTypeTool = deps.getWallTypeToolFromDocument(wall.document) ?? cubicData.wallTypeTool ?? "walls";
+  cubicState.segments = deps.clamp(Number(cubicData.segments) || DEFAULT_CUBIC_SEGMENTS, 2, 64);
+  cubicState.segmentGaps = reconcileCubicSegmentGaps(cubicData.segmentGaps, cubicState.segments);
+  cubicState.handles = cubicData.handles.map((handle) => ({
+    x: Number(handle.x) || 0,
+    y: Number(handle.y) || 0
+  }));
+  cubicState.wallTypeBySegment = {
+    ...deps.cloneWallTypeBySegment(cubicData.wallTypeBySegment),
+    ...deps.getShapeWallTypeByIndexedFlag(cubicState.wallIds, CUBIC_FLAG)
+  };
+
+  canvas.walls.activate({tool: CUBIC_TOOL});
+  deps.hideEditSessionWalls(cubicState.wallIds);
+  deps.drawCubicPreview();
+}
+
+export function cloneHandles(deps) {
+  return deps.clonePoints(cubicState.handles);
+}
+
+export function getExistingCurveWallIds() {
+  return cubicState.wallIds.filter((id) => canvas.scene.walls.has(id));
+}
