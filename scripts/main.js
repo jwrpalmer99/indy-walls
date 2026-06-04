@@ -226,6 +226,12 @@ const canvasSegmentEditState = {
   clientY: null,
   ignoreClickUntil: 0
 };
+const controlShapeSelectState = {
+  active: false,
+  pointerId: null,
+  clientX: null,
+  clientY: null
+};
 
 const hiddenEditWalls = new Map();
 const rectangleCanvasClickViews = new WeakSet();
@@ -522,11 +528,6 @@ function patchWallsLayer() {
       activeTool: game.activeTool,
       editorActive: isAnyEditorToolActive()
     });
-    if (isAnyEditorToolActive() && isControlInteraction(event) && loadShapeAtInteractionPoint(event)) {
-      consumeCanvasInteraction(event);
-      resetEditorCursor(event);
-      return;
-    }
 
     if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive()) {
       return originalDragStart.call(this, event);
@@ -549,18 +550,15 @@ function patchWallsLayer() {
         return;
       }
       if (ellipseState.draggingHandle === null) {
-        if (ellipseState.placed) {
-          consumeCanvasInteraction(event);
-          resetEditorCursor(event);
-          drawEllipsePreview();
-          return;
-        }
         beginEditorOperation(ellipseState, true);
+        if (ellipseState.placed) restoreEditSessionWalls();
         ellipseState.placed = false;
         ellipseState.initializing = true;
         ellipseState.initialOrigin = point;
         ellipseState.draggingHandle = 1;
         ellipseState.draggingVertex = null;
+        ellipseState.ellipseId = null;
+        ellipseState.wallIds = [];
         ellipseState.rotation = 0;
         ellipseState.segmentGaps = [];
         setEllipseHandle(0, point);
@@ -605,17 +603,15 @@ function patchWallsLayer() {
       }
 
       if (rectangleState.draggingHandle === null) {
-        if (rectangleState.placed) {
-          consumeCanvasInteraction(event);
-          resetEditorCursor(event);
-          drawRectanglePreview();
-          return;
-        }
         beginEditorOperation(rectangleState, true);
+        if (rectangleState.placed) restoreEditSessionWalls();
         rectangleState.placed = false;
         rectangleState.initializing = true;
         rectangleState.draggingHandle = 1;
         rectangleState.draggingVertex = null;
+        rectangleState.hoveredVertex = null;
+        rectangleState.rectangleId = null;
+        rectangleState.wallIds = [];
         rectangleState.sideRatios = getDefaultRectangleSideRatios();
         rectangleState.sideEnabled = getDefaultRectangleSideEnabled();
         rectangleState.sideGaps = getDefaultRectangleSideGaps();
@@ -628,16 +624,13 @@ function patchWallsLayer() {
 
     cubicState.draggingHandle = getCubicHandleAt({x: hitPoint.x, y: hitPoint.y});
     if (cubicState.draggingHandle === null) {
-      if (cubicState.placed) {
-        consumeCanvasInteraction(event);
-        resetEditorCursor(event);
-        drawCubicPreview();
-        return;
-      }
       beginEditorOperation(cubicState, true);
+      if (cubicState.placed) restoreEditSessionWalls();
       cubicState.placed = false;
       cubicState.initializing = true;
       cubicState.draggingHandle = 3;
+      cubicState.curveId = null;
+      cubicState.wallIds = [];
       cubicState.segmentGaps = [];
       setHandle(0, point);
       setHandle(1, point);
@@ -845,10 +838,7 @@ function patchWallObjectInteractions(WallClass) {
         editorActive
       });
 
-      if ((method === "_onDragLeftStart" || method === "_onClickLeft")
-        && game.user.isGM
-        && isControlInteraction(event)
-        && loadShapeFromExistingWall(this)) {
+      if (method === "_onClickLeft" && game.user.isGM && isControlInteraction(event)) {
         consumeCanvasInteraction(event);
         resetEditorCursor(event);
         return;
@@ -912,18 +902,13 @@ function registerRectangleCanvasClickHandler() {
 
 function handleCanvasSegmentEditPointerDown(event) {
   if (Number.isFinite(event.button) && event.button !== 0) return;
-  if (isControlInteraction(event)) return;
+  if (isControlInteraction(event)) {
+    startControlShapeSelect(event);
+    return;
+  }
 
   const pending = getActiveCanvasSegmentEdit(event);
   if (!pending) {
-    if (!isPlacedEditorActive()) return;
-    debugShapeSelection("editor canvas pointerdown blocked", {
-      clientX: event.clientX,
-      clientY: event.clientY,
-      activeTool: game.activeTool
-    });
-    consumeCanvasInteraction(event);
-    scheduleEditorInteractionReset(event);
     return;
   }
 
@@ -943,11 +928,16 @@ function handleCanvasSegmentEditPointerDown(event) {
 }
 
 function handleCanvasSegmentEditPointerUp(event) {
-  if (!isPendingCanvasSegmentEditEvent(event)) {
-    if (Number.isFinite(event.button) && event.button !== 0) return;
-    if (!isPlacedEditorActive()) return;
+  const wasControlSelect = isControlShapeSelectEvent(event);
+  const controlSelectHandled = finishControlShapeSelect(event);
+  if (controlSelectHandled) {
     consumeCanvasInteraction(event);
     scheduleEditorInteractionReset(event);
+    return;
+  }
+  if (wasControlSelect) return;
+
+  if (!isPendingCanvasSegmentEditEvent(event)) {
     return;
   }
   consumeCanvasInteraction(event);
@@ -968,10 +958,8 @@ function handleCanvasSegmentEditPointerUp(event) {
 }
 
 function handleCanvasSegmentEditPointerCancel(event) {
+  if (isControlShapeSelectEvent(event)) clearControlShapeSelect();
   if (!isPendingCanvasSegmentEditEvent(event)) {
-    if (!isPlacedEditorActive()) return;
-    consumeCanvasInteraction(event);
-    scheduleEditorInteractionReset(event);
     return;
   }
   consumeCanvasInteraction(event);
@@ -982,20 +970,58 @@ function handleCanvasSegmentEditPointerCancel(event) {
 function handleEditorCanvasMouseEvent(event) {
   if (Number.isFinite(event.button) && event.button !== 0) return;
   if (isControlInteraction(event) || !isPlacedEditorActive()) return;
+}
 
-  consumeCanvasInteraction(event);
-  scheduleEditorInteractionReset(event);
+function startControlShapeSelect(event) {
+  if (!game.user.isGM) return;
+  controlShapeSelectState.active = true;
+  controlShapeSelectState.pointerId = event.pointerId;
+  controlShapeSelectState.clientX = event.clientX;
+  controlShapeSelectState.clientY = event.clientY;
+  debugShapeSelection("control shape select armed", {
+    clientX: event.clientX,
+    clientY: event.clientY,
+    activeTool: game.activeTool
+  });
+}
+
+function finishControlShapeSelect(event) {
+  if (!isControlShapeSelectEvent(event)) return false;
+
+  const moved = Math.hypot(
+    event.clientX - controlShapeSelectState.clientX,
+    event.clientY - controlShapeSelectState.clientY
+  );
+  clearControlShapeSelect();
+  if (moved > 6) {
+    debugShapeSelection("control shape select skipped after drag", {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      moved
+    });
+    return false;
+  }
+
+  const loaded = loadShapeFromCanvasPointerUp(event);
+  if (loaded) canvasSegmentEditState.ignoreClickUntil = Date.now() + 500;
+  return loaded;
+}
+
+function isControlShapeSelectEvent(event) {
+  return controlShapeSelectState.active
+    && (controlShapeSelectState.pointerId === null || controlShapeSelectState.pointerId === event.pointerId);
+}
+
+function clearControlShapeSelect() {
+  controlShapeSelectState.active = false;
+  controlShapeSelectState.pointerId = null;
+  controlShapeSelectState.clientX = null;
+  controlShapeSelectState.clientY = null;
 }
 
 function handleRectangleCanvasClick(event) {
   if (Number.isFinite(event.button) && event.button !== 0) return;
   if (shouldIgnoreCanvasSegmentClick()) {
-    consumeCanvasInteraction(event);
-    scheduleEditorInteractionReset(event);
-    return;
-  }
-
-  if (isControlInteraction(event) && loadShapeFromCanvasClick(event)) {
     consumeCanvasInteraction(event);
     scheduleEditorInteractionReset(event);
     return;
@@ -1159,6 +1185,20 @@ function loadShapeFromCanvasClick(event) {
     if (!scan?.wall || !loadShapeFromExistingWall(scan.wall)) continue;
 
     debugShapeSelection("canvas click loaded shape", {
+      point,
+      wallId: scan.wall.document?.id ?? scan.wall.id
+    });
+    return true;
+  }
+  return false;
+}
+
+function loadShapeFromCanvasPointerUp(event) {
+  for (const point of getCanvasClickCandidatePoints(event)) {
+    const scan = getIndyWallAtPoint(point, "canvas pointerup");
+    if (!scan?.wall || !loadShapeFromExistingWall(scan.wall)) continue;
+
+    debugShapeSelection("canvas pointerup loaded shape", {
       point,
       wallId: scan.wall.document?.id ?? scan.wall.id
     });
