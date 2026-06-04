@@ -3,27 +3,79 @@
     "Controls": {
       "CubicBezier": "Cubic Bezier Wall",
       "Ellipse": "Ellipse Wall",
+      "Rectangle": "Rectangle Wall",
       "DecreaseSegments": "Decrease Curve Segments",
       "IncreaseSegments": "Increase Curve Segments",
+      "UndoEdit": "Undo Edit",
+      "RedoEdit": "Redo Edit",
       "ApplyCubic": "Create Cubic Bezier Walls",
       "CancelCubic": "Cancel Cubic Bezier Wall",
       "ApplyEllipse": "Create Ellipse Walls",
-      "CancelEllipse": "Cancel Ellipse Wall"
+      "CancelEllipse": "Cancel Ellipse Wall",
+      "ApplyRectangle": "Create Rectangle Walls",
+      "CancelRectangle": "Cancel Rectangle Wall"
     },
     "Settings": {
+      "ColorPickerLabel": "Color Picker",
       "QuickWallTypeChange": {
-        "Name": "Click wall type buttons to update selected walls",
-        "Hint": "When enabled, clicking Normal, Terrain, Invisible, Ethereal, Door, or Secret Door in the Wall Controls changes the selected walls to that type."
+        "Name": "Ctrl-click wall type buttons to update selected walls",
+        "Hint": "When enabled, Ctrl-clicking Normal, Terrain, Invisible, Ethereal, Window, Door, or Secret Door in the Wall Controls changes the selected walls to that type."
+      },
+      "PreviewWallColor": {
+        "Name": "Preview wall color",
+        "Hint": "Hex color for generated wall previews, for example #c10e56ff."
+      },
+      "PreviewWallWidth": {
+        "Name": "Preview wall width",
+        "Hint": "Line width for generated wall previews."
+      },
+      "PreviewVertexColor": {
+        "Name": "Preview vertex color",
+        "Hint": "Hex color for regular preview vertices."
+      },
+      "PreviewVertexActiveColor": {
+        "Name": "Preview active vertex color",
+        "Hint": "Hex color for hovered or dragged rectangle split vertices."
+      },
+      "PreviewVertexSize": {
+        "Name": "Preview vertex size",
+        "Hint": "Size for regular preview vertices. Rectangle split vertices are drawn slightly larger."
+      },
+      "PreviewEndpointColor": {
+        "Name": "Preview endpoint color",
+        "Hint": "Hex color for endpoint and rectangle corner handles."
+      },
+      "PreviewEndpointSize": {
+        "Name": "Preview endpoint size",
+        "Hint": "Size for endpoint and rectangle corner handles."
+      },
+      "PreviewHandleColor": {
+        "Name": "Preview Bezier handle color",
+        "Hint": "Hex color for cubic Bezier control handles."
+      },
+      "PreviewHandleSize": {
+        "Name": "Preview Bezier handle size",
+        "Hint": "Size for cubic Bezier control handles."
+      },
+      "PreviewOutlineColor": {
+        "Name": "Preview outline color",
+        "Hint": "Hex color for handle and vertex outlines."
+      },
+      "PreviewOutlineWidth": {
+        "Name": "Preview outline width",
+        "Hint": "Outline width for handles and vertices."
       }
     },
     "Tooltips": {
       "CubicBezier": "Click-drag to place the curve, then drag the red endpoints or green handles. Use plus/minus or Ctrl-wheel to adjust segment count, Enter to create walls, or Escape to cancel.",
-      "Ellipse": "Click-drag to place the ellipse, hold Alt for a circle, or hold Ctrl to grow from the center. Use plus/minus or Ctrl-wheel to adjust segment count, Enter to create walls, or Escape to cancel."
+      "Ellipse": "Click-drag to place the ellipse, hold Alt for a circle, or hold Ctrl to grow from the center. Use plus/minus or Ctrl-wheel to adjust segment count, Enter to create walls, or Escape to cancel.",
+      "Rectangle": "Click-drag to place the rectangle. Left-click a side to add a vertex, restore a gapped segment, or restore a removed side. Alt-click a segment to create a gap, Alt-click a vertex to remove it, drag vertices to reposition them, Enter creates walls, and Escape cancels."
     },
     "Notifications": {
       "WallTypesUpdated": "Indy Walls | Updated {count} selected wall(s).",
       "CubicWallsCreated": "Indy Walls | Created {count} curved wall segment(s).",
-      "EllipseWallsCreated": "Indy Walls | Created {count} ellipse wall segment(s)."
+      "EllipseWallsCreated": "Indy Walls | Created {count} ellipse wall segment(s).",
+      "RectangleWallsCreated": "Indy Walls | Created {count} rectangle wall segment(s)."
     }
   }
 }

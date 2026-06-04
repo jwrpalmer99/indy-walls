@@ -12,6 +12,14 @@
   "url": "#{URL}#", 
   "manifest": "#{MANIFEST}#",
   "download": "#{DOWNLOAD}#",
+  "relationships": {
+    "recommends": [
+      {
+        "id": "colorsettings",
+        "type": "module"
+      }
+    ]
+  },
   "socket": true,
   "styles": ["styles/indy-walls.css"],
   "languages": [

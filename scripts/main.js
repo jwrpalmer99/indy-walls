@@ -6,6 +6,7 @@ import {
   ensureEditButtons,
   getEventPoint,
   getHandleAt as getHandleIndexAt,
+  getScaledRadius,
   isEditableTarget,
   positionEditButtons,
   setEditButtonsVisible
@@ -13,14 +14,31 @@ import {
 
 const MODULE_ID = "indy-walls";
 const QUICK_WALL_TYPE_SETTING = "quickWallTypeChange";
+const STYLE_SETTINGS = {
+  wallColor: "previewWallColor",
+  wallWidth: "previewWallWidth",
+  vertexColor: "previewVertexColor",
+  vertexActiveColor: "previewVertexActiveColor",
+  vertexSize: "previewVertexSize",
+  endpointColor: "previewEndpointColor",
+  endpointSize: "previewEndpointSize",
+  handleColor: "previewHandleColor",
+  handleSize: "previewHandleSize",
+  outlineColor: "previewOutlineColor",
+  outlineWidth: "previewOutlineWidth"
+};
 const CUBIC_TOOL = "indyCubicBezier";
 const ELLIPSE_TOOL = "indyEllipseWall";
+const RECTANGLE_TOOL = "indyRectangleWall";
 const DEFAULT_CUBIC_SEGMENTS = 10;
 const DEFAULT_ELLIPSE_SEGMENTS = 16;
+const DEFAULT_RECTANGLE_SEGMENTS = 1;
 const CUBIC_FLAG = "cubicBezier";
 const ELLIPSE_FLAG = "ellipse";
+const RECTANGLE_FLAG = "rectangle";
 const CUBIC_EDIT_BUTTONS_ID = "indy-walls-cubic-edit-buttons";
 const ELLIPSE_EDIT_BUTTONS_ID = "indy-walls-ellipse-edit-buttons";
+const RECTANGLE_EDIT_BUTTONS_ID = "indy-walls-rectangle-edit-buttons";
 
 const WALL_TYPE_DATA = {
   walls: () => ({
@@ -55,6 +73,14 @@ const WALL_TYPE_DATA = {
     door: CONST.WALL_DOOR_TYPES.NONE,
     ds: CONST.WALL_DOOR_STATES.CLOSED
   }),
+  windows: () => ({
+    light: CONST.WALL_SENSE_TYPES.NORMAL,
+    sight: CONST.WALL_SENSE_TYPES.NORMAL,
+    sound: CONST.WALL_SENSE_TYPES.NORMAL,
+    move: CONST.WALL_MOVEMENT_TYPES.NONE,
+    door: CONST.WALL_DOOR_TYPES.NONE,
+    ds: CONST.WALL_DOOR_STATES.CLOSED
+  }),
   doors: () => ({
     light: CONST.WALL_SENSE_TYPES.NORMAL,
     sight: CONST.WALL_SENSE_TYPES.NORMAL,
@@ -82,6 +108,9 @@ const cubicState = {
   curveId: null,
   wallIds: [],
   replacingWallIds: new Set(),
+  undoStack: [],
+  redoStack: [],
+  pendingUndoSnapshot: null,
   wallTypeTool: "walls",
   segments: DEFAULT_CUBIC_SEGMENTS,
   graphics: null,
@@ -97,10 +126,14 @@ const ellipseState = {
   active: false,
   placed: false,
   initializing: false,
+  initialOrigin: null,
   draggingHandle: null,
   ellipseId: null,
   wallIds: [],
   replacingWallIds: new Set(),
+  undoStack: [],
+  redoStack: [],
+  pendingUndoSnapshot: null,
   wallTypeTool: "walls",
   segments: DEFAULT_ELLIPSE_SEGMENTS,
   graphics: null,
@@ -109,6 +142,59 @@ const ellipseState = {
     {x: 0, y: 0}
   ]
 };
+
+const rectangleState = {
+  active: false,
+  placed: false,
+  initializing: false,
+  draggingHandle: null,
+  draggingVertex: null,
+  hoveredVertex: null,
+  lastSideEditAction: 0,
+  suppressNextSideEditClick: false,
+  rectangleId: null,
+  wallIds: [],
+  replacingWallIds: new Set(),
+  undoStack: [],
+  redoStack: [],
+  pendingUndoSnapshot: null,
+  wallTypeTool: "walls",
+  sideSegments: {
+    top: DEFAULT_RECTANGLE_SEGMENTS,
+    right: DEFAULT_RECTANGLE_SEGMENTS,
+    bottom: DEFAULT_RECTANGLE_SEGMENTS,
+    left: DEFAULT_RECTANGLE_SEGMENTS
+  },
+  sideRatios: {
+    top: [],
+    right: [],
+    bottom: [],
+    left: []
+  },
+  sideEnabled: {
+    top: true,
+    right: true,
+    bottom: true,
+    left: true
+  },
+  sideGaps: {
+    top: [],
+    right: [],
+    bottom: [],
+    left: []
+  },
+  graphics: null,
+  handles: [
+    {x: 0, y: 0},
+    {x: 0, y: 0}
+  ]
+};
+
+const shapeLoadState = {
+  allowControlWallLoad: false
+};
+
+const hiddenEditWalls = new Map();
 
 Hooks.once("init", () => {
   game.settings.register(MODULE_ID, QUICK_WALL_TYPE_SETTING, {
@@ -119,21 +205,95 @@ Hooks.once("init", () => {
     type: Boolean,
     default: true
   });
+  registerStyleSettings();
 
   patchWallsLayer();
+  registerWallTypeControlShortcuts();
   registerCurveEditorShortcuts();
 });
 
 Hooks.on("controlWall", (wall, controlled) => {
   if (!controlled || !game.user.isGM) return;
-  loadCubicCurveFromWall(wall);
-  loadEllipseFromWall(wall);
+  if (shapeLoadState.allowControlWallLoad) loadShapeFromExistingWall(wall);
 });
 
 Hooks.on("deleteWall", (wallDocument) => {
   cancelCubicEditingForDeletedWall(wallDocument);
   cancelEllipseEditingForDeletedWall(wallDocument);
+  cancelRectangleEditingForDeletedWall(wallDocument);
 });
+
+Hooks.on("drawWall", (wall) => {
+  applyHiddenEditWallState(wall);
+});
+
+Hooks.on("refreshWall", (wall) => {
+  applyHiddenEditWallState(wall);
+});
+
+function registerStyleSettings() {
+  for (const [key, data] of Object.entries({
+    wallColor: ["PreviewWallColor", String, "#c10e56ff"],
+    vertexColor: ["PreviewVertexColor", String, "#ffffff"],
+    vertexActiveColor: ["PreviewVertexActiveColor", String, "#aaff44"],
+    endpointColor: ["PreviewEndpointColor", String, "#ff4444"],
+    handleColor: ["PreviewHandleColor", String, "#aaff44"],
+    outlineColor: ["PreviewOutlineColor", String, "#111111"]
+  })) {
+    registerColorStyleSetting(key, data);
+  }
+
+  for (const [key, data] of Object.entries({
+    wallWidth: ["PreviewWallWidth", Number, 4, {min: 1, max: 12, step: 1}],
+    vertexSize: ["PreviewVertexSize", Number, 5, {min: 2, max: 20, step: 1}],
+    endpointSize: ["PreviewEndpointSize", Number, 12, {min: 4, max: 32, step: 1}],
+    handleSize: ["PreviewHandleSize", Number, 12, {min: 4, max: 32, step: 1}],
+    outlineWidth: ["PreviewOutlineWidth", Number, 2, {min: 0, max: 8, step: 0.5}]
+  })) {
+    const [label, type, defaultValue, range] = data;
+    game.settings.register(MODULE_ID, STYLE_SETTINGS[key], {
+      name: game.i18n.localize(`indy-walls.Settings.${label}.Name`),
+      hint: game.i18n.localize(`indy-walls.Settings.${label}.Hint`),
+      scope: "client",
+      config: true,
+      type,
+      default: defaultValue,
+      range,
+      onChange: redrawActivePreview
+    });
+  }
+}
+
+function registerColorStyleSetting(key, data) {
+  const [label, type, defaultValue] = data;
+  const settingKey = STYLE_SETTINGS[key];
+  const name = game.i18n.localize(`indy-walls.Settings.${label}.Name`);
+  const hint = game.i18n.localize(`indy-walls.Settings.${label}.Hint`);
+  const ColorSetting = window.Ardittristan?.ColorSetting;
+
+  if (ColorSetting) {
+    new ColorSetting(MODULE_ID, settingKey, {
+      name,
+      hint,
+      label: game.i18n.localize("indy-walls.Settings.ColorPickerLabel"),
+      restricted: false,
+      defaultColor: defaultValue,
+      scope: "client",
+      onChange: redrawActivePreview
+    });
+    return;
+  }
+
+  game.settings.register(MODULE_ID, settingKey, {
+    name,
+    hint,
+    scope: "client",
+    config: true,
+    type,
+    default: defaultValue,
+    onChange: redrawActivePreview
+  });
+}
 
 Hooks.on("getSceneControlButtons", (controls) => {
   const wallTools = controls.walls?.tools;
@@ -149,7 +309,8 @@ Hooks.on("getSceneControlButtons", (controls) => {
       if (!active) return;
       cubicState.wallTypeTool = toolName;
       ellipseState.wallTypeTool = toolName;
-      await updateSelectedWalls(toolName);
+      rectangleState.wallTypeTool = toolName;
+      if (isControlInteraction(event)) await updateSelectedWalls(toolName);
     };
     tool._indyWallsWrapped = true;
   }
@@ -162,7 +323,10 @@ Hooks.on("getSceneControlButtons", (controls) => {
     onChange: (event, active) => {
       cubicState.active = active;
       if (active) {
+        ellipseState.active = false;
+        rectangleState.active = false;
         clearEllipsePreview();
+        clearRectanglePreview();
         canvas.walls.activate();
       }
       else clearCubicPreview();
@@ -183,7 +347,10 @@ Hooks.on("getSceneControlButtons", (controls) => {
     onChange: (event, active) => {
       ellipseState.active = active;
       if (active) {
+        cubicState.active = false;
+        rectangleState.active = false;
         clearCubicPreview();
+        clearRectanglePreview();
         canvas.walls.activate();
       }
       else clearEllipsePreview();
@@ -195,11 +362,36 @@ Hooks.on("getSceneControlButtons", (controls) => {
       ]
     }
   };
+
+  wallTools[RECTANGLE_TOOL] = {
+    name: RECTANGLE_TOOL,
+    order: 15,
+    title: "indy-walls.Controls.Rectangle",
+    icon: "fa-solid fa-vector-square",
+    onChange: (event, active) => {
+      rectangleState.active = active;
+      if (active) {
+        cubicState.active = false;
+        ellipseState.active = false;
+        clearCubicPreview();
+        clearEllipsePreview();
+        canvas.walls.activate();
+      }
+      else clearRectanglePreview();
+    },
+    toolclip: {
+      heading: "indy-walls.Controls.Rectangle",
+      items: [
+        {paragraph: "indy-walls.Tooltips.Rectangle"}
+      ]
+    }
+  };
 });
 
 Hooks.on("renderSceneControls", () => {
   positionCubicEditButtons();
   positionEllipseEditButtons();
+  positionRectangleEditButtons();
 });
 
 async function updateSelectedWalls(toolName) {
@@ -221,6 +413,8 @@ async function updateSelectedWalls(toolName) {
     if (cubicData) update[`flags.${MODULE_ID}.${CUBIC_FLAG}.wallTypeTool`] = toolName;
     const ellipseData = wall.document.getFlag(MODULE_ID, ELLIPSE_FLAG);
     if (ellipseData) update[`flags.${MODULE_ID}.${ELLIPSE_FLAG}.wallTypeTool`] = toolName;
+    const rectangleData = wall.document.getFlag(MODULE_ID, RECTANGLE_FLAG);
+    if (rectangleData) update[`flags.${MODULE_ID}.${RECTANGLE_FLAG}.wallTypeTool`] = toolName;
     return update;
   });
 
@@ -228,6 +422,26 @@ async function updateSelectedWalls(toolName) {
   ui.notifications.info(game.i18n.format("indy-walls.Notifications.WallTypesUpdated", {
     count: selectedWalls.length
   }));
+}
+
+function registerWallTypeControlShortcuts() {
+  document.addEventListener("click", (event) => {
+    if (!isControlInteraction(event)) return;
+    if (!game.user.isGM) return;
+    if (!game.settings.get(MODULE_ID, QUICK_WALL_TYPE_SETTING)) return;
+    if (!canvas?.walls?.controlled?.length) return;
+
+    const button = event.target?.closest?.("[data-tool]");
+    const toolName = button?.dataset?.tool;
+    if (!WALL_TYPE_DATA[toolName]) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    cubicState.wallTypeTool = toolName;
+    ellipseState.wallTypeTool = toolName;
+    rectangleState.wallTypeTool = toolName;
+    updateSelectedWalls(toolName);
+  }, {capture: true});
 }
 
 function patchWallsLayer() {
@@ -241,28 +455,118 @@ function patchWallsLayer() {
   const originalMouseWheel = WallsLayer.prototype._onMouseWheel;
 
   WallsLayer.prototype._onDragLeftStart = function(event) {
-    if (!isCubicToolActive() && !isEllipseToolActive()) return originalDragStart.call(this, event);
+    if (isControlInteraction(event) && loadShapeAtInteractionPoint(event)) {
+      consumeCanvasInteraction(event);
+      resetCanvasCursor();
+      return;
+    }
+
+    if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive()) {
+      return originalDragStart.call(this, event);
+    }
 
     event.interactionData.clearPreviewContainer = false;
     const origin = event.interactionData.origin;
+    const hitPoint = getInteractionPoint(event) ?? origin;
     const point = getEventPoint(this, origin, event);
 
     if (isEllipseToolActive()) {
-      ellipseState.draggingHandle = getEllipseHandleAt({x: origin.x, y: origin.y});
+      ellipseState.draggingHandle = getEllipseHandleAt({x: hitPoint.x, y: hitPoint.y});
       if (ellipseState.draggingHandle === null) {
+        if (ellipseState.placed) {
+          consumeCanvasInteraction(event);
+          resetCanvasCursor();
+          drawEllipsePreview();
+          return;
+        }
+        beginEditorOperation(ellipseState, true);
         ellipseState.placed = false;
         ellipseState.initializing = true;
         ellipseState.initialOrigin = point;
         ellipseState.draggingHandle = 1;
         setEllipseHandle(0, point);
         setEllipseHandle(1, point);
+      } else {
+        beginEditorOperation(ellipseState);
       }
       drawEllipsePreview();
       return;
     }
 
-    cubicState.draggingHandle = getCubicHandleAt({x: origin.x, y: origin.y});
+    if (isRectangleToolActive()) {
+      rectangleState.draggingHandle = getRectangleHandleAt({x: hitPoint.x, y: hitPoint.y});
+      if (rectangleState.draggingHandle !== null) {
+        beginEditorOperation(rectangleState);
+        rectangleState.lastSideEditAction = Date.now();
+        rectangleState.suppressNextSideEditClick = true;
+      }
+      rectangleState.draggingVertex = rectangleState.draggingHandle === null
+        ? getRectangleVertexAt({x: hitPoint.x, y: hitPoint.y})
+        : null;
+
+      if (rectangleState.draggingVertex && event.altKey) {
+        consumeCanvasInteraction(event);
+        const snapshot = getEditorSnapshot(rectangleState);
+        removeRectangleVertex(rectangleState.draggingVertex);
+        pushEditorUndoSnapshot(rectangleState, snapshot);
+        rectangleState.draggingVertex = null;
+        rectangleState.hoveredVertex = null;
+        rectangleState.lastSideEditAction = Date.now();
+        rectangleState.suppressNextSideEditClick = true;
+        resetCanvasCursor();
+        return;
+      }
+
+      if (rectangleState.draggingVertex) {
+        beginEditorOperation(rectangleState);
+        rectangleState.lastSideEditAction = Date.now();
+        rectangleState.suppressNextSideEditClick = true;
+        drawRectanglePreview();
+        return;
+      }
+
+      if (rectangleState.draggingHandle === null
+        && rectangleState.placed
+        && editRectangleSideWithUndo({x: hitPoint.x, y: hitPoint.y}, event.altKey)) {
+        consumeCanvasInteraction(event);
+        rectangleState.draggingVertex = null;
+        rectangleState.lastSideEditAction = Date.now();
+        rectangleState.suppressNextSideEditClick = true;
+        resetCanvasCursor();
+        return;
+      }
+
+      if (rectangleState.draggingHandle === null) {
+        if (rectangleState.placed) {
+          consumeCanvasInteraction(event);
+          resetCanvasCursor();
+          drawRectanglePreview();
+          return;
+        }
+        beginEditorOperation(rectangleState, true);
+        rectangleState.placed = false;
+        rectangleState.initializing = true;
+        rectangleState.draggingHandle = 1;
+        rectangleState.draggingVertex = null;
+        rectangleState.sideRatios = getDefaultRectangleSideRatios();
+        rectangleState.sideEnabled = getDefaultRectangleSideEnabled();
+        rectangleState.sideGaps = getDefaultRectangleSideGaps();
+        setRectangleHandle(0, point);
+        setRectangleHandle(1, point);
+      }
+      drawRectanglePreview();
+      return;
+    }
+
+    cubicState.draggingHandle = getCubicHandleAt({x: hitPoint.x, y: hitPoint.y});
     if (cubicState.draggingHandle === null) {
+      if (cubicState.placed) {
+        consumeCanvasInteraction(event);
+        resetCanvasCursor();
+        drawCubicPreview();
+        return;
+      }
+      beginEditorOperation(cubicState, true);
       cubicState.placed = false;
       cubicState.initializing = true;
       cubicState.draggingHandle = 3;
@@ -270,13 +574,17 @@ function patchWallsLayer() {
       setHandle(1, point);
       setHandle(2, point);
       setHandle(3, point);
+    } else {
+      beginEditorOperation(cubicState);
     }
 
     drawCubicPreview();
   };
 
   WallsLayer.prototype._onDragLeftMove = function(event) {
-    if (!isCubicToolActive() && !isEllipseToolActive()) return originalDragMove.call(this, event);
+    if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive()) {
+      return originalDragMove.call(this, event);
+    }
 
     if (isEllipseToolActive()) {
       if (ellipseState.draggingHandle === null) return;
@@ -287,6 +595,22 @@ function patchWallsLayer() {
       }
       ellipseState.placed = true;
       drawEllipsePreview();
+      return;
+    }
+
+    if (isRectangleToolActive()) {
+      if (rectangleState.draggingVertex) {
+        const point = getEventPoint(this, event.interactionData.destination, event);
+        setRectangleVertex(rectangleState.draggingVertex, point);
+        drawRectanglePreview();
+        return;
+      }
+
+      if (rectangleState.draggingHandle === null) return;
+      const point = getEventPoint(this, event.interactionData.destination, event);
+      setRectangleHandle(rectangleState.draggingHandle, point);
+      rectangleState.placed = true;
+      drawRectanglePreview();
       return;
     }
 
@@ -304,36 +628,68 @@ function patchWallsLayer() {
   };
 
   WallsLayer.prototype._onDragLeftDrop = function(event) {
-    if (!isCubicToolActive() && !isEllipseToolActive()) return originalDragDrop.call(this, event);
+    if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive()) {
+      return originalDragDrop.call(this, event);
+    }
     if (isEllipseToolActive()) {
       ellipseState.draggingHandle = null;
       ellipseState.initializing = false;
       ellipseState.initialOrigin = null;
       event.interactionData.clearPreviewContainer = false;
+      commitEditorOperation(ellipseState);
       drawEllipsePreview();
+      return;
+    }
+
+    if (isRectangleToolActive()) {
+      rectangleState.draggingHandle = null;
+      rectangleState.draggingVertex = null;
+      rectangleState.hoveredVertex = null;
+      rectangleState.initializing = false;
+      event.interactionData.clearPreviewContainer = false;
+      resetCanvasCursor();
+      commitEditorOperation(rectangleState);
+      drawRectanglePreview();
       return;
     }
 
     cubicState.draggingHandle = null;
     cubicState.initializing = false;
     event.interactionData.clearPreviewContainer = false;
+    commitEditorOperation(cubicState);
     drawCubicPreview();
   };
 
   WallsLayer.prototype._onDragLeftCancel = function(event) {
-    if (!isCubicToolActive() && !isEllipseToolActive()) return originalDragCancel.call(this, event);
+    if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive()) {
+      return originalDragCancel.call(this, event);
+    }
     if (isEllipseToolActive()) {
       ellipseState.draggingHandle = null;
       ellipseState.initializing = false;
       ellipseState.initialOrigin = null;
       event.interactionData.clearPreviewContainer = false;
+      cancelEditorOperation(ellipseState);
       drawEllipsePreview();
+      return;
+    }
+
+    if (isRectangleToolActive()) {
+      rectangleState.draggingHandle = null;
+      rectangleState.draggingVertex = null;
+      rectangleState.hoveredVertex = null;
+      rectangleState.initializing = false;
+      event.interactionData.clearPreviewContainer = false;
+      resetCanvasCursor();
+      cancelEditorOperation(rectangleState);
+      drawRectanglePreview();
       return;
     }
 
     cubicState.draggingHandle = null;
     cubicState.initializing = false;
     event.interactionData.clearPreviewContainer = false;
+    cancelEditorOperation(cubicState);
     drawCubicPreview();
   };
 
@@ -350,6 +706,217 @@ function patchWallsLayer() {
   WallsLayer.prototype._indyWallsCubicPatched = true;
 }
 
+function isAnyEditorToolActive() {
+  return isCubicToolActive() || isEllipseToolActive() || isRectangleToolActive();
+}
+
+function isControlInteraction(event) {
+  return !!(event?.ctrlKey
+    || event.data?.originalEvent?.ctrlKey
+    || event.originalEvent?.ctrlKey);
+}
+
+function loadShapeAtInteractionPoint(event) {
+  const point = getInteractionPoint(event) ?? event.interactionData?.origin;
+  if (!point) return false;
+
+  return loadShapeAtPoint(point);
+}
+
+function loadShapeAtPoint(point) {
+  const wall = getIndyWallAtPoint(point);
+  return wall ? loadShapeFromExistingWall(wall) : false;
+}
+
+function getIndyWallAtPoint(point) {
+  const tolerance = getScaledRadius(Math.max(getPreviewStyle().wallWidth + 8, 12));
+  let best = null;
+  let bestDistance = Infinity;
+
+  for (const wall of canvas?.walls?.placeables ?? []) {
+    if (!hasIndyShapeFlag(wall.document)) continue;
+    const coords = wall.document.c;
+    if (!Array.isArray(coords) || coords.length < 4) continue;
+    const start = {x: Number(coords[0]) || 0, y: Number(coords[1]) || 0};
+    const end = {x: Number(coords[2]) || 0, y: Number(coords[3]) || 0};
+    if (!isPointNearSegmentBounds(point, start, end, tolerance)) continue;
+
+    const distance = getPointSegmentDistance(
+      point,
+      start,
+      end
+    );
+    if (distance <= tolerance && distance < bestDistance) {
+      best = wall;
+      bestDistance = distance;
+    }
+  }
+
+  return best;
+}
+
+function isPointNearSegmentBounds(point, start, end, tolerance) {
+  return point.x >= Math.min(start.x, end.x) - tolerance
+    && point.x <= Math.max(start.x, end.x) + tolerance
+    && point.y >= Math.min(start.y, end.y) - tolerance
+    && point.y <= Math.max(start.y, end.y) + tolerance;
+}
+
+function hasIndyShapeFlag(wallDocument) {
+  return !!(wallDocument?.getFlag(MODULE_ID, CUBIC_FLAG)
+    || wallDocument?.getFlag(MODULE_ID, ELLIPSE_FLAG)
+    || wallDocument?.getFlag(MODULE_ID, RECTANGLE_FLAG));
+}
+
+function getPointSegmentDistance(point, start, end) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = (dx * dx) + (dy * dy);
+  if (!lengthSquared) return Math.hypot(point.x - start.x, point.y - start.y);
+
+  const t = clamp(((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared, 0, 1);
+  return Math.hypot(point.x - (start.x + dx * t), point.y - (start.y + dy * t));
+}
+
+function loadShapeFromExistingWall(wall) {
+  if (!wall?.document) return false;
+
+  const cubicData = wall.document.getFlag(MODULE_ID, CUBIC_FLAG);
+  const ellipseData = wall.document.getFlag(MODULE_ID, ELLIPSE_FLAG);
+  const rectangleData = wall.document.getFlag(MODULE_ID, RECTANGLE_FLAG);
+  if (!cubicData && !ellipseData && !rectangleData) return false;
+
+  clearCubicPreview();
+  clearEllipsePreview();
+  clearRectanglePreview();
+
+  shapeLoadState.allowControlWallLoad = true;
+  try {
+    if (rectangleData) loadRectangleFromWall(wall);
+    else if (ellipseData) loadEllipseFromWall(wall);
+    else loadCubicCurveFromWall(wall);
+  } finally {
+    shapeLoadState.allowControlWallLoad = false;
+  }
+  return true;
+}
+
+function hideEditSessionWalls(wallIds) {
+  restoreEditSessionWalls();
+  for (const id of wallIds) {
+    const wall = getWallPlaceable(id);
+    if (!wall) continue;
+
+    wall.release?.();
+    hiddenEditWalls.set(id, {
+      visible: wall.visible !== false,
+      interactive: wall.interactive,
+      eventMode: wall.eventMode
+    });
+    wall.renderFlags?.set?.({refresh: true});
+    wall.refresh?.();
+    applyHiddenEditWallState(wall);
+  }
+}
+
+function restoreEditSessionWalls() {
+  for (const [id, state] of hiddenEditWalls) {
+    const wall = getWallPlaceable(id);
+    if (!wall) continue;
+    wall.renderFlags?.set?.({refresh: true});
+    wall.refresh?.();
+    wall.visible = state.visible;
+    wall.interactive = state.interactive;
+    if ("eventMode" in wall) wall.eventMode = state.eventMode;
+  }
+  hiddenEditWalls.clear();
+}
+
+function applyHiddenEditWallState(wall) {
+  const id = wall?.document?.id ?? wall?.id;
+  if (!id || !hiddenEditWalls.has(id)) return;
+
+  wall.visible = false;
+  wall.interactive = false;
+  if ("eventMode" in wall) wall.eventMode = "none";
+}
+
+function getWallPlaceable(id) {
+  return canvas?.walls?.placeables?.find((wall) => wall.document?.id === id || wall.id === id) ?? null;
+}
+
+function consumeCanvasInteraction(event) {
+  event.stopPropagation?.();
+  event.preventDefault?.();
+  event.data?.originalEvent?.stopPropagation?.();
+  event.data?.originalEvent?.preventDefault?.();
+  event.originalEvent?.stopPropagation?.();
+  event.originalEvent?.preventDefault?.();
+  if (event.interactionData) event.interactionData.clearPreviewContainer = false;
+}
+
+function resetCanvasCursor() {
+  clearMouseInteractionManagerDragState();
+  if (canvas?.app?.view?.style) canvas.app.view.style.cursor = "";
+  if (document.body?.style) document.body.style.cursor = "";
+}
+
+function clearMouseInteractionManagerDragState(event=null) {
+  const managers = new Set([
+    canvas?.mouseInteractionManager,
+    canvas?.walls?.mouseInteractionManager,
+    canvas?.walls?._mouseInteractionManager,
+    event?.target?.mouseInteractionManager,
+    event?.target?._mouseInteractionManager,
+    event?.currentTarget?.mouseInteractionManager,
+    event?.currentTarget?._mouseInteractionManager
+  ].filter(Boolean));
+
+  for (const manager of managers) {
+    manager.cursor = null;
+    manager._dragging = false;
+    manager.dragging = false;
+    const noneState = manager.constructor?.INTERACTION_STATES?.NONE;
+    if (Number.isFinite(noneState)) manager.state = noneState;
+  }
+}
+
+function getInteractionPoint(event) {
+  const source = event.data ?? event;
+  const point = source.getLocalPosition?.(canvas?.stage);
+  if (point) return {x: point.x, y: point.y};
+
+  const global = source.global ?? event.global;
+  const transform = canvas?.stage?.worldTransform;
+  const inverse = global && transform?.applyInverse?.(global);
+  if (inverse) return {x: inverse.x, y: inverse.y};
+
+  const clientPoint = getClientInteractionPoint(event);
+  if (clientPoint) return clientPoint;
+
+  const origin = event.interactionData?.origin;
+  return origin ? {x: origin.x, y: origin.y} : null;
+}
+
+function getClientInteractionPoint(event) {
+  const original = event.data?.originalEvent ?? event.originalEvent ?? event;
+  if (!Number.isFinite(original?.clientX) || !Number.isFinite(original?.clientY)) return null;
+
+  const view = canvas?.app?.view;
+  const rect = view?.getBoundingClientRect?.();
+  const transform = canvas?.stage?.worldTransform;
+  if (!view || !rect || !transform?.applyInverse) return null;
+
+  const scaleX = view.width / Math.max(rect.width, 1);
+  const scaleY = view.height / Math.max(rect.height, 1);
+  const screenPoint = new PIXI.Point(
+    (original.clientX - rect.left) * scaleX,
+    (original.clientY - rect.top) * scaleY
+  );
+  const worldPoint = transform.applyInverse(screenPoint);
+  return {x: worldPoint.x, y: worldPoint.y};
+}
+
 function registerCurveEditorShortcuts() {
   window.addEventListener("wheel", (event) => {
     if (!getActiveEditorState()?.placed || !event.ctrlKey) return;
@@ -360,12 +927,32 @@ function registerCurveEditorShortcuts() {
   }, {capture: true, passive: false});
 
   window.addEventListener("keydown", (event) => {
-    if (!getActiveEditorState()?.placed || isEditableTarget(event.target)) return;
+    if (!isAnyEditorToolActive() || isEditableTarget(event.target)) return;
+
+    const key = event.key.toLowerCase();
+    if (event.ctrlKey && !event.shiftKey && key === "z") {
+      event.preventDefault();
+      event.stopPropagation();
+      undoActiveEditor();
+      return;
+    }
+
+    if (event.ctrlKey && (key === "y" || (event.shiftKey && key === "z"))) {
+      event.preventDefault();
+      event.stopPropagation();
+      redoActiveEditor();
+      return;
+    }
+
+    if (!getActiveEditorState()?.placed) return;
 
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
       clearActivePreview();
+      cubicState.active = false;
+      ellipseState.active = false;
+      rectangleState.active = false;
       canvas.walls.activate({tool: "select"});
     } else if (event.key === "Enter") {
       event.preventDefault();
@@ -383,25 +970,231 @@ function isEllipseToolActive() {
   return game.user.isGM && game.activeTool === ELLIPSE_TOOL && ellipseState.active;
 }
 
+function isRectangleToolActive() {
+  return game.user.isGM && game.activeTool === RECTANGLE_TOOL && rectangleState.active;
+}
+
 function getActiveEditorState() {
   if (isCubicToolActive()) return cubicState;
   if (isEllipseToolActive()) return ellipseState;
+  if (isRectangleToolActive()) return rectangleState;
   return null;
 }
 
 function changeActiveSegments(delta) {
+  const state = getActiveEditorState();
+  const snapshot = state?.placed ? getEditorSnapshot(state) : null;
+
   if (isCubicToolActive()) changeCubicSegments(delta);
   else if (isEllipseToolActive()) changeEllipseSegments(delta);
+  else if (isRectangleToolActive()) changeRectangleSegments(delta);
+
+  if (snapshot) pushEditorUndoSnapshot(state, snapshot);
 }
 
 function applyActiveWalls() {
   if (isCubicToolActive()) applyCubicWalls();
   else if (isEllipseToolActive()) applyEllipseWalls();
+  else if (isRectangleToolActive()) applyRectangleWalls();
 }
 
 function clearActivePreview() {
   if (isCubicToolActive()) clearCubicPreview();
   else if (isEllipseToolActive()) clearEllipsePreview();
+  else if (isRectangleToolActive()) clearRectanglePreview();
+}
+
+function beginEditorOperation(state=getActiveEditorState(), includeUnplaced=false) {
+  if (!state || (!state.placed && !includeUnplaced) || state.pendingUndoSnapshot) return;
+  state.pendingUndoSnapshot = getEditorSnapshot(state);
+}
+
+function commitEditorOperation(state=getActiveEditorState()) {
+  if (!state?.pendingUndoSnapshot) return;
+
+  const before = state.pendingUndoSnapshot;
+  state.pendingUndoSnapshot = null;
+  const after = getEditorSnapshot(state);
+  if (snapshotsEqual(before, after)) return;
+
+  state.undoStack.push(before);
+  state.redoStack = [];
+}
+
+function cancelEditorOperation(state=getActiveEditorState()) {
+  if (state) state.pendingUndoSnapshot = null;
+}
+
+function clearEditorHistory(state) {
+  if (!state) return;
+  state.undoStack = [];
+  state.redoStack = [];
+  state.pendingUndoSnapshot = null;
+}
+
+function undoActiveEditor() {
+  const state = getActiveEditorState();
+  if (!state?.undoStack.length) return;
+
+  const current = getEditorSnapshot(state);
+  const previous = state.undoStack.pop();
+  state.redoStack.push(current);
+  restoreEditorSnapshot(state, previous);
+}
+
+function redoActiveEditor() {
+  const state = getActiveEditorState();
+  if (!state?.redoStack.length) return;
+
+  const current = getEditorSnapshot(state);
+  const next = state.redoStack.pop();
+  state.undoStack.push(current);
+  restoreEditorSnapshot(state, next);
+}
+
+function pushEditorUndoSnapshot(state, snapshot) {
+  if (!state || !snapshot || snapshotsEqual(snapshot, getEditorSnapshot(state))) return;
+  state.undoStack.push(snapshot);
+  state.redoStack = [];
+}
+
+function getEditorSnapshot(state) {
+  if (state === cubicState) {
+    return {
+      placed: cubicState.placed,
+      handles: clonePoints(cubicState.handles),
+      segments: cubicState.segments,
+      wallTypeTool: cubicState.wallTypeTool
+    };
+  }
+
+  if (state === ellipseState) {
+    return {
+      placed: ellipseState.placed,
+      handles: clonePoints(ellipseState.handles),
+      segments: ellipseState.segments,
+      wallTypeTool: ellipseState.wallTypeTool
+    };
+  }
+
+  return {
+    placed: rectangleState.placed,
+    handles: clonePoints(rectangleState.handles),
+    sideSegments: {...rectangleState.sideSegments},
+    sideRatios: cloneRectangleSideRatios(rectangleState.sideRatios),
+    sideEnabled: cloneRectangleSideEnabled(rectangleState.sideEnabled),
+    sideGaps: cloneRectangleSideGaps(rectangleState.sideGaps),
+    wallTypeTool: rectangleState.wallTypeTool
+  };
+}
+
+function restoreEditorSnapshot(state, snapshot) {
+  if (state === cubicState) {
+    cubicState.placed = snapshot.placed;
+    cubicState.handles = clonePoints(snapshot.handles);
+    cubicState.segments = snapshot.segments;
+    cubicState.wallTypeTool = snapshot.wallTypeTool;
+    cubicState.draggingHandle = null;
+    cubicState.initializing = false;
+    drawCubicPreview();
+    return;
+  }
+
+  if (state === ellipseState) {
+    ellipseState.placed = snapshot.placed;
+    ellipseState.handles = clonePoints(snapshot.handles);
+    ellipseState.segments = snapshot.segments;
+    ellipseState.wallTypeTool = snapshot.wallTypeTool;
+    ellipseState.draggingHandle = null;
+    ellipseState.initializing = false;
+    ellipseState.initialOrigin = null;
+    drawEllipsePreview();
+    return;
+  }
+
+  rectangleState.placed = snapshot.placed;
+  rectangleState.handles = clonePoints(snapshot.handles);
+  rectangleState.sideSegments = {...snapshot.sideSegments};
+  rectangleState.sideRatios = cloneRectangleSideRatios(snapshot.sideRatios);
+  rectangleState.sideEnabled = cloneRectangleSideEnabled(snapshot.sideEnabled);
+  rectangleState.sideGaps = cloneRectangleSideGaps(snapshot.sideGaps);
+  rectangleState.wallTypeTool = snapshot.wallTypeTool;
+  rectangleState.draggingHandle = null;
+  rectangleState.draggingVertex = null;
+  rectangleState.hoveredVertex = null;
+  rectangleState.initializing = false;
+  drawRectanglePreview();
+}
+
+function snapshotsEqual(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function redrawActivePreview() {
+  if (cubicState.placed) drawCubicPreview();
+  if (ellipseState.placed) drawEllipsePreview();
+  if (rectangleState.placed) drawRectanglePreview();
+}
+
+function getPreviewStyle() {
+  const outlineWidth = getStyleNumber(STYLE_SETTINGS.outlineWidth, 2, 0, 8);
+  const outlineColor = getStyleColor(STYLE_SETTINGS.outlineColor, 0x111111);
+  return {
+    wallColor: getStyleColor(STYLE_SETTINGS.wallColor, 0xc10e56),
+    wallWidth: getStyleNumber(STYLE_SETTINGS.wallWidth, 4, 1, 12),
+    guideWidth: Math.max(getStyleNumber(STYLE_SETTINGS.wallWidth, 4, 1, 12) / 2, 1),
+    vertexColor: getStyleColor(STYLE_SETTINGS.vertexColor, 0xffffff),
+    vertexActiveColor: getStyleColor(STYLE_SETTINGS.vertexActiveColor, 0xaaff44),
+    vertexSize: getStyleNumber(STYLE_SETTINGS.vertexSize, 5, 2, 20),
+    splitVertexSize: Math.max(getStyleNumber(STYLE_SETTINGS.vertexSize, 5, 2, 20) + 3, 4),
+    endpointColor: getStyleColor(STYLE_SETTINGS.endpointColor, 0xff4444),
+    endpointSize: getStyleNumber(STYLE_SETTINGS.endpointSize, 12, 4, 32),
+    handleColor: getStyleColor(STYLE_SETTINGS.handleColor, 0xaaff44),
+    handleSize: getStyleNumber(STYLE_SETTINGS.handleSize, 12, 4, 32),
+    outlineColor,
+    outlineWidth
+  };
+}
+
+function getStyleNumber(setting, fallback, min, max) {
+  const value = Number(game.settings.get(MODULE_ID, setting));
+  if (!Number.isFinite(value)) return fallback;
+  return clamp(value, min, max);
+}
+
+function getStyleColor(setting, fallback) {
+  return colorStringToNumber(game.settings.get(MODULE_ID, setting), fallback);
+}
+
+function colorStringToNumber(value, fallback) {
+  if (typeof value !== "string") return fallback;
+  const match = value.trim().match(/^#?([0-9a-f]{6})(?:[0-9a-f]{2})?$/i);
+  return match ? parseInt(match[1], 16) : fallback;
+}
+
+function drawPreviewVertex(graphics, point, style=getPreviewStyle()) {
+  drawVertex(graphics, point, {
+    color: style.vertexColor,
+    radius: style.vertexSize,
+    outlineColor: style.outlineColor,
+    outlineWidth: style.outlineWidth
+  });
+}
+
+function drawEndpoint(graphics, point, style=getPreviewStyle()) {
+  drawHandle(graphics, point, style.endpointColor, {
+    radius: style.endpointSize,
+    outlineColor: style.outlineColor,
+    outlineWidth: style.outlineWidth
+  });
+}
+
+function drawBezierHandle(graphics, point, style=getPreviewStyle()) {
+  drawHandle(graphics, point, style.handleColor, {
+    radius: style.handleSize,
+    outlineColor: style.outlineColor,
+    outlineWidth: style.outlineWidth
+  });
 }
 
 function setHandle(index, point) {
@@ -426,7 +1219,9 @@ function initializeCubicControls() {
 
 function getCubicHandleAt(point) {
   if (!cubicState.placed) return null;
-  const index = getHandleIndexAt(cubicState.handles, point);
+  const style = getPreviewStyle();
+  const radius = Math.max(style.endpointSize, style.handleSize);
+  const index = getHandleIndexAt(cubicState.handles, point, radius, style.outlineWidth);
   return index < 0 ? null : index;
 }
 
@@ -452,27 +1247,28 @@ function drawCubicPreview() {
   setCubicEditingState(cubicState.placed);
   if (!cubicState.placed) return;
 
+  const style = getPreviewStyle();
   const points = getCubicPoints(cubicState.segments);
-  graphics.lineStyle(4, 0xffaacc, 0.9);
+  graphics.lineStyle(getScaledRadius(style.wallWidth), style.wallColor, 0.9);
   graphics.moveTo(points[0].x, points[0].y);
   for (let i = 1; i < points.length; i++) {
     graphics.lineTo(points[i].x, points[i].y);
   }
 
   const [start, controlA, controlB, end] = cubicState.handles;
-  graphics.lineStyle(2, 0xffaacc, 0.65);
+  graphics.lineStyle(getScaledRadius(style.guideWidth), style.wallColor, 0.65);
   graphics.moveTo(start.x, start.y);
   graphics.lineTo(controlA.x, controlA.y);
   graphics.moveTo(end.x, end.y);
   graphics.lineTo(controlB.x, controlB.y);
 
   for (const point of points) {
-    drawVertex(graphics, point);
+    drawPreviewVertex(graphics, point, style);
   }
-  drawHandle(graphics, start, 0xff4444);
-  drawHandle(graphics, end, 0xff4444);
-  drawHandle(graphics, controlA, 0xaaff44);
-  drawHandle(graphics, controlB, 0xaaff44);
+  drawEndpoint(graphics, start, style);
+  drawEndpoint(graphics, end, style);
+  drawBezierHandle(graphics, controlA, style);
+  drawBezierHandle(graphics, controlB, style);
 }
 
 function getCubicPoints(segments) {
@@ -495,7 +1291,8 @@ function setEllipseHandle(index, point) {
 
 function getEllipseHandleAt(point) {
   if (!ellipseState.placed) return null;
-  const index = getHandleIndexAt(ellipseState.handles, point);
+  const style = getPreviewStyle();
+  const index = getHandleIndexAt(ellipseState.handles, point, style.endpointSize, style.outlineWidth);
   return index < 0 ? null : index;
 }
 
@@ -545,22 +1342,23 @@ function drawEllipsePreview() {
   setEllipseEditingState(ellipseState.placed);
   if (!ellipseState.placed) return;
 
+  const style = getPreviewStyle();
   const points = getEllipsePoints(ellipseState.segments);
-  graphics.lineStyle(4, 0xffaacc, 0.9);
+  graphics.lineStyle(getScaledRadius(style.wallWidth), style.wallColor, 0.9);
   graphics.moveTo(points[0].x, points[0].y);
   for (let i = 1; i < points.length; i++) {
     graphics.lineTo(points[i].x, points[i].y);
   }
 
   const [a, b] = ellipseState.handles;
-  graphics.lineStyle(2, 0xffaacc, 0.45);
+  graphics.lineStyle(getScaledRadius(style.guideWidth), style.wallColor, 0.45);
   graphics.drawRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
 
   for (const point of points) {
-    drawVertex(graphics, point);
+    drawPreviewVertex(graphics, point, style);
   }
-  drawHandle(graphics, a, 0xff4444);
-  drawHandle(graphics, b, 0xff4444);
+  drawEndpoint(graphics, a, style);
+  drawEndpoint(graphics, b, style);
 }
 
 function getEllipsePoints(segments) {
@@ -580,6 +1378,584 @@ function getEllipsePoints(segments) {
   }
 
   return points;
+}
+
+function setRectangleHandle(index, point) {
+  rectangleState.handles[index] = {x: point.x, y: point.y};
+}
+
+function getRectangleHandleAt(point) {
+  if (!rectangleState.placed) return null;
+  const style = getPreviewStyle();
+  const radius = getRectangleCornerHitRadius(style);
+  let bestIndex = null;
+  let bestDistance = Infinity;
+  for (let i = 0; i < rectangleState.handles.length; i++) {
+    const handle = rectangleState.handles[i];
+    const distance = Math.hypot(handle.x - point.x, handle.y - point.y);
+    if (distance <= radius && distance < bestDistance) {
+      bestIndex = i;
+      bestDistance = distance;
+    }
+  }
+  return bestIndex;
+}
+
+function getRectangleVertexAt(point) {
+  if (!rectangleState.placed) return null;
+  const radius = getRectangleVertexHitRadius();
+  const vertices = getRectangleSideVertices();
+  for (const vertex of vertices) {
+    if (Math.hypot(vertex.point.x - point.x, vertex.point.y - point.y) <= radius) {
+      return {side: vertex.side, index: vertex.index};
+    }
+  }
+  return null;
+}
+
+function updateRectangleHoveredVertex(point) {
+  const hovered = point ? getRectangleVertexAt(point) : null;
+  if (sameRectangleVertex(hovered, rectangleState.hoveredVertex)) return;
+
+  rectangleState.hoveredVertex = hovered;
+  drawRectanglePreview();
+}
+
+function setRectangleVertex(vertex, point) {
+  const ratios = getRectangleSideRatios(vertex.side);
+  const ratio = getRectangleRatioForPoint(vertex.side, point);
+  const previous = vertex.index > 0 ? ratios[vertex.index - 1] : 0;
+  const next = vertex.index < ratios.length - 1 ? ratios[vertex.index + 1] : 1;
+  const spacing = getRectangleRatioSpacing(rectangleState.sideSegments[vertex.side]);
+  if ((next - previous) <= (spacing * 2)) return;
+  ratios[vertex.index] = clamp(ratio, previous + spacing, next - spacing);
+  rectangleState.sideRatios[vertex.side] = ratios;
+}
+
+function changeRectangleSegments(delta, side=null) {
+  if (!isRectangleToolActive()) return;
+  const sides = side ? [side] : ["top", "right", "bottom", "left"];
+  for (const key of sides) {
+    rectangleState.sideSegments[key] = clamp(rectangleState.sideSegments[key] + delta, 1, 64);
+    rectangleState.sideRatios[key] = reconcileRectangleSideRatios(
+      rectangleState.sideRatios[key],
+      rectangleState.sideSegments[key]
+    );
+  }
+  drawRectanglePreview();
+}
+
+function editRectangleSideAt(point, remove=false) {
+  if (!rectangleState.placed) return false;
+  if (isNearRectangleCorner(point)) return false;
+
+  const hit = getRectangleSideAt(point);
+  if (!hit) return false;
+
+  if (remove) return removeRectangleVertexAt(hit);
+  return addRectangleVertexAt(hit);
+}
+
+function editRectangleSideWithUndo(point, remove=false) {
+  const snapshot = getEditorSnapshot(rectangleState);
+  const edited = editRectangleSideAt(point, remove);
+  if (edited) pushEditorUndoSnapshot(rectangleState, snapshot);
+  return edited;
+}
+
+function addRectangleVertexAt({side, ratio}) {
+  if (!rectangleState.sideEnabled[side]) {
+    rectangleState.sideEnabled[side] = true;
+    rectangleState.sideSegments[side] = DEFAULT_RECTANGLE_SEGMENTS;
+    rectangleState.sideRatios[side] = [];
+    rectangleState.sideGaps[side] = [];
+    drawRectanglePreview();
+    return true;
+  }
+
+  if (restoreRectangleSegmentAt({side, ratio})) return true;
+
+  if (rectangleState.sideSegments[side] >= 64) return false;
+
+  const ratios = getRectangleSideRatios(side);
+  const spacing = getRectangleRatioSpacing(rectangleState.sideSegments[side] + 1);
+  if (ratio < spacing || ratio > (1 - spacing)) return false;
+  if (ratios.some((existing) => Math.abs(existing - ratio) < spacing)) return false;
+
+  rectangleState.sideSegments[side] += 1;
+  rectangleState.sideRatios[side] = reconcileRectangleSideRatios([...ratios, ratio], rectangleState.sideSegments[side]);
+  rectangleState.sideGaps[side] = reconcileRectangleSideGaps(rectangleState.sideGaps[side], rectangleState.sideSegments[side]);
+  drawRectanglePreview();
+  return true;
+}
+
+function removeRectangleVertexAt({side, ratio}) {
+  const ratios = getRectangleSideRatios(side);
+  if (!ratios.length) return disableRectangleSide(side);
+
+  const vertex = getNearestRectangleVertexOnSide(side, ratio);
+  const spacing = getRectangleRatioSpacing(rectangleState.sideSegments[side]);
+  if (vertex && Math.abs(vertex.ratio - ratio) <= (spacing * 2)) {
+    return removeRectangleVertex({side, index: vertex.index});
+  }
+
+  return removeRectangleSegmentAt({side, ratio});
+}
+
+function getNearestRectangleVertexOnSide(side, ratio) {
+  const ratios = getRectangleSideRatios(side);
+  let nearestIndex = 0;
+  let nearestDistance = Math.abs(ratios[0] - ratio);
+  for (let i = 1; i < ratios.length; i++) {
+    const distance = Math.abs(ratios[i] - ratio);
+    if (distance < nearestDistance) {
+      nearestIndex = i;
+      nearestDistance = distance;
+    }
+  }
+
+  return {index: nearestIndex, ratio: ratios[nearestIndex]};
+}
+
+function removeRectangleSegmentAt({side, ratio}) {
+  const index = getRectangleSegmentIndexAt(side, ratio);
+  const gaps = getRectangleSideGaps(side);
+  if (gaps.includes(index)) return false;
+
+  rectangleState.sideGaps[side] = [...gaps, index].sort((a, b) => a - b);
+  drawRectanglePreview();
+  return true;
+}
+
+function restoreRectangleSegmentAt({side, ratio}) {
+  const index = getRectangleSegmentIndexAt(side, ratio);
+  const gaps = getRectangleSideGaps(side);
+  if (!gaps.includes(index)) return false;
+
+  rectangleState.sideGaps[side] = gaps.filter((gap) => gap !== index);
+  drawRectanglePreview();
+  return true;
+}
+
+function getRectangleSegmentIndexAt(side, ratio) {
+  const ratios = getRectangleSideRatios(side);
+  const points = [0, ...ratios, 1];
+  for (let i = 0; i < points.length - 1; i++) {
+    if (ratio >= points[i] && ratio <= points[i + 1]) return i;
+  }
+  return Math.max(rectangleState.sideSegments[side] - 1, 0);
+}
+
+function getRectangleSideGaps(side) {
+  const gaps = reconcileRectangleSideGaps(rectangleState.sideGaps?.[side], rectangleState.sideSegments[side]);
+  rectangleState.sideGaps[side] = gaps;
+  return gaps;
+}
+
+function removeRectangleVertex({side, index}) {
+  const ratios = getRectangleSideRatios(side);
+  if (ratios[index] === undefined) return false;
+
+  ratios.splice(index, 1);
+  rectangleState.sideSegments[side] -= 1;
+  rectangleState.sideRatios[side] = reconcileRectangleSideRatios(ratios, rectangleState.sideSegments[side]);
+  rectangleState.sideGaps[side] = reconcileRectangleSideGaps(rectangleState.sideGaps[side], rectangleState.sideSegments[side]);
+  rectangleState.hoveredVertex = null;
+  drawRectanglePreview();
+  return true;
+}
+
+function disableRectangleSide(side) {
+  if (!rectangleState.sideEnabled[side]) return false;
+
+  rectangleState.sideEnabled[side] = false;
+  rectangleState.sideSegments[side] = DEFAULT_RECTANGLE_SEGMENTS;
+  rectangleState.sideRatios[side] = [];
+  rectangleState.sideGaps[side] = [];
+  rectangleState.hoveredVertex = null;
+  drawRectanglePreview();
+  return true;
+}
+
+function getRectangleSideAt(point) {
+  const bounds = getRectangleBounds();
+  const style = getPreviewStyle();
+  const tolerance = getScaledRadius(Math.max(style.wallWidth + 6, 10));
+  const hits = [
+    {
+      side: "top",
+      distance: Math.abs(point.y - bounds.minY),
+      ratio: getBoundedRatio(point.x, bounds.minX, bounds.maxX),
+      inRange: isBetween(point.x, bounds.minX, bounds.maxX)
+    },
+    {
+      side: "right",
+      distance: Math.abs(point.x - bounds.maxX),
+      ratio: getBoundedRatio(point.y, bounds.minY, bounds.maxY),
+      inRange: isBetween(point.y, bounds.minY, bounds.maxY)
+    },
+    {
+      side: "bottom",
+      distance: Math.abs(point.y - bounds.maxY),
+      ratio: getBoundedRatio(point.x, bounds.maxX, bounds.minX),
+      inRange: isBetween(point.x, bounds.minX, bounds.maxX)
+    },
+    {
+      side: "left",
+      distance: Math.abs(point.x - bounds.minX),
+      ratio: getBoundedRatio(point.y, bounds.maxY, bounds.minY),
+      inRange: isBetween(point.y, bounds.minY, bounds.maxY)
+    }
+  ].filter((hit) => hit.inRange && hit.distance <= tolerance);
+
+  hits.sort((a, b) => a.distance - b.distance);
+  const hit = hits[0];
+  return hit ? {side: hit.side, ratio: hit.ratio} : null;
+}
+
+function isBetween(value, a, b) {
+  return value >= Math.min(a, b) && value <= Math.max(a, b);
+}
+
+function drawRectanglePreview() {
+  const layer = canvas?.walls;
+  if (!layer) return;
+
+  if (!rectangleState.graphics || rectangleState.graphics._destroyed) {
+    rectangleState.graphics = new PIXI.Graphics();
+    layer.preview.addChild(rectangleState.graphics);
+  } else if (!rectangleState.graphics.parent) {
+    layer.preview.addChild(rectangleState.graphics);
+  }
+
+  const graphics = rectangleState.graphics;
+  graphics.clear();
+  setRectangleEditingState(rectangleState.placed);
+  if (!rectangleState.placed) return;
+
+  const style = getPreviewStyle();
+  const segments = getRectangleSegments();
+  graphics.lineStyle(getScaledRadius(style.wallWidth), style.wallColor, 0.9);
+  for (const {a, b} of segments) {
+    graphics.moveTo(a.x, a.y);
+    graphics.lineTo(b.x, b.y);
+  }
+
+  const [a, b] = rectangleState.handles;
+  const bounds = getRectangleBounds();
+  drawRectangleBoundsGuide(graphics, bounds, style);
+
+  for (const {a: start} of segments) {
+    drawPreviewVertex(graphics, start, style);
+  }
+  drawPreviewVertex(graphics, segments.at(-1)?.b ?? a, style);
+  for (const vertex of getRectangleSideVertices()) {
+    drawRectangleSplitVertex(graphics, vertex, style);
+  }
+  drawEndpoint(graphics, a, style);
+  drawEndpoint(graphics, b, style);
+}
+
+function drawRectangleBoundsGuide(graphics, bounds, style) {
+  for (const [side, start, end] of getRectangleBoundsSides(bounds)) {
+    if (!rectangleState.sideEnabled[side]) {
+      graphics.lineStyle(getScaledRadius(Math.max(style.guideWidth, 1)), style.outlineColor, 0.22);
+      graphics.moveTo(start.x, start.y);
+      graphics.lineTo(end.x, end.y);
+      continue;
+    }
+
+    const gaps = getRectangleSideGaps(side);
+    for (const segment of getAllSideSegments(side, start, end)) {
+      const missing = gaps.includes(segment.index);
+      graphics.lineStyle(
+        getScaledRadius(missing ? Math.max(style.guideWidth, 1) : style.guideWidth),
+        missing ? style.outlineColor : style.wallColor,
+        missing ? 0.22 : 0.45
+      );
+      graphics.moveTo(segment.a.x, segment.a.y);
+      graphics.lineTo(segment.b.x, segment.b.y);
+    }
+  }
+}
+
+function getRectangleVertexHitRadius() {
+  const style = getPreviewStyle();
+  return getScaledRadius(style.splitVertexSize + style.outlineWidth + 8);
+}
+
+function getRectangleCornerHitRadius(style=getPreviewStyle()) {
+  return getScaledRadius(Math.max(style.endpointSize + style.outlineWidth + 8, style.wallWidth + 16));
+}
+
+function isNearRectangleCorner(point) {
+  if (!rectangleState.placed) return false;
+  const radius = getRectangleCornerHitRadius();
+  return rectangleState.handles.some((handle) => {
+    return Math.hypot(handle.x - point.x, handle.y - point.y) <= radius;
+  });
+}
+
+function drawRectangleSplitVertex(graphics, vertex, style) {
+  const radius = getScaledRadius(style.splitVertexSize);
+  const highlighted = isHighlightedRectangleVertex(vertex);
+  graphics.beginFill(highlighted ? style.vertexActiveColor : style.vertexColor, 0.98);
+  graphics.lineStyle(
+    getScaledRadius(style.outlineWidth),
+    highlighted ? style.outlineColor : style.wallColor,
+    0.95
+  );
+  const {point} = vertex;
+  graphics.drawCircle(point.x, point.y, radius);
+  graphics.endFill();
+}
+
+function isHighlightedRectangleVertex(vertex) {
+  return sameRectangleVertex(rectangleState.draggingVertex, vertex)
+    || sameRectangleVertex(rectangleState.hoveredVertex, vertex);
+}
+
+function sameRectangleVertex(a, b) {
+  return !!a && !!b && a.side === b.side && a.index === b.index;
+}
+
+function getRectangleBounds() {
+  const [a, b] = rectangleState.handles;
+  const minX = Math.min(a.x, b.x);
+  const minY = Math.min(a.y, b.y);
+  const maxX = Math.max(a.x, b.x);
+  const maxY = Math.max(a.y, b.y);
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width: maxX - minX,
+    height: maxY - minY
+  };
+}
+
+function getDefaultRectangleSideRatios() {
+  return {
+    top: [],
+    right: [],
+    bottom: [],
+    left: []
+  };
+}
+
+function getDefaultRectangleSideEnabled() {
+  return {
+    top: true,
+    right: true,
+    bottom: true,
+    left: true
+  };
+}
+
+function getDefaultRectangleSideGaps() {
+  return {
+    top: [],
+    right: [],
+    bottom: [],
+    left: []
+  };
+}
+
+function cloneRectangleSideRatios(source) {
+  return {
+    top: [...(source?.top ?? [])],
+    right: [...(source?.right ?? [])],
+    bottom: [...(source?.bottom ?? [])],
+    left: [...(source?.left ?? [])]
+  };
+}
+
+function cloneRectangleSideGaps(source) {
+  return {
+    top: [...(source?.top ?? [])],
+    right: [...(source?.right ?? [])],
+    bottom: [...(source?.bottom ?? [])],
+    left: [...(source?.left ?? [])]
+  };
+}
+
+function cloneRectangleSideEnabled(source) {
+  return {
+    top: source?.top !== false,
+    right: source?.right !== false,
+    bottom: source?.bottom !== false,
+    left: source?.left !== false
+  };
+}
+
+function getRectangleSideRatios(side) {
+  const count = rectangleState.sideSegments[side] ?? DEFAULT_RECTANGLE_SEGMENTS;
+  const ratios = reconcileRectangleSideRatios(rectangleState.sideRatios?.[side], count);
+  rectangleState.sideRatios[side] = ratios;
+  return ratios;
+}
+
+function reconcileRectangleSideRatios(source, segmentCount) {
+  const vertexCount = Math.max(segmentCount - 1, 0);
+  const ratios = Array.isArray(source)
+    ? source.map((ratio) => Number(ratio)).filter((ratio) => Number.isFinite(ratio))
+    : [];
+
+  ratios.sort((a, b) => a - b);
+  const result = [];
+  for (let i = 0; i < vertexCount; i++) {
+    result.push(clamp(ratios[i] ?? ((i + 1) / segmentCount), 0, 1));
+  }
+
+  const spacing = getRectangleRatioSpacing(segmentCount);
+  for (let i = 0; i < result.length; i++) {
+    const min = i === 0 ? spacing : result[i - 1] + spacing;
+    const max = i === result.length - 1 ? 1 - spacing : result[i + 1] - spacing;
+    result[i] = clamp(result[i], min, max);
+  }
+
+  return result;
+}
+
+function reconcileRectangleSideGaps(source, segmentCount) {
+  if (!Array.isArray(source)) return [];
+  return [...new Set(source
+    .map((index) => Number(index))
+    .filter((index) => Number.isInteger(index) && index >= 0 && index < segmentCount))]
+    .sort((a, b) => a - b);
+}
+
+function getRectangleRatioSpacing(segmentCount) {
+  return Math.min(0.02, 0.45 / Math.max(segmentCount, 1));
+}
+
+function getRectangleRatioForPoint(side, point) {
+  const bounds = getRectangleBounds();
+  if (side === "top") return getBoundedRatio(point.x, bounds.minX, bounds.maxX);
+  if (side === "right") return getBoundedRatio(point.y, bounds.minY, bounds.maxY);
+  if (side === "bottom") return getBoundedRatio(point.x, bounds.maxX, bounds.minX);
+  return getBoundedRatio(point.y, bounds.maxY, bounds.minY);
+}
+
+function getBoundedRatio(value, start, end) {
+  const length = end - start;
+  if (!length) return 0;
+  return clamp((value - start) / length, 0, 1);
+}
+
+function getRectangleSegments() {
+  const bounds = getRectangleBounds();
+  return getRectangleBoundsSides(bounds).flatMap(([side, start, end]) => getSideSegments(side, start, end));
+}
+
+function getRectangleSideVertices() {
+  const bounds = getRectangleBounds();
+  return getRectangleBoundsSides(bounds).flatMap(([side, start, end]) => getSideVertices(side, start, end));
+}
+
+function getRectangleBoundsSides(bounds) {
+  return [
+    ["top", {x: bounds.minX, y: bounds.minY}, {x: bounds.maxX, y: bounds.minY}],
+    ["right", {x: bounds.maxX, y: bounds.minY}, {x: bounds.maxX, y: bounds.maxY}],
+    ["bottom", {x: bounds.maxX, y: bounds.maxY}, {x: bounds.minX, y: bounds.maxY}],
+    ["left", {x: bounds.minX, y: bounds.maxY}, {x: bounds.minX, y: bounds.minY}]
+  ];
+}
+
+function getSideSegments(side, start, end) {
+  if (!rectangleState.sideEnabled[side]) return [];
+
+  const gaps = getRectangleSideGaps(side);
+  return getAllSideSegments(side, start, end).filter((segment) => !gaps.includes(segment.index));
+}
+
+function getAllSideSegments(side, start, end) {
+  const points = getSidePoints(side, start, end);
+  const segments = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    segments.push({side, index: i, a: points[i], b: points[i + 1]});
+  }
+  return segments;
+}
+
+function getSideVertices(side, start, end) {
+  if (!rectangleState.sideEnabled[side]) return [];
+  return getSidePoints(side, start, end).slice(1, -1).map((point, index) => ({side, index, point}));
+}
+
+function getSidePoints(side, start, end) {
+  return [
+    start,
+    ...getRectangleSideRatios(side).map((ratio) => ({
+      x: start.x + ((end.x - start.x) * ratio),
+      y: start.y + ((end.y - start.y) * ratio)
+    })),
+    end
+  ];
+}
+
+async function applyRectangleWalls() {
+  if (!isRectangleToolActive() || !rectangleState.placed) return;
+
+  const wallData = WALL_TYPE_DATA[rectangleState.wallTypeTool]?.() ?? WALL_TYPE_DATA.walls();
+  const rectangleId = rectangleState.rectangleId ?? foundry.utils.randomID();
+  const segments = getRectangleSegments();
+  const walls = [];
+
+  for (let i = 0; i < segments.length; i++) {
+    const {a, b} = segments[i];
+    const c = [Math.round(a.x), Math.round(a.y), Math.round(b.x), Math.round(b.y)];
+    if ((c[0] === c[2]) && (c[1] === c[3])) continue;
+    walls.push({
+      ...wallData,
+      c,
+      flags: {
+        [MODULE_ID]: {
+          [RECTANGLE_FLAG]: {
+            rectangleId,
+            index: i,
+            wallIds: [],
+            handles: clonePoints(rectangleState.handles),
+            sideSegments: {...rectangleState.sideSegments},
+            sideRatios: cloneRectangleSideRatios(rectangleState.sideRatios),
+            sideEnabled: cloneRectangleSideEnabled(rectangleState.sideEnabled),
+            sideGaps: cloneRectangleSideGaps(rectangleState.sideGaps),
+            wallTypeTool: rectangleState.wallTypeTool
+          }
+        }
+      }
+    });
+  }
+
+  if (!walls.length) return;
+
+  const oldWallIds = getExistingRectangleWallIds();
+  const oldWalls = oldWallIds.map((id) => canvas.scene.walls.get(id)).filter(Boolean);
+  const created = await canvas.scene.createEmbeddedDocuments("Wall", walls);
+  const wallIds = created.map((wall) => wall.id);
+  const flagUpdates = created.map((wall, index) => ({
+    _id: wall.id,
+    [`flags.${MODULE_ID}.${RECTANGLE_FLAG}.index`]: index,
+    [`flags.${MODULE_ID}.${RECTANGLE_FLAG}.wallIds`]: wallIds
+  }));
+  await canvas.scene.updateEmbeddedDocuments("Wall", flagUpdates);
+
+  if (oldWallIds.length) {
+    canvas.walls.storeHistory("delete", oldWalls.map((wall) => wall.toObject()));
+    oldWallIds.forEach((id) => rectangleState.replacingWallIds.add(id));
+    try {
+      await canvas.scene.deleteEmbeddedDocuments("Wall", oldWallIds);
+    } finally {
+      oldWallIds.forEach((id) => rectangleState.replacingWallIds.delete(id));
+    }
+  }
+
+  canvas.walls.storeHistory("create", created.map((wall) => wall.toObject()));
+  ui.notifications.info(game.i18n.format("indy-walls.Notifications.RectangleWallsCreated", {
+    count: created.length
+  }));
+  clearRectanglePreview();
 }
 
 async function applyEllipseWalls() {
@@ -705,6 +2081,8 @@ async function applyCubicWalls() {
 }
 
 function clearCubicPreview() {
+  restoreEditSessionWalls();
+  clearEditorHistory(cubicState);
   cubicState.placed = false;
   cubicState.initializing = false;
   cubicState.draggingHandle = null;
@@ -716,6 +2094,8 @@ function clearCubicPreview() {
 }
 
 function clearEllipsePreview() {
+  restoreEditSessionWalls();
+  clearEditorHistory(ellipseState);
   ellipseState.placed = false;
   ellipseState.initializing = false;
   ellipseState.initialOrigin = null;
@@ -725,6 +2105,24 @@ function clearEllipsePreview() {
   ellipseState.graphics?.destroy();
   ellipseState.graphics = null;
   setEllipseEditingState(false);
+}
+
+function clearRectanglePreview() {
+  restoreEditSessionWalls();
+  clearEditorHistory(rectangleState);
+  rectangleState.placed = false;
+  rectangleState.initializing = false;
+  rectangleState.draggingHandle = null;
+  rectangleState.draggingVertex = null;
+  rectangleState.hoveredVertex = null;
+  rectangleState.rectangleId = null;
+  rectangleState.wallIds = [];
+  rectangleState.sideRatios = getDefaultRectangleSideRatios();
+  rectangleState.sideEnabled = getDefaultRectangleSideEnabled();
+  rectangleState.sideGaps = getDefaultRectangleSideGaps();
+  rectangleState.graphics?.destroy();
+  rectangleState.graphics = null;
+  setRectangleEditingState(false);
 }
 
 function setCubicEditingState(editing) {
@@ -738,8 +2136,10 @@ function ensureCubicEditButtons() {
   ensureEditButtons({
     id: CUBIC_EDIT_BUTTONS_ID,
     buttons: [
-      ["indy-walls.Controls.DecreaseSegments", "fa-solid fa-minus", () => changeCubicSegments(-1)],
-      ["indy-walls.Controls.IncreaseSegments", "fa-solid fa-plus", () => changeCubicSegments(1)],
+      ["indy-walls.Controls.DecreaseSegments", "fa-solid fa-minus", () => changeActiveSegments(-1)],
+      ["indy-walls.Controls.IncreaseSegments", "fa-solid fa-plus", () => changeActiveSegments(1)],
+      ["indy-walls.Controls.UndoEdit", "fa-solid fa-rotate-left", () => undoActiveEditor()],
+      ["indy-walls.Controls.RedoEdit", "fa-solid fa-rotate-right", () => redoActiveEditor()],
       ["indy-walls.Controls.ApplyCubic", "fa-solid fa-check", () => applyCubicWalls()],
       ["indy-walls.Controls.CancelCubic", "fa-solid fa-xmark", () => clearCubicPreview()]
     ]
@@ -761,8 +2161,10 @@ function ensureEllipseEditButtons() {
   ensureEditButtons({
     id: ELLIPSE_EDIT_BUTTONS_ID,
     buttons: [
-      ["indy-walls.Controls.DecreaseSegments", "fa-solid fa-minus", () => changeEllipseSegments(-1)],
-      ["indy-walls.Controls.IncreaseSegments", "fa-solid fa-plus", () => changeEllipseSegments(1)],
+      ["indy-walls.Controls.DecreaseSegments", "fa-solid fa-minus", () => changeActiveSegments(-1)],
+      ["indy-walls.Controls.IncreaseSegments", "fa-solid fa-plus", () => changeActiveSegments(1)],
+      ["indy-walls.Controls.UndoEdit", "fa-solid fa-rotate-left", () => undoActiveEditor()],
+      ["indy-walls.Controls.RedoEdit", "fa-solid fa-rotate-right", () => redoActiveEditor()],
       ["indy-walls.Controls.ApplyEllipse", "fa-solid fa-check", () => applyEllipseWalls()],
       ["indy-walls.Controls.CancelEllipse", "fa-solid fa-xmark", () => clearEllipsePreview()]
     ]
@@ -771,6 +2173,32 @@ function ensureEllipseEditButtons() {
 
 function positionEllipseEditButtons() {
   positionEditButtons({id: ELLIPSE_EDIT_BUTTONS_ID, toolName: ELLIPSE_TOOL, fallbackTop: 160});
+}
+
+function setRectangleEditingState(editing) {
+  document.body?.classList.toggle("indy-walls-rectangle-editing", editing);
+  ensureRectangleEditButtons();
+  setEditButtonsVisible(RECTANGLE_EDIT_BUTTONS_ID, editing);
+  if (editing) positionRectangleEditButtons();
+}
+
+function ensureRectangleEditButtons() {
+  const existing = document.getElementById(RECTANGLE_EDIT_BUTTONS_ID);
+  if (existing && existing.querySelectorAll("button").length !== 4) existing.remove();
+
+  ensureEditButtons({
+    id: RECTANGLE_EDIT_BUTTONS_ID,
+    buttons: [
+      ["indy-walls.Controls.UndoEdit", "fa-solid fa-rotate-left", () => undoActiveEditor()],
+      ["indy-walls.Controls.RedoEdit", "fa-solid fa-rotate-right", () => redoActiveEditor()],
+      ["indy-walls.Controls.ApplyRectangle", "fa-solid fa-check", () => applyRectangleWalls()],
+      ["indy-walls.Controls.CancelRectangle", "fa-solid fa-xmark", () => clearRectanglePreview()]
+    ]
+  });
+}
+
+function positionRectangleEditButtons() {
+  positionEditButtons({id: RECTANGLE_EDIT_BUTTONS_ID, toolName: RECTANGLE_TOOL, fallbackTop: 200});
 }
 
 function cancelCubicEditingForDeletedWall(wallDocument) {
@@ -799,11 +2227,27 @@ function cancelEllipseEditingForDeletedWall(wallDocument) {
   if (game.activeTool === ELLIPSE_TOOL) canvas.walls.activate({tool: "select"});
 }
 
+function cancelRectangleEditingForDeletedWall(wallDocument) {
+  if (!rectangleState.placed || !rectangleState.rectangleId) return;
+  if (rectangleState.replacingWallIds.has(wallDocument.id)) return;
+
+  const rectangleData = wallDocument.getFlag(MODULE_ID, RECTANGLE_FLAG);
+  const sameRectangle = rectangleData?.rectangleId === rectangleState.rectangleId;
+  const knownWall = rectangleState.wallIds.includes(wallDocument.id);
+  if (!sameRectangle && !knownWall) return;
+
+  clearRectanglePreview();
+  if (game.activeTool === RECTANGLE_TOOL) canvas.walls.activate({tool: "select"});
+}
+
 function loadCubicCurveFromWall(wall) {
   const cubicData = wall.document.getFlag(MODULE_ID, CUBIC_FLAG);
   if (!Array.isArray(cubicData?.handles) || cubicData.handles.length !== 4) return;
 
   cubicState.active = true;
+  ellipseState.active = false;
+  rectangleState.active = false;
+  clearEditorHistory(cubicState);
   cubicState.placed = true;
   cubicState.initializing = false;
   cubicState.draggingHandle = null;
@@ -817,6 +2261,7 @@ function loadCubicCurveFromWall(wall) {
   }));
 
   canvas.walls.activate({tool: CUBIC_TOOL});
+  hideEditSessionWalls(cubicState.wallIds);
   drawCubicPreview();
 }
 
@@ -824,7 +2269,10 @@ function loadEllipseFromWall(wall) {
   const ellipseData = wall.document.getFlag(MODULE_ID, ELLIPSE_FLAG);
   if (!Array.isArray(ellipseData?.handles) || ellipseData.handles.length !== 2) return;
 
+  cubicState.active = false;
   ellipseState.active = true;
+  rectangleState.active = false;
+  clearEditorHistory(ellipseState);
   ellipseState.placed = true;
   ellipseState.initializing = false;
   ellipseState.initialOrigin = null;
@@ -839,7 +2287,38 @@ function loadEllipseFromWall(wall) {
   }));
 
   canvas.walls.activate({tool: ELLIPSE_TOOL});
+  hideEditSessionWalls(ellipseState.wallIds);
   drawEllipsePreview();
+}
+
+function loadRectangleFromWall(wall) {
+  const rectangleData = wall.document.getFlag(MODULE_ID, RECTANGLE_FLAG);
+  if (!Array.isArray(rectangleData?.handles) || rectangleData.handles.length !== 2) return;
+
+  cubicState.active = false;
+  ellipseState.active = false;
+  rectangleState.active = true;
+  clearEditorHistory(rectangleState);
+  rectangleState.placed = true;
+  rectangleState.initializing = false;
+  rectangleState.draggingHandle = null;
+  rectangleState.draggingVertex = null;
+  rectangleState.hoveredVertex = null;
+  rectangleState.rectangleId = rectangleData.rectangleId ?? null;
+  rectangleState.wallIds = Array.isArray(rectangleData.wallIds) ? [...rectangleData.wallIds] : [wall.document.id];
+  rectangleState.wallTypeTool = getWallTypeToolFromDocument(wall.document) ?? rectangleData.wallTypeTool ?? "walls";
+  rectangleState.sideSegments = normalizeRectangleSideSegments(rectangleData.sideSegments);
+  rectangleState.sideRatios = normalizeRectangleSideRatios(rectangleData.sideRatios, rectangleState.sideSegments);
+  rectangleState.sideEnabled = normalizeRectangleSideEnabled(rectangleData.sideEnabled);
+  rectangleState.sideGaps = normalizeRectangleSideGaps(rectangleData.sideGaps, rectangleState.sideSegments);
+  rectangleState.handles = rectangleData.handles.map((handle) => ({
+    x: Number(handle.x) || 0,
+    y: Number(handle.y) || 0
+  }));
+
+  canvas.walls.activate({tool: RECTANGLE_TOOL});
+  hideEditSessionWalls(rectangleState.wallIds);
+  drawRectanglePreview();
 }
 
 function cloneHandles() {
@@ -852,6 +2331,41 @@ function getExistingCurveWallIds() {
 
 function getExistingEllipseWallIds() {
   return ellipseState.wallIds.filter((id) => canvas.scene.walls.has(id));
+}
+
+function getExistingRectangleWallIds() {
+  return rectangleState.wallIds.filter((id) => canvas.scene.walls.has(id));
+}
+
+function normalizeRectangleSideSegments(source={}) {
+  return {
+    top: clamp(Number(source.top) || DEFAULT_RECTANGLE_SEGMENTS, 1, 64),
+    right: clamp(Number(source.right) || DEFAULT_RECTANGLE_SEGMENTS, 1, 64),
+    bottom: clamp(Number(source.bottom) || DEFAULT_RECTANGLE_SEGMENTS, 1, 64),
+    left: clamp(Number(source.left) || DEFAULT_RECTANGLE_SEGMENTS, 1, 64)
+  };
+}
+
+function normalizeRectangleSideRatios(source={}, sideSegments=normalizeRectangleSideSegments()) {
+  return {
+    top: reconcileRectangleSideRatios(source.top, sideSegments.top),
+    right: reconcileRectangleSideRatios(source.right, sideSegments.right),
+    bottom: reconcileRectangleSideRatios(source.bottom, sideSegments.bottom),
+    left: reconcileRectangleSideRatios(source.left, sideSegments.left)
+  };
+}
+
+function normalizeRectangleSideEnabled(source={}) {
+  return cloneRectangleSideEnabled(source);
+}
+
+function normalizeRectangleSideGaps(source={}, sideSegments=normalizeRectangleSideSegments()) {
+  return {
+    top: reconcileRectangleSideGaps(source.top, sideSegments.top),
+    right: reconcileRectangleSideGaps(source.right, sideSegments.right),
+    bottom: reconcileRectangleSideGaps(source.bottom, sideSegments.bottom),
+    left: reconcileRectangleSideGaps(source.left, sideSegments.left)
+  };
 }
 
 function getWallTypeToolFromDocument(wallDocument) {
@@ -868,6 +2382,8 @@ function getWallTypeToolFromDocument(wallDocument) {
     && (move === movement.NORMAL)) return "invisible";
   if ((light === senses.NORMAL) && (sight === senses.NORMAL) && (sound === senses.NONE)
     && (move === movement.NONE)) return "ethereal";
+  if ((light === senses.NORMAL) && (sight === senses.NORMAL) && (sound === senses.NORMAL)
+    && (move === movement.NONE)) return "windows";
   if ((light === senses.NORMAL) && (sight === senses.NORMAL) && (sound === senses.NORMAL)
     && (move === movement.NORMAL)) return "walls";
   return null;

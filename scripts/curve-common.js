@@ -1,7 +1,17 @@
 export const HANDLE_RADIUS = 12;
+export const VERTEX_RADIUS = 5;
 
 export function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
+}
+
+export function getScaledRadius(radius) {
+  const scale = canvas?.stage?.scale?.x || canvas?.viewport?.scale || 1;
+  return radius / Math.max(scale, 0.1);
+}
+
+export function getHandleHitRadius(radius=HANDLE_RADIUS, outlineWidth=2) {
+  return getScaledRadius(radius + outlineWidth + 8);
 }
 
 export function getEventPoint(layer, point, event) {
@@ -9,23 +19,26 @@ export function getEventPoint(layer, point, event) {
   return {x, y};
 }
 
-export function getHandleAt(handles, point) {
+export function getHandleAt(handles, point, radius=HANDLE_RADIUS, outlineWidth=2) {
+  const hitRadius = getHandleHitRadius(radius, outlineWidth);
   return handles.findIndex((handle) => {
-    return Math.hypot(handle.x - point.x, handle.y - point.y) <= HANDLE_RADIUS;
+    return Math.hypot(handle.x - point.x, handle.y - point.y) <= hitRadius;
   });
 }
 
-export function drawHandle(graphics, point, color) {
+export function drawHandle(graphics, point, color, {radius=HANDLE_RADIUS, outlineColor=0x111111, outlineWidth=2}={}) {
+  const scaledRadius = getScaledRadius(radius);
   graphics.beginFill(color, 0.95);
-  graphics.lineStyle(2, 0x111111, 0.9);
-  graphics.drawCircle(point.x, point.y, HANDLE_RADIUS);
+  graphics.lineStyle(getScaledRadius(outlineWidth), outlineColor, 0.9);
+  graphics.drawCircle(point.x, point.y, scaledRadius);
   graphics.endFill();
 }
 
-export function drawVertex(graphics, point) {
-  graphics.beginFill(0xffffff, 0.95);
-  graphics.lineStyle(1, 0x111111, 0.9);
-  graphics.drawCircle(point.x, point.y, 4);
+export function drawVertex(graphics, point, {color=0xffffff, radius=VERTEX_RADIUS, outlineColor=0x111111, outlineWidth=1.5}={}) {
+  const scaledRadius = getScaledRadius(radius);
+  graphics.beginFill(color, 0.95);
+  graphics.lineStyle(getScaledRadius(outlineWidth), outlineColor, 0.9);
+  graphics.drawCircle(point.x, point.y, scaledRadius);
   graphics.endFill();
 }
 
