@@ -278,6 +278,7 @@ Hooks.on("canvasInit", () => {
 
 Hooks.on("controlWall", (wall, controlled) => {
   if (!controlled || !game.user.isGM) return;
+  if (!isWallControlsActive()) return;
   const controlKeyDown = isControlKeyDown();
   debugShapeSelection("controlWall", {
     wallId: wall?.document?.id ?? wall?.id,
@@ -952,7 +953,7 @@ function patchWallObjectInteractions(WallClass) {
         editorActive
       });
 
-      if (method === "_onClickLeft" && game.user.isGM && isControlInteraction(event)) {
+      if (method === "_onClickLeft" && game.user.isGM && isControlInteraction(event) && isWallControlsActive()) {
         consumeCanvasInteraction(event);
         resetEditorCursor(event);
         return;
@@ -1020,6 +1021,7 @@ function registerRectangleCanvasClickHandler() {
 }
 
 function updateLastCanvasPointerPoint(event) {
+  if (!isWallControlsActive()) return;
   const point = getClientInteractionPoint(event);
   if (point) lastCanvasPointerState.point = point;
   if (point && isPolylineToolActive() && polylineState.drawing) {
@@ -1029,6 +1031,7 @@ function updateLastCanvasPointerPoint(event) {
 }
 
 function handleCanvasSegmentEditPointerDown(event) {
+  if (!isWallControlsActive()) return;
   if (Number.isFinite(event.button) && event.button !== 0) return;
   if (isControlInteraction(event)) {
     startControlShapeSelect(event);
@@ -1063,6 +1066,7 @@ function handleCanvasSegmentEditPointerDown(event) {
 }
 
 function handleCanvasSegmentEditPointerMove(event) {
+  if (!isWallControlsActive()) return;
   if (!isPendingCanvasSegmentEditEvent(event)) return;
   if (canvasSegmentEditState.clientX !== null && canvasSegmentEditState.clientY !== null) {
     const distance = Math.hypot(event.clientX - canvasSegmentEditState.clientX, event.clientY - canvasSegmentEditState.clientY);
@@ -1080,6 +1084,11 @@ function handleCanvasSegmentEditPointerMove(event) {
 }
 
 function handleCanvasSegmentEditPointerUp(event) {
+  if (!isWallControlsActive()) {
+    clearControlShapeSelect();
+    clearPendingCanvasSegmentEdit();
+    return;
+  }
   const wasControlSelect = isControlShapeSelectEvent(event);
   const controlSelectHandled = finishControlShapeSelect(event);
   if (controlSelectHandled) {
@@ -1111,6 +1120,11 @@ function handleCanvasSegmentEditPointerUp(event) {
 }
 
 function handleCanvasSegmentEditPointerCancel(event) {
+  if (!isWallControlsActive()) {
+    clearControlShapeSelect();
+    clearPendingCanvasSegmentEdit();
+    return;
+  }
   if (isControlShapeSelectEvent(event)) clearControlShapeSelect();
   if (!isPendingCanvasSegmentEditEvent(event)) {
     return;
@@ -1122,6 +1136,13 @@ function handleCanvasSegmentEditPointerCancel(event) {
 
 function startControlShapeSelect(event) {
   if (!game.user.isGM) return;
+  if (!isWallControlsActive()) {
+    debugShapeSelection("control shape select skipped: wall controls inactive", {
+      activeTool: game.activeTool,
+      activeControl: getActiveControlName()
+    });
+    return;
+  }
   controlShapeSelectState.active = true;
   controlShapeSelectState.pointerId = event.pointerId;
   controlShapeSelectState.clientX = event.clientX;
@@ -1135,6 +1156,14 @@ function startControlShapeSelect(event) {
 
 function finishControlShapeSelect(event) {
   if (!isControlShapeSelectEvent(event)) return false;
+  if (!isWallControlsActive()) {
+    clearControlShapeSelect();
+    debugShapeSelection("control shape select skipped on finish: wall controls inactive", {
+      activeTool: game.activeTool,
+      activeControl: getActiveControlName()
+    });
+    return false;
+  }
 
   const moved = Math.hypot(
     event.clientX - controlShapeSelectState.clientX,
@@ -1168,6 +1197,7 @@ function clearControlShapeSelect() {
 }
 
 function handleRectangleCanvasClick(event) {
+  if (!isWallControlsActive()) return;
   if (Number.isFinite(event.button) && event.button !== 0) return;
   if (shouldIgnoreCanvasSegmentClick()) {
     consumeCanvasInteraction(event);
@@ -1278,6 +1308,7 @@ function handleRectangleCanvasClick(event) {
 }
 
 function handlePolylineCanvasDoubleClick(event) {
+  if (!isWallControlsActive()) return;
   if (Number.isFinite(event.button) && event.button !== 0) return;
   if (!isPolylineToolActive() || !polylineState.drawing) return;
 
@@ -1299,6 +1330,7 @@ function handlePolylineCanvasDoubleClick(event) {
 }
 
 function handleEditorCanvasContextMenu(event) {
+  if (!isWallControlsActive()) return;
   if (handleCubicCanvasContextMenu(event)) return;
   handlePolylineCanvasContextMenu(event);
 }
@@ -1437,6 +1469,7 @@ function commitCanvasSegmentEdit(tool, edit, event=null) {
 }
 
 function loadShapeFromCanvasPointerUp(event) {
+  if (!isWallControlsActive()) return false;
   for (const point of getCanvasClickCandidatePoints(event)) {
     const scan = getIndyWallAtPoint(point, "canvas pointerup");
     if (!scan?.wall || !loadShapeFromExistingWall(scan.wall)) continue;
@@ -1616,6 +1649,7 @@ function registerEditorDomDragHandler() {
 }
 
 function handleEditorDomPointerDown(event) {
+  if (!isWallControlsActive()) return;
   debugShapeSelection("editor DOM pointerdown", {
     target: event.target?.tagName,
     button: event.button,
@@ -2357,6 +2391,18 @@ function isControlInteraction(event) {
     || event.data?.originalEvent?.ctrlKey
     || event.originalEvent?.ctrlKey
     || isControlKeyDown());
+}
+
+function isWallControlsActive() {
+  const activeControl = getActiveControlName();
+  if (activeControl) return activeControl === "walls";
+  return canvas?.activeLayer === canvas?.walls;
+}
+
+function getActiveControlName() {
+  const activeControl = ui?.controls?.control ?? canvas?.controls?.control;
+  if (typeof activeControl === "string") return activeControl;
+  return activeControl?.name ?? activeControl?.id ?? activeControl?.layer ?? null;
 }
 
 function isAltInteraction(event) {
