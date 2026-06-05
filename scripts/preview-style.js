@@ -50,7 +50,7 @@ export function registerStyleSettings() {
   }
 
   for (const [key, data] of Object.entries({
-    wallWidth: ["PreviewWallWidth", Number, 1, {min: 1, max: 12, step: 1}],
+    wallWidth: ["PreviewWallWidth", Number, 2, {min: 1, max: 12, step: 1}],
     vertexSize: ["PreviewVertexSize", Number, 3, {min: 2, max: 20, step: 1}],
     endpointSize: ["PreviewEndpointSize", Number, 8, {min: 4, max: 32, step: 1}],
     handleSize: ["PreviewHandleSize", Number, 12, {min: 4, max: 32, step: 1}],

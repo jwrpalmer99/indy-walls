@@ -40,6 +40,10 @@
         "Name": "Active Indy shape tool border width",
         "Hint": "Inset border width for the selected Indy shape drawing tool button."
       },
+      "ShowDoorGlyphsInEditor": {
+        "Name": "Show door glyphs in Indy shape editor",
+        "Hint": "When enabled, door and secret door segments show Foundry-style door glyphs while editing Indy wall shapes."
+      },
       "PreviewWallColor": {
         "Name": "Preview wall color",
         "Hint": "Hex color for generated wall previews, for example #c10e56ff."

@@ -420,6 +420,9 @@ export function drawPolylinePreview(deps) {
     graphics.moveTo(segment.a.x, segment.a.y);
     graphics.lineTo(segment.b.x, segment.b.y);
   }
+  for (const segment of getPolylineDoorIconSegments(gaps)) {
+    deps.drawSegmentDoorIcon(graphics, polylineState, segment, style);
+  }
 
   for (const segment of allSegments) {
     if (!gaps.includes(segment.sourceIndex ?? segment.index)) continue;
@@ -453,6 +456,21 @@ export function drawPolylinePreview(deps) {
     drawPolylineVertex(graphics, vertex, style, deps);
   }
   if (polylineState.points.length > 1) deps.drawMoveHandle(graphics, deps.getEditorShapeCenter(POLYLINE_TOOL), style);
+}
+
+function getPolylineDoorIconSegments(gaps) {
+  const segments = [];
+  for (const segment of getPolylineBaseSegments()) {
+    if (gaps.includes(segment.index)) continue;
+    const points = getPolylineSegmentPoints(segment);
+    const index = Math.floor((points.length - 1) / 2);
+    segments.push({
+      ...segment,
+      a: points[index] ?? segment.a,
+      b: points[index + 1] ?? segment.b
+    });
+  }
+  return segments;
 }
 
 function getPolylineVertices() {

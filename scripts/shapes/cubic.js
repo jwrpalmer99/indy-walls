@@ -156,6 +156,9 @@ export function drawCubicPreview(deps) {
     graphics.moveTo(a.x, a.y);
     graphics.lineTo(b.x, b.y);
   }
+  for (const segment of segments) {
+    deps.drawSegmentDoorIcon(graphics, cubicState, segment, style);
+  }
 
   for (const segment of allSegments) {
     if (!gaps.includes(segment.index)) continue;

@@ -184,6 +184,9 @@ export function drawEllipsePreview(deps) {
     graphics.moveTo(a.x, a.y);
     graphics.lineTo(b.x, b.y);
   }
+  for (const segment of segments) {
+    deps.drawSegmentDoorIcon(graphics, ellipseState, segment, style);
+  }
 
   for (const segment of allSegments) {
     if (!gaps.includes(segment.index)) continue;
