@@ -1,3 +1,4 @@
+
 # Indy Walls
 
 Indy Walls is a Foundry VTT module with wall-editing improvements, including curves/circular/rectangular wall drawing, borrowing ideas from DragonFlagon Curvy Walls .
@@ -14,7 +15,7 @@ Optional dependencies:
 
 <img width="400" height="225" alt="bezier_curve" src="https://github.com/user-attachments/assets/4c8295a9-1e42-4efa-97ee-6d15f98051c8" />
 <img width="400" height="224" alt="ellipse" src="https://github.com/user-attachments/assets/c4fa0adb-aec6-4cc9-92df-7700c468da0d" />
-<img width="400" height="225" alt="polyline" src="https://github.com/user-attachments/assets/efb88217-17f6-4259-9e51-882b3a8df768" />
+<img width="400" height="263" alt="polyline-curve" src="https://github.com/user-attachments/assets/5f31efb5-b402-41db-9f38-02d0724e1a0b" />
 <img width="400" height="224" alt="rectangle" src="https://github.com/user-attachments/assets/6af3209e-2880-4f2b-8e6f-e941afcc151a" />
 
 
