@@ -3731,6 +3731,7 @@ function getEllipseDeps() {
 function getRectangleDeps() {
   return {
     MODULE_ID,
+    clamp,
     clearEditorHistory,
     clearRectanglePreview,
     clonePoints,
