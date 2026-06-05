@@ -770,14 +770,12 @@ export async function applyPolylineWalls(deps) {
   const segmentCurves = reconcilePolylineSegmentCurves(polylineState.segmentCurves, getPolylineSegmentCount());
   const polylineId = polylineState.polylineId ?? foundry.utils.randomID();
   const walls = [];
-  const wallSegmentIndexes = [];
 
   for (const segment of segments) {
     const {a, b} = segment;
     const wallData = deps.getSegmentWallData(polylineState, deps.getSegmentKey(segment));
     const c = [Math.round(a.x), Math.round(a.y), Math.round(b.x), Math.round(b.y)];
     if ((c[0] === c[2]) && (c[1] === c[3])) continue;
-    wallSegmentIndexes.push(segment.sourceIndex ?? segment.index);
     walls.push({
       ...wallData,
       c,
@@ -801,10 +799,8 @@ export async function applyPolylineWalls(deps) {
   }
 
   const oldWallIds = getExistingPolylineWallIds();
-  const oldWalls = oldWallIds.map((id) => canvas.scene.walls.get(id)).filter(Boolean);
   if (!walls.length) {
     if (oldWallIds.length) {
-      canvas.walls.storeHistory("delete", oldWalls.map((wall) => wall.toObject()));
       oldWallIds.forEach((id) => polylineState.replacingWallIds.add(id));
       try {
         await canvas.scene.deleteEmbeddedDocuments("Wall", oldWallIds);
@@ -816,26 +812,7 @@ export async function applyPolylineWalls(deps) {
     return;
   }
 
-  const created = await canvas.scene.createEmbeddedDocuments("Wall", walls);
-  const wallIds = created.map((wall) => wall.id);
-  const flagUpdates = created.map((wall, index) => ({
-    _id: wall.id,
-    [`flags.${deps.MODULE_ID}.${POLYLINE_FLAG}.index`]: wallSegmentIndexes[index] ?? index,
-    [`flags.${deps.MODULE_ID}.${POLYLINE_FLAG}.wallIds`]: wallIds
-  }));
-  await canvas.scene.updateEmbeddedDocuments("Wall", flagUpdates);
-
-  if (oldWallIds.length) {
-    canvas.walls.storeHistory("delete", oldWalls.map((wall) => wall.toObject()));
-    oldWallIds.forEach((id) => polylineState.replacingWallIds.add(id));
-    try {
-      await canvas.scene.deleteEmbeddedDocuments("Wall", oldWallIds);
-    } finally {
-      oldWallIds.forEach((id) => polylineState.replacingWallIds.delete(id));
-    }
-  }
-
-  canvas.walls.storeHistory("create", created.map((wall) => wall.toObject()));
+  const created = await deps.replaceShapeWalls(polylineState, oldWallIds, walls);
   ui.notifications.info(game.i18n.format("indy-walls.Notifications.PolylineWallsCreated", {
     count: created.length
   }));

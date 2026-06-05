@@ -90,27 +90,30 @@ import {
   updateEllipseInitialHandles
 } from "./shapes/ellipse.js";
 import {
+  applyRectangleWalls as applyRectangleWallsImpl,
+  cancelRectangleEditingForDeletedWall as cancelRectangleEditingForDeletedWallImpl,
+  changeRectangleSegments as changeRectangleSegmentsImpl,
   cloneRectangleSideEnabled,
   cloneRectangleSideGaps,
   cloneRectangleSideRatios,
-  DEFAULT_RECTANGLE_SEGMENTS,
-  getAllSideSegments,
+  clearRectanglePreview as clearRectanglePreviewImpl,
+  commitRectangleSideEdit as commitRectangleSideEditImpl,
+  drawRectanglePreview as drawRectanglePreviewImpl,
+  getExistingRectangleWallIds as getExistingRectangleWallIdsImpl,
   getDefaultRectangleSideEnabled,
   getDefaultRectangleSideGaps,
   getDefaultRectangleSideRatios,
   getRectangleBounds,
-  getRectangleBoundsSides,
   getRectangleCornerHandles,
-  getRectangleRatioSpacing,
+  getRectangleHandleAt as getRectangleHandleAtImpl,
   getRectangleSegmentIndexAt,
   getRectangleSegmentKey,
   getRectangleSegments,
-  getRectangleSideAt as getRectangleSideAtWithTolerance,
-  getRectangleSideGaps,
-  getRectangleSideRatios,
-  getRectangleSideVertices,
-  reconcileRectangleSideGaps,
-  reconcileRectangleSideRatios,
+  getRectangleSideAtWithStyle as getRectangleSideAtImpl,
+  getRectangleSideEditFromEvent as getRectangleSideEditFromEventImpl,
+  getRectangleVertexAt as getRectangleVertexAtImpl,
+  loadRectangleFromWall as loadRectangleFromWallImpl,
+  removeRectangleVertex as removeRectangleVertexImpl,
   RECTANGLE_EDIT_BUTTONS_ID,
   RECTANGLE_FLAG,
   RECTANGLE_TOOL,
@@ -1484,14 +1487,7 @@ function loadShapeFromCanvasPointerUp(event) {
 }
 
 function getRectangleSideEditFromEvent(event) {
-  if (!isRectangleToolActive() || !rectangleState.placed) return null;
-  const point = getRectangleSidePointFromEvent(event);
-  if (!point) return null;
-
-  return {
-    point: {x: point.x, y: point.y},
-    remove: isAltInteraction(event)
-  };
+  return getRectangleSideEditFromEventImpl(event, getRectangleDeps());
 }
 
 function getCubicSegmentEditFromEvent(event) {
@@ -1518,13 +1514,6 @@ function getEllipseSegmentEditFromEvent(event) {
       segment,
       remove: isAltInteraction(event)
     };
-  }
-  return null;
-}
-
-function getRectangleSidePointFromEvent(event) {
-  for (const point of getCanvasClickCandidatePoints(event)) {
-    if (getRectangleSideAt({x: point.x, y: point.y})) return {x: point.x, y: point.y};
   }
   return null;
 }
@@ -1558,17 +1547,7 @@ function getLabeledInteractionPoint(event) {
 }
 
 function commitRectangleSideEdit(edit, event=null) {
-  if (!isRectangleToolActive() || !rectangleState.placed) return false;
-  debugInteractionManagers("before rectangle canvas click commit", event, {edit});
-  if (!editRectangleSideWithUndo(edit.point, edit.remove)) return false;
-
-  rectangleState.draggingHandle = null;
-  rectangleState.draggingVertex = null;
-  rectangleState.lastSideEditAction = Date.now();
-  rectangleState.suppressNextSideEditClick = false;
-  debugInteractionManagers("after rectangle canvas click commit", event, {edit});
-  scheduleEditorInteractionReset(event);
-  return true;
+  return commitRectangleSideEditImpl(edit, event, getRectangleDeps());
 }
 
 function commitCubicSegmentEdit(edit, event=null) {
@@ -2859,10 +2838,8 @@ async function deleteActiveEditorWalls() {
     return;
   }
 
-  const oldWalls = wallIds.map((id) => canvas.scene.walls.get(id)).filter(Boolean);
   const replacingWallIds = state.replacingWallIds;
   wallIds.forEach((id) => replacingWallIds.add(id));
-  canvas.walls.storeHistory("delete", oldWalls.map((wall) => wall.toObject()));
   dropHiddenEditWalls(wallIds);
   try {
     await canvas.scene.deleteEmbeddedDocuments("Wall", wallIds);
@@ -3315,6 +3292,53 @@ function getWallDocumentById(id) {
   return canvas?.scene?.walls?.get(id) ?? null;
 }
 
+async function replaceShapeWalls(state, oldWallIds, wallData) {
+  const existingIds = [...new Set(oldWallIds ?? [])].filter((id) => canvas.scene.walls.has(id));
+  const reusedIds = existingIds.slice(0, wallData.length);
+  const createdIds = wallData.slice(reusedIds.length).map(() => foundry.utils.randomID());
+  const finalWallIds = [...reusedIds, ...createdIds];
+  const walls = wallData.map((wall, index) => {
+    const data = foundry.utils.deepClone(wall);
+    setShapeWallIds(data, finalWallIds);
+    if (index < reusedIds.length) data._id = reusedIds[index];
+    else data._id = createdIds[index - reusedIds.length];
+    return data;
+  });
+
+  const createdData = walls.slice(reusedIds.length);
+  const updateData = walls.slice(0, reusedIds.length);
+  const deleteIds = existingIds.slice(wallData.length);
+  const created = createdData.length
+    ? await canvas.scene.createEmbeddedDocuments("Wall", createdData, {keepId: true})
+    : [];
+  const updated = updateData.length
+    ? await canvas.scene.updateEmbeddedDocuments("Wall", updateData)
+    : [];
+
+  if (deleteIds.length) {
+    deleteIds.forEach((id) => state.replacingWallIds.add(id));
+    try {
+      await canvas.scene.deleteEmbeddedDocuments("Wall", deleteIds);
+    } finally {
+      deleteIds.forEach((id) => state.replacingWallIds.delete(id));
+    }
+  }
+
+  return finalWallIds.map((id) =>
+    updated.find((wall) => wall.id === id)
+    ?? created.find((wall) => wall.id === id)
+    ?? canvas.scene.walls.get(id)
+  ).filter(Boolean);
+}
+
+function setShapeWallIds(wallData, wallIds) {
+  const moduleFlags = wallData?.flags?.[MODULE_ID];
+  if (!moduleFlags) return;
+  for (const shapeData of Object.values(moduleFlags)) {
+    if (shapeData && typeof shapeData === "object" && "wallIds" in shapeData) shapeData.wallIds = wallIds;
+  }
+}
+
 function getShapeWallTypeByIndexedFlag(wallIds, flagName) {
   const result = {};
   for (const id of wallIds ?? []) {
@@ -3508,19 +3532,7 @@ function editEllipseSegmentWithUndo(index, remove=false) {
 }
 
 function getRectangleHandleAt(point) {
-  if (!rectangleState.placed) return null;
-  const style = getPreviewStyle();
-  const radius = getRectangleCornerHitRadius(style);
-  let bestIndex = null;
-  let bestDistance = Infinity;
-  for (const handle of getRectangleCornerHandles()) {
-    const distance = Math.hypot(handle.point.x - point.x, handle.point.y - point.y);
-    if (distance <= radius && distance < bestDistance) {
-      bestIndex = handle.index;
-      bestDistance = distance;
-    }
-  }
-  return bestIndex;
+  return getRectangleHandleAtImpl(point, getRectangleDeps());
 }
 
 function getRectangleCornerHandlePoint(index) {
@@ -3528,189 +3540,23 @@ function getRectangleCornerHandlePoint(index) {
 }
 
 function getRectangleVertexAt(point) {
-  if (!rectangleState.placed) return null;
-  const radius = getRectangleVertexHitRadius();
-  const vertices = getRectangleSideVertices();
-  for (const vertex of vertices) {
-    if (Math.hypot(vertex.point.x - point.x, vertex.point.y - point.y) <= radius) {
-      return {side: vertex.side, index: vertex.index, point: vertex.point};
-    }
-  }
-  return null;
+  return getRectangleVertexAtImpl(point, getRectangleDeps());
 }
 
 function changeRectangleSegments(delta, side=null) {
-  if (!isRectangleToolActive()) return;
-  const sides = side ? [side] : ["top", "right", "bottom", "left"];
-  for (const key of sides) {
-    rectangleState.sideSegments[key] = clamp(rectangleState.sideSegments[key] + delta, 1, 64);
-    rectangleState.sideRatios[key] = reconcileRectangleSideRatios(
-      rectangleState.sideRatios[key],
-      rectangleState.sideSegments[key]
-    );
-  }
-  drawRectanglePreview();
-}
-
-function editRectangleSideAt(point, remove=false) {
-  if (!rectangleState.placed) return false;
-  if (isNearRectangleCorner(point)) return false;
-
-  const hit = getRectangleSideAt(point);
-  if (!hit) return false;
-
-  if (remove) return removeRectangleVertexAt(hit);
-  return addRectangleVertexAt(hit);
-}
-
-function editRectangleSideWithUndo(point, remove=false) {
-  const snapshot = getEditorSnapshot(rectangleState);
-  const edited = editRectangleSideAt(point, remove);
-  if (edited) pushEditorUndoSnapshot(rectangleState, snapshot);
-  return edited;
-}
-
-function addRectangleVertexAt({side, ratio}) {
-  if (!rectangleState.sideEnabled[side]) {
-    rectangleState.sideEnabled[side] = true;
-    rectangleState.sideSegments[side] = DEFAULT_RECTANGLE_SEGMENTS;
-    rectangleState.sideRatios[side] = [];
-    rectangleState.sideGaps[side] = [];
-    drawRectanglePreview();
-    return true;
-  }
-
-  if (restoreRectangleSegmentAt({side, ratio})) return true;
-
-  if (rectangleState.sideSegments[side] >= 64) return false;
-
-  const ratios = getRectangleSideRatios(side);
-  const spacing = getRectangleRatioSpacing(rectangleState.sideSegments[side] + 1);
-  if (ratio < spacing || ratio > (1 - spacing)) return false;
-  if (ratios.some((existing) => Math.abs(existing - ratio) < spacing)) return false;
-
-  rectangleState.sideSegments[side] += 1;
-  rectangleState.sideRatios[side] = reconcileRectangleSideRatios([...ratios, ratio], rectangleState.sideSegments[side]);
-  rectangleState.sideGaps[side] = reconcileRectangleSideGaps(rectangleState.sideGaps[side], rectangleState.sideSegments[side]);
-  drawRectanglePreview();
-  return true;
-}
-
-function removeRectangleVertexAt({side, ratio}) {
-  const ratios = getRectangleSideRatios(side);
-  if (!ratios.length) return disableRectangleSide(side);
-
-  const vertex = getNearestRectangleVertexOnSide(side, ratio);
-  const spacing = getRectangleRatioSpacing(rectangleState.sideSegments[side]);
-  if (vertex && Math.abs(vertex.ratio - ratio) <= (spacing * 2)) {
-    return removeRectangleVertex({side, index: vertex.index});
-  }
-
-  return removeRectangleSegmentAt({side, ratio});
-}
-
-function getNearestRectangleVertexOnSide(side, ratio) {
-  const ratios = getRectangleSideRatios(side);
-  let nearestIndex = 0;
-  let nearestDistance = Math.abs(ratios[0] - ratio);
-  for (let i = 1; i < ratios.length; i++) {
-    const distance = Math.abs(ratios[i] - ratio);
-    if (distance < nearestDistance) {
-      nearestIndex = i;
-      nearestDistance = distance;
-    }
-  }
-
-  return {index: nearestIndex, ratio: ratios[nearestIndex]};
-}
-
-function removeRectangleSegmentAt({side, ratio}) {
-  const index = getRectangleSegmentIndexAt(side, ratio);
-  const gaps = getRectangleSideGaps(side);
-  if (gaps.includes(index)) return false;
-
-  rectangleState.sideGaps[side] = [...gaps, index].sort((a, b) => a - b);
-  drawRectanglePreview();
-  return true;
-}
-
-function restoreRectangleSegmentAt({side, ratio}) {
-  const index = getRectangleSegmentIndexAt(side, ratio);
-  const gaps = getRectangleSideGaps(side);
-  if (!gaps.includes(index)) return false;
-
-  rectangleState.sideGaps[side] = gaps.filter((gap) => gap !== index);
-  drawRectanglePreview();
-  return true;
+  return changeRectangleSegmentsImpl(delta, side, getRectangleDeps());
 }
 
 function removeRectangleVertex({side, index}) {
-  const ratios = getRectangleSideRatios(side);
-  if (ratios[index] === undefined) return false;
-
-  ratios.splice(index, 1);
-  rectangleState.sideSegments[side] -= 1;
-  rectangleState.sideRatios[side] = reconcileRectangleSideRatios(ratios, rectangleState.sideSegments[side]);
-  rectangleState.sideGaps[side] = reconcileRectangleSideGaps(rectangleState.sideGaps[side], rectangleState.sideSegments[side]);
-  rectangleState.hoveredVertex = null;
-  drawRectanglePreview();
-  return true;
-}
-
-function disableRectangleSide(side) {
-  if (!rectangleState.sideEnabled[side]) return false;
-
-  rectangleState.sideEnabled[side] = false;
-  rectangleState.sideSegments[side] = DEFAULT_RECTANGLE_SEGMENTS;
-  rectangleState.sideRatios[side] = [];
-  rectangleState.sideGaps[side] = [];
-  rectangleState.hoveredVertex = null;
-  drawRectanglePreview();
-  return true;
+  return removeRectangleVertexImpl({side, index}, getRectangleDeps());
 }
 
 function getRectangleSideAt(point) {
-  const style = getPreviewStyle();
-  const tolerance = getScaledRadius(Math.max(style.wallWidth + 6, 10));
-  return getRectangleSideAtWithTolerance(point, tolerance);
+  return getRectangleSideAtImpl(point, getRectangleDeps());
 }
 
 function drawRectanglePreview() {
-  const layer = canvas?.walls;
-  if (!layer) return;
-
-  const graphics = prepareRectanglePreviewGraphics(layer);
-  if (!graphics) return;
-  setRectangleEditingState(rectangleState.placed);
-  if (!rectangleState.placed) return;
-
-  const style = getPreviewStyle();
-  const segments = getRectangleSegments();
-  drawRectangleInteractionHits(graphics, style);
-  for (const segment of segments) {
-    const {a, b} = segment;
-    graphics.lineStyle(getScaledRadius(style.wallWidth), getSegmentPreviewColor(rectangleState, segment, style), 0.9);
-    graphics.moveTo(a.x, a.y);
-    graphics.lineTo(b.x, b.y);
-  }
-  for (const segment of segments) {
-    drawSegmentDoorIcon(graphics, rectangleState, segment, style);
-  }
-
-  const bounds = getRectangleBounds();
-  drawRectangleBoundsGuide(graphics, bounds, style);
-
-  for (const {a: start} of segments) {
-    drawPreviewVertex(graphics, start, style);
-  }
-  drawPreviewVertex(graphics, segments.at(-1)?.b ?? rectangleState.handles[0], style);
-  for (const vertex of getRectangleSideVertices()) {
-    drawRectangleSplitVertex(graphics, vertex, style);
-  }
-  for (const handle of getRectangleCornerHandles()) {
-    drawEndpoint(graphics, handle.point, style);
-  }
-  drawMoveHandle(graphics, getEditorShapeCenter(RECTANGLE_TOOL), style);
+  return drawRectanglePreviewImpl(getRectangleDeps());
 }
 
 function configureRectanglePreviewInteraction(graphics) {
@@ -3734,15 +3580,6 @@ function destroyRectanglePreviewGraphics() {
   destroyPreviewGraphics(rectangleState);
 }
 
-function drawRectangleInteractionHits(graphics, style) {
-  const width = getScaledRadius(Math.max(style.wallWidth + 18, 24));
-  graphics.lineStyle(width, 0xffffff, 0.001);
-  for (const [, start, end] of getRectangleBoundsSides(getRectangleBounds())) {
-    graphics.moveTo(start.x, start.y);
-    graphics.lineTo(end.x, end.y);
-  }
-}
-
 function handleRectanglePreviewPointerTap(event) {
   const point = getRectanglePreviewSideInteractionPoint(event);
   if (!point) return;
@@ -3751,15 +3588,10 @@ function handleRectanglePreviewPointerTap(event) {
     point,
     remove: isAltInteraction(event)
   });
-  if (!editRectangleSideWithUndo(point, isAltInteraction(event))) return;
+  if (!commitRectangleSideEdit({point, remove: isAltInteraction(event)}, event)) return;
 
   event.stopPropagation?.();
   event.preventDefault?.();
-  rectangleState.draggingHandle = null;
-  rectangleState.draggingVertex = null;
-  rectangleState.lastSideEditAction = Date.now();
-  rectangleState.suppressNextSideEditClick = false;
-  scheduleEditorInteractionReset(event);
 }
 
 function handleRectanglePreviewPointerGate(event) {
@@ -3776,70 +3608,6 @@ function getRectanglePreviewSideInteractionPoint(event) {
   const point = getInteractionPoint(event);
   if (!point || !getRectangleSideAt(point)) return null;
   return point;
-}
-
-function drawRectangleBoundsGuide(graphics, bounds, style) {
-  for (const [side, start, end] of getRectangleBoundsSides(bounds)) {
-    if (!rectangleState.sideEnabled[side]) {
-      graphics.lineStyle(getScaledRadius(Math.max(style.guideWidth, 1)), style.outlineColor, 0.22);
-      graphics.moveTo(start.x, start.y);
-      graphics.lineTo(end.x, end.y);
-      continue;
-    }
-
-    const gaps = getRectangleSideGaps(side);
-    for (const segment of getAllSideSegments(side, start, end)) {
-      const missing = gaps.includes(segment.index);
-      const color = getSegmentPreviewColor(rectangleState, segment, style);
-      graphics.lineStyle(
-        getScaledRadius(missing ? Math.max(style.guideWidth, 1) : style.guideWidth),
-        color,
-        missing ? 0.22 : 0.45
-      );
-      graphics.moveTo(segment.a.x, segment.a.y);
-      graphics.lineTo(segment.b.x, segment.b.y);
-    }
-  }
-}
-
-function getRectangleVertexHitRadius() {
-  const style = getPreviewStyle();
-  return getSplitVertexHitRadius(style);
-}
-
-function getRectangleCornerHitRadius(style=getPreviewStyle()) {
-  return getScaledRadius(Math.max(style.endpointSize + style.outlineWidth + 8, style.wallWidth + 16));
-}
-
-function isNearRectangleCorner(point) {
-  if (!rectangleState.placed) return false;
-  const radius = getRectangleCornerHitRadius();
-  return getRectangleCornerHandles().some((handle) => {
-    return Math.hypot(handle.point.x - point.x, handle.point.y - point.y) <= radius;
-  });
-}
-
-function drawRectangleSplitVertex(graphics, vertex, style) {
-  const radius = getScaledRadius(style.splitVertexSize);
-  const highlighted = isHighlightedRectangleVertex(vertex);
-  graphics.beginFill(highlighted ? style.vertexActiveColor : style.vertexColor, 0.98);
-  graphics.lineStyle(
-    getScaledRadius(style.outlineWidth),
-    highlighted ? style.outlineColor : style.wallColor,
-    0.95
-  );
-  const {point} = vertex;
-  graphics.drawCircle(point.x, point.y, radius);
-  graphics.endFill();
-}
-
-function isHighlightedRectangleVertex(vertex) {
-  return sameRectangleVertex(rectangleState.draggingVertex, vertex)
-    || sameRectangleVertex(rectangleState.hoveredVertex, vertex);
-}
-
-function sameRectangleVertex(a, b) {
-  return !!a && !!b && a.side === b.side && a.index === b.index;
 }
 
 function getSegmentKey(segment) {
@@ -3877,6 +3645,7 @@ function getPolylineDeps() {
     isPointNearSegmentBounds,
     isPolylineToolActive,
     pushEditorUndoSnapshot,
+    replaceShapeWalls,
     restoreEditSessionWalls,
     scheduleEditorInteractionReset,
     setPolylineEditingState
@@ -3919,6 +3688,7 @@ function getCubicDeps() {
     isCubicToolActive,
     isPointNearSegmentBounds,
     pushEditorUndoSnapshot,
+    replaceShapeWalls,
     restoreEditSessionWalls,
     setCubicEditingState
   };
@@ -3952,8 +3722,47 @@ function getEllipseDeps() {
     isEllipseToolActive,
     isPointNearSegmentBounds,
     pushEditorUndoSnapshot,
+    replaceShapeWalls,
     restoreEditSessionWalls,
     setEllipseEditingState
+  };
+}
+
+function getRectangleDeps() {
+  return {
+    MODULE_ID,
+    clearEditorHistory,
+    clearRectanglePreview,
+    clonePoints,
+    cloneWallTypeBySegment,
+    debugInteractionManagers,
+    deactivateOtherShapeStates,
+    destroyRectanglePreviewGraphics,
+    drawEndpoint,
+    drawMoveHandle,
+    drawPreviewVertex,
+    drawRectanglePreview,
+    drawSegmentDoorIcon,
+    getCanvasClickCandidatePoints,
+    getEditorShapeCenter,
+    getEditorSnapshot,
+    getPreviewStyle,
+    getRectangleWallTypeBySegment,
+    getScaledRadius,
+    getSegmentKey,
+    getSegmentPreviewColor,
+    getSegmentWallData,
+    getSplitVertexHitRadius,
+    getWallTypeToolFromDocument,
+    hideEditSessionWalls,
+    isAltInteraction,
+    isRectangleToolActive,
+    prepareRectanglePreviewGraphics,
+    pushEditorUndoSnapshot,
+    replaceShapeWalls,
+    restoreEditSessionWalls,
+    scheduleEditorInteractionReset,
+    setRectangleEditingState
   };
 }
 
@@ -4014,70 +3823,7 @@ async function applyPolylineWalls() {
 }
 
 async function applyRectangleWalls() {
-  if (!isRectangleToolActive() || !rectangleState.placed) return;
-
-  const rectangleId = rectangleState.rectangleId ?? foundry.utils.randomID();
-  const segments = getRectangleSegments();
-  const walls = [];
-
-  for (let i = 0; i < segments.length; i++) {
-    const segment = segments[i];
-    const {a, b} = segment;
-    const wallData = getSegmentWallData(rectangleState, getSegmentKey(segment));
-    const c = [Math.round(a.x), Math.round(a.y), Math.round(b.x), Math.round(b.y)];
-    if ((c[0] === c[2]) && (c[1] === c[3])) continue;
-    walls.push({
-      ...wallData,
-      c,
-      flags: {
-        [MODULE_ID]: {
-          [RECTANGLE_FLAG]: {
-            rectangleId,
-            index: i,
-            side: segment.side,
-            segmentIndex: segment.index,
-            wallIds: [],
-            handles: clonePoints(rectangleState.handles),
-            sideSegments: {...rectangleState.sideSegments},
-            sideRatios: cloneRectangleSideRatios(rectangleState.sideRatios),
-            sideEnabled: cloneRectangleSideEnabled(rectangleState.sideEnabled),
-            sideGaps: cloneRectangleSideGaps(rectangleState.sideGaps),
-            wallTypeBySegment: cloneWallTypeBySegment(rectangleState.wallTypeBySegment),
-            wallTypeTool: rectangleState.wallTypeTool
-          }
-        }
-      }
-    });
-  }
-
-  if (!walls.length) return;
-
-  const oldWallIds = getExistingRectangleWallIds();
-  const oldWalls = oldWallIds.map((id) => canvas.scene.walls.get(id)).filter(Boolean);
-  const created = await canvas.scene.createEmbeddedDocuments("Wall", walls);
-  const wallIds = created.map((wall) => wall.id);
-  const flagUpdates = created.map((wall, index) => ({
-    _id: wall.id,
-    [`flags.${MODULE_ID}.${RECTANGLE_FLAG}.index`]: index,
-    [`flags.${MODULE_ID}.${RECTANGLE_FLAG}.wallIds`]: wallIds
-  }));
-  await canvas.scene.updateEmbeddedDocuments("Wall", flagUpdates);
-
-  if (oldWallIds.length) {
-    canvas.walls.storeHistory("delete", oldWalls.map((wall) => wall.toObject()));
-    oldWallIds.forEach((id) => rectangleState.replacingWallIds.add(id));
-    try {
-      await canvas.scene.deleteEmbeddedDocuments("Wall", oldWallIds);
-    } finally {
-      oldWallIds.forEach((id) => rectangleState.replacingWallIds.delete(id));
-    }
-  }
-
-  canvas.walls.storeHistory("create", created.map((wall) => wall.toObject()));
-  ui.notifications.info(game.i18n.format("indy-walls.Notifications.RectangleWallsCreated", {
-    count: created.length
-  }));
-  clearRectanglePreview();
+  return applyRectangleWallsImpl(getRectangleDeps());
 }
 
 async function applyEllipseWalls() {
@@ -4097,22 +3843,7 @@ function clearEllipsePreview() {
 }
 
 function clearRectanglePreview() {
-  restoreEditSessionWalls();
-  clearEditorHistory(rectangleState);
-  rectangleState.placed = false;
-  rectangleState.initializing = false;
-  rectangleState.draggingHandle = null;
-  rectangleState.draggingVertex = null;
-  rectangleState.hoveredVertex = null;
-  rectangleState.rectangleId = null;
-  rectangleState.wallIds = [];
-  rectangleState.wallTypeBySegment = {};
-  rectangleState.sideRatios = getDefaultRectangleSideRatios();
-  rectangleState.sideEnabled = getDefaultRectangleSideEnabled();
-  rectangleState.sideGaps = getDefaultRectangleSideGaps();
-  destroyRectanglePreviewGraphics();
-  rectangleState.graphics = null;
-  setRectangleEditingState(false);
+  return clearRectanglePreviewImpl(getRectangleDeps());
 }
 
 function clearPolylinePreview() {
@@ -4231,16 +3962,7 @@ function cancelEllipseEditingForDeletedWall(wallDocument) {
 }
 
 function cancelRectangleEditingForDeletedWall(wallDocument) {
-  if (!rectangleState.placed || !rectangleState.rectangleId) return;
-  if (rectangleState.replacingWallIds.has(wallDocument.id)) return;
-
-  const rectangleData = wallDocument.getFlag(MODULE_ID, RECTANGLE_FLAG);
-  const sameRectangle = rectangleData?.rectangleId === rectangleState.rectangleId;
-  const knownWall = rectangleState.wallIds.includes(wallDocument.id);
-  if (!sameRectangle && !knownWall) return;
-
-  clearRectanglePreview();
-  if (game.activeTool === RECTANGLE_TOOL) canvas.walls.activate({tool: "select"});
+  return cancelRectangleEditingForDeletedWallImpl(wallDocument, getRectangleDeps());
 }
 
 function cancelPolylineEditingForDeletedWall(wallDocument) {
@@ -4256,38 +3978,7 @@ function loadEllipseFromWall(wall) {
 }
 
 function loadRectangleFromWall(wall) {
-  const rectangleData = wall.document.getFlag(MODULE_ID, RECTANGLE_FLAG);
-  if (!Array.isArray(rectangleData?.handles) || rectangleData.handles.length !== 2) return;
-
-  cubicState.active = false;
-  ellipseState.active = false;
-  rectangleState.active = true;
-  polylineState.active = false;
-  clearEditorHistory(rectangleState);
-  rectangleState.placed = true;
-  rectangleState.initializing = false;
-  rectangleState.draggingHandle = null;
-  rectangleState.draggingVertex = null;
-  rectangleState.hoveredVertex = null;
-  rectangleState.rectangleId = rectangleData.rectangleId ?? null;
-  rectangleState.wallIds = Array.isArray(rectangleData.wallIds) ? [...rectangleData.wallIds] : [wall.document.id];
-  rectangleState.wallTypeTool = getWallTypeToolFromDocument(wall.document) ?? rectangleData.wallTypeTool ?? "walls";
-  rectangleState.sideSegments = normalizeRectangleSideSegments(rectangleData.sideSegments);
-  rectangleState.sideRatios = normalizeRectangleSideRatios(rectangleData.sideRatios, rectangleState.sideSegments);
-  rectangleState.sideEnabled = normalizeRectangleSideEnabled(rectangleData.sideEnabled);
-  rectangleState.sideGaps = normalizeRectangleSideGaps(rectangleData.sideGaps, rectangleState.sideSegments);
-  rectangleState.handles = rectangleData.handles.map((handle) => ({
-    x: Number(handle.x) || 0,
-    y: Number(handle.y) || 0
-  }));
-  rectangleState.wallTypeBySegment = {
-    ...cloneWallTypeBySegment(rectangleData.wallTypeBySegment),
-    ...getRectangleWallTypeBySegment(rectangleState.wallIds)
-  };
-
-  canvas.walls.activate({tool: RECTANGLE_TOOL});
-  hideEditSessionWalls(rectangleState.wallIds);
-  drawRectanglePreview();
+  return loadRectangleFromWallImpl(wall, getRectangleDeps());
 }
 
 function loadPolylineFromWall(wall) {
@@ -4303,40 +3994,9 @@ function getExistingEllipseWallIds() {
 }
 
 function getExistingRectangleWallIds() {
-  return rectangleState.wallIds.filter((id) => canvas.scene.walls.has(id));
+  return getExistingRectangleWallIdsImpl();
 }
 
 function getExistingPolylineWallIds() {
   return getExistingPolylineWallIdsImpl();
-}
-
-function normalizeRectangleSideSegments(source={}) {
-  return {
-    top: clamp(Number(source.top) || DEFAULT_RECTANGLE_SEGMENTS, 1, 64),
-    right: clamp(Number(source.right) || DEFAULT_RECTANGLE_SEGMENTS, 1, 64),
-    bottom: clamp(Number(source.bottom) || DEFAULT_RECTANGLE_SEGMENTS, 1, 64),
-    left: clamp(Number(source.left) || DEFAULT_RECTANGLE_SEGMENTS, 1, 64)
-  };
-}
-
-function normalizeRectangleSideRatios(source={}, sideSegments=normalizeRectangleSideSegments()) {
-  return {
-    top: reconcileRectangleSideRatios(source.top, sideSegments.top),
-    right: reconcileRectangleSideRatios(source.right, sideSegments.right),
-    bottom: reconcileRectangleSideRatios(source.bottom, sideSegments.bottom),
-    left: reconcileRectangleSideRatios(source.left, sideSegments.left)
-  };
-}
-
-function normalizeRectangleSideEnabled(source={}) {
-  return cloneRectangleSideEnabled(source);
-}
-
-function normalizeRectangleSideGaps(source={}, sideSegments=normalizeRectangleSideSegments()) {
-  return {
-    top: reconcileRectangleSideGaps(source.top, sideSegments.top),
-    right: reconcileRectangleSideGaps(source.right, sideSegments.right),
-    bottom: reconcileRectangleSideGaps(source.bottom, sideSegments.bottom),
-    left: reconcileRectangleSideGaps(source.left, sideSegments.left)
-  };
 }
