@@ -255,9 +255,18 @@ Hooks.on("canvasReady", () => {
     wallObjectClass: CONFIG.Wall?.objectClass?.name,
     firstWallClass: canvas?.walls?.placeables?.[0]?.constructor?.name
   });
+  patchIndyPreviewGraphicsForFoundry();
   patchAvailableWallObjectInteractions();
   registerRectangleCanvasClickHandler();
   registerEditorDomDragHandler();
+});
+
+Hooks.on("canvasTearDown", () => {
+  clearEditorStateForCanvasChange("canvasTearDown");
+});
+
+Hooks.on("canvasInit", () => {
+  clearEditorStateForCanvasChange("canvasInit");
 });
 
 Hooks.on("controlWall", (wall, controlled) => {
@@ -1797,6 +1806,23 @@ function finalizeEditorDomDrag(event=null, cancelled=false) {
   scheduleEditorInteractionReset(event);
 }
 
+function resetEditorDomDragState() {
+  editorDomDragState.active = false;
+  editorDomDragState.tool = null;
+  editorDomDragState.handle = null;
+  editorDomDragState.vertex = null;
+  editorDomDragState.move = false;
+  editorDomDragState.coordinateLabel = null;
+  editorDomDragState.pointerCoordinateLabel = null;
+  editorDomDragState.pointerOffset = null;
+  editorDomDragState.startPointerPoint = null;
+  editorDomDragState.startEditorPoint = null;
+  editorDomDragState.initialPlacement = false;
+  editorDomDragState.controlInteraction = false;
+  editorDomDragState.pointerId = null;
+  editorDomDragState.view = null;
+}
+
 function getEditorDomDragDistance(event=null) {
   const start = editorDomDragState.startPointerPoint;
   if (!start || !event) return 0;
@@ -1812,6 +1838,37 @@ function clearEditorPreviewForTool(tool) {
   else if (tool === ELLIPSE_TOOL) clearEllipsePreview();
   else if (tool === RECTANGLE_TOOL) clearRectanglePreview();
   else if (tool === POLYLINE_TOOL) clearPolylinePreview();
+}
+
+function clearEditorStateForCanvasChange(source="canvas") {
+  debugShapeSelection("clearing editor state for canvas change", {
+    source,
+    cubicPlaced: cubicState.placed,
+    ellipsePlaced: ellipseState.placed,
+    rectanglePlaced: rectangleState.placed,
+    polylinePlaced: polylineState.placed
+  });
+
+  patchIndyPreviewGraphicsForFoundry();
+  try {
+    restoreEditSessionWalls();
+  } catch (_error) {
+    hiddenEditWalls.clear();
+  }
+  clearPendingCanvasSegmentEdit();
+  clearControlShapeSelect();
+  resetEditorDomDragState();
+
+  clearCubicPreview();
+  clearEllipsePreview();
+  clearRectanglePreview();
+  clearPolylinePreview();
+}
+
+function patchIndyPreviewGraphicsForFoundry() {
+  for (const graphics of [cubicState.graphics, ellipseState.graphics, rectangleState.graphics, polylineState.graphics]) {
+    configurePreviewGraphicsForFoundry(graphics);
+  }
 }
 
 function getEditorDomDragHit(event) {
@@ -3278,17 +3335,8 @@ function drawRectanglePreview() {
   const layer = canvas?.walls;
   if (!layer) return;
 
-  if (!rectangleState.graphics || rectangleState.graphics._destroyed) {
-    rectangleState.graphics = new PIXI.Graphics();
-    layer.preview.addChild(rectangleState.graphics);
-    configureRectanglePreviewInteraction(rectangleState.graphics);
-  } else if (!rectangleState.graphics.parent) {
-    layer.preview.addChild(rectangleState.graphics);
-    configureRectanglePreviewInteraction(rectangleState.graphics);
-  }
-
-  const graphics = rectangleState.graphics;
-  graphics.clear();
+  const graphics = prepareRectanglePreviewGraphics(layer);
+  if (!graphics) return;
   setRectangleEditingState(rectangleState.placed);
   if (!rectangleState.placed) return;
 
@@ -3327,6 +3375,54 @@ function configureRectanglePreviewInteraction(graphics) {
   graphics.on("pointerup", handleRectanglePreviewPointerGate);
   graphics.on("pointertap", handleRectanglePreviewPointerTap);
   graphics._indyWallsRectangleInteraction = true;
+}
+
+function prepareRectanglePreviewGraphics(layer) {
+  if (!layer?.preview) return null;
+  if (!rectangleState.graphics || rectangleState.graphics._destroyed) {
+    rectangleState.graphics = new PIXI.Graphics();
+    configurePreviewGraphicsForFoundry(rectangleState.graphics);
+    layer.preview.addChild(rectangleState.graphics);
+    configureRectanglePreviewInteraction(rectangleState.graphics);
+  } else if (!rectangleState.graphics.parent) {
+    configurePreviewGraphicsForFoundry(rectangleState.graphics);
+    layer.preview.addChild(rectangleState.graphics);
+    configureRectanglePreviewInteraction(rectangleState.graphics);
+  } else {
+    configurePreviewGraphicsForFoundry(rectangleState.graphics);
+  }
+
+  try {
+    rectangleState.graphics.clear();
+  } catch (error) {
+    try {
+      destroyRectanglePreviewGraphics();
+      rectangleState.graphics = new PIXI.Graphics();
+      configurePreviewGraphicsForFoundry(rectangleState.graphics);
+      layer.preview.addChild(rectangleState.graphics);
+      configureRectanglePreviewInteraction(rectangleState.graphics);
+      rectangleState.graphics.clear();
+    } catch (_recoveryError) {
+      destroyRectanglePreviewGraphics();
+      rectangleState.graphics = null;
+      return null;
+    }
+  }
+  return rectangleState.graphics;
+}
+
+function configurePreviewGraphicsForFoundry(graphics) {
+  if (!graphics || graphics._indyWallsPreviewCompatible) return;
+  graphics._onDragEnd = () => {};
+  graphics._indyWallsPreviewCompatible = true;
+}
+
+function destroyRectanglePreviewGraphics() {
+  try {
+    rectangleState.graphics?.destroy();
+  } catch (_error) {
+    // The canvas may already have invalidated the PIXI object during scene teardown.
+  }
 }
 
 function drawRectangleInteractionHits(graphics, style) {
@@ -3714,7 +3810,7 @@ function clearRectanglePreview() {
   rectangleState.sideRatios = getDefaultRectangleSideRatios();
   rectangleState.sideEnabled = getDefaultRectangleSideEnabled();
   rectangleState.sideGaps = getDefaultRectangleSideGaps();
-  rectangleState.graphics?.destroy();
+  destroyRectanglePreviewGraphics();
   rectangleState.graphics = null;
   setRectangleEditingState(false);
 }
