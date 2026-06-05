@@ -64,7 +64,7 @@ Generated segments use the last selected wall type from Foundry's wall type butt
 
 ### Preview Styling
 
-Module settings include client-side controls for the editor preview wall color and width, per-type segment preview colors, regular vertex color and size, active vertex color, endpoint color and size, Bezier handle color and size, and outline color and width.
+Module settings include client-side controls for the editor preview wall color and width, per-type segment preview colors, regular vertex color and size, active vertex color, endpoint color and size, Bezier handle color and size, outline color and width, and the active Indy shape tool button highlight color, glow, and border width.
 If lib - ColorSettings is active, Indy Walls uses its color picker UI for color settings. Without it, color settings remain plain hex text fields.
 
 ### Editing Undo/Redo

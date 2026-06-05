@@ -178,6 +178,9 @@ import {
 const MODULE_ID = "indy-walls";
 const QUICK_WALL_TYPE_SETTING = "quickWallTypeChange";
 const DEBUG_SETTING = "debugShapeSelection";
+const ACTIVE_TOOL_HIGHLIGHT_COLOR_SETTING = "activeShapeToolHighlightColor";
+const ACTIVE_TOOL_HIGHLIGHT_GLOW_SETTING = "activeShapeToolHighlightGlow";
+const ACTIVE_TOOL_HIGHLIGHT_BORDER_WIDTH_SETTING = "activeShapeToolHighlightBorderWidth";
 const shapeLoadState = {
   allowControlWallLoad: false
 };
@@ -243,6 +246,7 @@ Hooks.once("init", () => {
     type: Boolean,
     default: false
   });
+  registerActiveToolHighlightSettings();
   registerStyleSettings();
   registerSegmentWallTypeKeybindings();
 
@@ -316,6 +320,59 @@ function registerSegmentWallTypeKeybindings() {
   }
 }
 
+function registerActiveToolHighlightSettings() {
+  registerActiveToolHighlightColorSetting();
+  game.settings.register(MODULE_ID, ACTIVE_TOOL_HIGHLIGHT_GLOW_SETTING, {
+    name: game.i18n.localize("indy-walls.Settings.ActiveShapeToolHighlightGlow.Name"),
+    hint: game.i18n.localize("indy-walls.Settings.ActiveShapeToolHighlightGlow.Hint"),
+    scope: "client",
+    config: true,
+    type: Number,
+    default: 0.6,
+    range: {min: 0, max: 2, step: 0.1},
+    onChange: updateIndyToolButtonHighlights
+  });
+  game.settings.register(MODULE_ID, ACTIVE_TOOL_HIGHLIGHT_BORDER_WIDTH_SETTING, {
+    name: game.i18n.localize("indy-walls.Settings.ActiveShapeToolHighlightBorderWidth.Name"),
+    hint: game.i18n.localize("indy-walls.Settings.ActiveShapeToolHighlightBorderWidth.Hint"),
+    scope: "client",
+    config: true,
+    type: Number,
+    default: 3,
+    range: {min: 0, max: 8, step: 1},
+    onChange: updateIndyToolButtonHighlights
+  });
+}
+
+function registerActiveToolHighlightColorSetting() {
+  const name = game.i18n.localize("indy-walls.Settings.ActiveShapeToolHighlightColor.Name");
+  const hint = game.i18n.localize("indy-walls.Settings.ActiveShapeToolHighlightColor.Hint");
+  const ColorSetting = window.Ardittristan?.ColorSetting;
+
+  if (ColorSetting) {
+    new ColorSetting(MODULE_ID, ACTIVE_TOOL_HIGHLIGHT_COLOR_SETTING, {
+      name,
+      hint,
+      label: game.i18n.localize("indy-walls.Settings.ColorPickerLabel"),
+      restricted: false,
+      defaultColor: "#ffb000",
+      scope: "client",
+      onChange: updateIndyToolButtonHighlights
+    });
+    return;
+  }
+
+  game.settings.register(MODULE_ID, ACTIVE_TOOL_HIGHLIGHT_COLOR_SETTING, {
+    name,
+    hint,
+    scope: "client",
+    config: true,
+    type: String,
+    default: "#ffb000",
+    onChange: updateIndyToolButtonHighlights
+  });
+}
+
 Hooks.on("getSceneControlButtons", (controls) => {
   const wallTools = controls.walls?.tools;
   if (!wallTools) return;
@@ -356,6 +413,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
         canvas.walls.activate();
       }
       else clearCubicPreview();
+      updateIndyToolButtonHighlights();
     },
     toolclip: {
       heading: "indy-walls.Controls.CubicBezier",
@@ -382,6 +440,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
         canvas.walls.activate();
       }
       else clearEllipsePreview();
+      updateIndyToolButtonHighlights();
     },
     toolclip: {
       heading: "indy-walls.Controls.Ellipse",
@@ -408,6 +467,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
         canvas.walls.activate();
       }
       else clearRectanglePreview();
+      updateIndyToolButtonHighlights();
     },
     toolclip: {
       heading: "indy-walls.Controls.Rectangle",
@@ -434,6 +494,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
         canvas.walls.activate();
       }
       else clearPolylinePreview();
+      updateIndyToolButtonHighlights();
     },
     toolclip: {
       heading: "indy-walls.Controls.Polyline",
@@ -445,11 +506,36 @@ Hooks.on("getSceneControlButtons", (controls) => {
 });
 
 Hooks.on("renderSceneControls", () => {
+  updateIndyToolButtonHighlights();
   positionCubicEditButtons();
   positionEllipseEditButtons();
   positionRectangleEditButtons();
   positionPolylineEditButtons();
 });
+
+function updateIndyToolButtonHighlights() {
+  const activeTool = getActiveEditorTool();
+  const color = getActiveShapeToolHighlightColor();
+  const glow = clamp(Number(game.settings.get(MODULE_ID, ACTIVE_TOOL_HIGHLIGHT_GLOW_SETTING)) || 0, 0, 2);
+  const borderWidth = clamp(Number(game.settings.get(MODULE_ID, ACTIVE_TOOL_HIGHLIGHT_BORDER_WIDTH_SETTING)) || 0, 0, 8);
+
+  for (const tool of [CUBIC_TOOL, ELLIPSE_TOOL, RECTANGLE_TOOL, POLYLINE_TOOL]) {
+    const active = tool === activeTool;
+    for (const button of document.querySelectorAll(`[data-tool="${tool}"]`)) {
+      button.classList.toggle("indy-walls-shape-tool-active", active);
+      button.style.setProperty("--indy-walls-active-tool-color", color);
+      button.style.setProperty("--indy-walls-active-tool-glow", String(glow));
+      button.style.setProperty("--indy-walls-active-tool-border-width", `${borderWidth}px`);
+    }
+  }
+}
+
+function getActiveShapeToolHighlightColor() {
+  const value = String(game.settings.get(MODULE_ID, ACTIVE_TOOL_HIGHLIGHT_COLOR_SETTING) ?? "").trim();
+  return /^#?[0-9a-f]{6}(?:[0-9a-f]{2})?$/i.test(value)
+    ? (value.startsWith("#") ? value : `#${value}`)
+    : "#ffb000";
+}
 
 async function updateSelectedWalls(toolName) {
   if (!game.user.isGM) return;
@@ -2516,6 +2602,11 @@ function registerCurveEditorShortcuts() {
     if (!game.user.isGM || isEditableTarget(event.target)) return;
     if (!isAnyEditorToolActive() && !copiedEditorShape) return;
 
+    if (event.key === "Escape" && isAnyEditorToolActive()) {
+      consumeEditorEscape(event);
+      return;
+    }
+
     const key = event.key.toLowerCase();
     if (event.ctrlKey && !event.shiftKey && key === "z") {
       event.preventDefault();
@@ -2547,16 +2638,7 @@ function registerCurveEditorShortcuts() {
 
     if (!getActiveEditorState()?.placed) return;
 
-    if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      clearActivePreview();
-      cubicState.active = false;
-      ellipseState.active = false;
-      rectangleState.active = false;
-      polylineState.active = false;
-      canvas.walls.activate({tool: "select"});
-    } else if (event.key === "Delete" || event.key === "Backspace") {
+    if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault();
       event.stopImmediatePropagation?.();
       event.stopPropagation();
@@ -2567,6 +2649,20 @@ function registerCurveEditorShortcuts() {
       applyActiveWalls();
     }
   }, {capture: true});
+
+  window.addEventListener("keyup", (event) => {
+    if (!game.user.isGM || isEditableTarget(event.target)) return;
+    if (event.key !== "Escape" || !isAnyEditorToolActive()) return;
+    consumeEditorEscape(event, {clearPreview: false});
+  }, {capture: true});
+}
+
+function consumeEditorEscape(event, {clearPreview=true}={}) {
+  event.preventDefault();
+  event.stopImmediatePropagation?.();
+  event.stopPropagation();
+  if (clearPreview && getActiveEditorState()?.placed) clearActivePreview();
+  scheduleEditorInteractionReset(event);
 }
 
 function isCubicToolActive() {

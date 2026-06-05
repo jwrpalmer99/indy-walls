@@ -50,9 +50,9 @@ export function registerStyleSettings() {
   }
 
   for (const [key, data] of Object.entries({
-    wallWidth: ["PreviewWallWidth", Number, 4, {min: 1, max: 12, step: 1}],
-    vertexSize: ["PreviewVertexSize", Number, 5, {min: 2, max: 20, step: 1}],
-    endpointSize: ["PreviewEndpointSize", Number, 12, {min: 4, max: 32, step: 1}],
+    wallWidth: ["PreviewWallWidth", Number, 1, {min: 1, max: 12, step: 1}],
+    vertexSize: ["PreviewVertexSize", Number, 3, {min: 2, max: 20, step: 1}],
+    endpointSize: ["PreviewEndpointSize", Number, 8, {min: 4, max: 32, step: 1}],
     handleSize: ["PreviewHandleSize", Number, 12, {min: 4, max: 32, step: 1}],
     outlineWidth: ["PreviewOutlineWidth", Number, 2, {min: 0, max: 8, step: 0.5}]
   })) {
@@ -113,14 +113,14 @@ export function getPreviewStyle() {
       invisible: getStyleColor(STYLE_SETTINGS.invisibleWallColor, 0x8ecae6),
       terrain: getStyleColor(STYLE_SETTINGS.terrainWallColor, 0x3f9b4f)
     },
-    wallWidth: getStyleNumber(STYLE_SETTINGS.wallWidth, 4, 1, 12),
-    guideWidth: Math.max(getStyleNumber(STYLE_SETTINGS.wallWidth, 4, 1, 12) / 2, 1),
+    wallWidth: getStyleNumber(STYLE_SETTINGS.wallWidth, 1, 1, 12),
+    guideWidth: Math.max(getStyleNumber(STYLE_SETTINGS.wallWidth, 1, 1, 12) / 2, 1),
     vertexColor: getStyleColor(STYLE_SETTINGS.vertexColor, 0xffffff),
     vertexActiveColor: getStyleColor(STYLE_SETTINGS.vertexActiveColor, 0xaaff44),
-    vertexSize: getStyleNumber(STYLE_SETTINGS.vertexSize, 5, 2, 20),
-    splitVertexSize: Math.max(getStyleNumber(STYLE_SETTINGS.vertexSize, 5, 2, 20) + 3, 4),
+    vertexSize: getStyleNumber(STYLE_SETTINGS.vertexSize, 3, 2, 20),
+    splitVertexSize: Math.max(getStyleNumber(STYLE_SETTINGS.vertexSize, 3, 2, 20) + 3, 4),
     endpointColor: getStyleColor(STYLE_SETTINGS.endpointColor, 0xff4444),
-    endpointSize: getStyleNumber(STYLE_SETTINGS.endpointSize, 12, 4, 32),
+    endpointSize: getStyleNumber(STYLE_SETTINGS.endpointSize, 8, 4, 32),
     handleColor: getStyleColor(STYLE_SETTINGS.handleColor, 0xaaff44),
     handleSize: getStyleNumber(STYLE_SETTINGS.handleSize, 12, 4, 32),
     outlineColor,

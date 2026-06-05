@@ -28,6 +28,18 @@
         "Name": "Debug Indy shape selection",
         "Hint": "When enabled, Ctrl-click shape selection diagnostics are written to the browser console."
       },
+      "ActiveShapeToolHighlightColor": {
+        "Name": "Active Indy shape tool highlight color",
+        "Hint": "Hex color used to highlight the selected Indy shape drawing tool in the Wall Controls."
+      },
+      "ActiveShapeToolHighlightGlow": {
+        "Name": "Active Indy shape tool glow",
+        "Hint": "Glow strength for the selected Indy shape drawing tool button. Set to 0 to disable the glow."
+      },
+      "ActiveShapeToolHighlightBorderWidth": {
+        "Name": "Active Indy shape tool border width",
+        "Hint": "Inset border width for the selected Indy shape drawing tool button."
+      },
       "PreviewWallColor": {
         "Name": "Preview wall color",
         "Hint": "Hex color for generated wall previews, for example #c10e56ff."
