@@ -2,6 +2,8 @@ export const CUBIC_TOOL = "indyCubicBezier";
 export const CUBIC_FLAG = "cubicBezier";
 export const CUBIC_EDIT_BUTTONS_ID = "indy-walls-cubic-edit-buttons";
 export const DEFAULT_CUBIC_SEGMENTS = 10;
+export const CUBIC_CURVE_ARC = "arc";
+export const CUBIC_CURVE_BEZIER = "bezier";
 
 export const cubicState = {
   active: false,
@@ -19,6 +21,8 @@ export const cubicState = {
   pendingUndoSnapshot: null,
   wallTypeTool: "walls",
   wallTypeBySegment: {},
+  curveMode: CUBIC_CURVE_BEZIER,
+  lastSavedCurveMode: CUBIC_CURVE_BEZIER,
   segments: DEFAULT_CUBIC_SEGMENTS,
   segmentGaps: [],
   graphics: null,
@@ -35,6 +39,11 @@ export function setHandle(index, point) {
 }
 
 export function initializeCubicControls() {
+  if (cubicState.curveMode === CUBIC_CURVE_ARC) {
+    initializeCubicArcControl();
+    return;
+  }
+
   const [start, controlA, controlB, end] = cubicState.handles;
   const dx = end.x - start.x;
   const dy = end.y - start.y;
@@ -50,11 +59,33 @@ export function initializeCubicControls() {
   controlB.y = end.y - (dy * 0.10) + (ny * length * 0.35);
 }
 
+export function initializeCubicArcControl() {
+  const [start, controlA,, end] = cubicState.handles;
+  const point = getDefaultCubicArcControlPoint(start, end);
+  controlA.x = point.x;
+  controlA.y = point.y;
+}
+
+export function getDefaultCubicArcControlPoint(start, end, amount=0.28) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  if (!length) return {x: start.x, y: start.y};
+  return {
+    x: (start.x + end.x) / 2 + (dy / length) * length * amount,
+    y: (start.y + end.y) / 2 - (dx / length) * length * amount
+  };
+}
+
 export function getCubicPoints(segments) {
   const [p0, p1, p2, p3] = cubicState.handles;
   const points = [];
   for (let i = 0; i <= segments; i++) {
     const t = i / segments;
+    if (cubicState.curveMode === CUBIC_CURVE_ARC) {
+      points.push(getQuadraticBezierPoint(p0, p1, p3, t));
+      continue;
+    }
     const mt = 1 - t;
     points.push({
       x: (mt ** 3 * p0.x) + (3 * mt ** 2 * t * p1.x) + (3 * mt * t ** 2 * p2.x) + (t ** 3 * p3.x),
@@ -62,6 +93,14 @@ export function getCubicPoints(segments) {
     });
   }
   return points;
+}
+
+export function getQuadraticBezierPoint(p0, p1, p2, t) {
+  const mt = 1 - t;
+  return {
+    x: (mt * mt * p0.x) + (2 * mt * t * p1.x) + (t * t * p2.x),
+    y: (mt * mt * p0.y) + (2 * mt * t * p1.y) + (t * t * p2.y)
+  };
 }
 
 export function getAllCubicSegments() {
@@ -142,8 +181,12 @@ export function drawCubicPreview(deps) {
   graphics.lineStyle(deps.getScaledRadius(style.guideWidth), style.wallColor, 0.65);
   graphics.moveTo(start.x, start.y);
   graphics.lineTo(controlA.x, controlA.y);
-  graphics.moveTo(end.x, end.y);
-  graphics.lineTo(controlB.x, controlB.y);
+  if (cubicState.curveMode === CUBIC_CURVE_BEZIER) {
+    graphics.moveTo(end.x, end.y);
+    graphics.lineTo(controlB.x, controlB.y);
+  } else {
+    graphics.lineTo(end.x, end.y);
+  }
 
   for (const point of points) {
     deps.drawPreviewVertex(graphics, point, style);
@@ -151,7 +194,7 @@ export function drawCubicPreview(deps) {
   deps.drawEndpoint(graphics, start, style);
   deps.drawEndpoint(graphics, end, style);
   deps.drawBezierHandle(graphics, controlA, style);
-  deps.drawBezierHandle(graphics, controlB, style);
+  if (cubicState.curveMode === CUBIC_CURVE_BEZIER) deps.drawBezierHandle(graphics, controlB, style);
   deps.drawMoveHandle(graphics, deps.getEditorShapeCenter(CUBIC_TOOL), style);
 }
 
@@ -196,9 +239,76 @@ export function editCubicSegment(index, remove=false, deps) {
   return true;
 }
 
+export function toggleCubicCurveModeWithUndo(deps) {
+  const snapshot = deps.getEditorSnapshot(cubicState);
+  const edited = toggleCubicCurveMode(deps);
+  if (edited) deps.pushEditorUndoSnapshot(cubicState, snapshot);
+  return edited;
+}
+
+export function toggleCubicCurveMode(deps) {
+  if (!cubicState.placed) return false;
+  if (cubicState.curveMode === CUBIC_CURVE_BEZIER) {
+    convertCubicBezierToArc();
+  } else {
+    convertCubicArcToBezier();
+  }
+  cubicState.segmentGaps = reconcileCubicSegmentGaps(cubicState.segmentGaps, cubicState.segments);
+  deps.drawCubicPreview();
+  return true;
+}
+
+export function getCubicInitialCurveMode() {
+  return normalizeCubicCurveMode(cubicState.lastSavedCurveMode);
+}
+
+export function rememberSavedCubicCurveMode() {
+  cubicState.lastSavedCurveMode = normalizeCubicCurveMode(cubicState.curveMode);
+}
+
+export function convertCubicBezierToArc() {
+  const [start, controlA, controlB, end] = cubicState.handles;
+  cubicState.curveMode = CUBIC_CURVE_ARC;
+  cubicState.handles[1] = {
+    x: (controlA.x + controlB.x) / 2,
+    y: (controlA.y + controlB.y) / 2
+  };
+  cubicState.handles[2] = {x: cubicState.handles[1].x, y: cubicState.handles[1].y};
+  if (Math.hypot(cubicState.handles[1].x - start.x, cubicState.handles[1].y - start.y) < 1
+    || Math.hypot(cubicState.handles[1].x - end.x, cubicState.handles[1].y - end.y) < 1) {
+    initializeCubicArcControl();
+  }
+}
+
+export function convertCubicArcToBezier() {
+  const [start, control,, end] = cubicState.handles;
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const mid = {x: (start.x + end.x) / 2, y: (start.y + end.y) / 2};
+  const offset = {x: (control.x - mid.x) * 0.8, y: (control.y - mid.y) * 0.8};
+  cubicState.curveMode = CUBIC_CURVE_BEZIER;
+  cubicState.handles[1] = {
+    x: start.x + (dx * 0.35) + offset.x,
+    y: start.y + (dy * 0.35) + offset.y
+  };
+  cubicState.handles[2] = {
+    x: end.x - (dx * 0.35) + offset.x,
+    y: end.y - (dy * 0.35) + offset.y
+  };
+}
+
+export function getCubicEditableHandleIndexes() {
+  return cubicState.curveMode === CUBIC_CURVE_ARC ? [0, 1, 3] : [0, 1, 2, 3];
+}
+
+export function normalizeCubicCurveMode(mode) {
+  return mode === CUBIC_CURVE_ARC ? CUBIC_CURVE_ARC : CUBIC_CURVE_BEZIER;
+}
+
 export async function applyCubicWalls(deps) {
   if (!deps.isCubicToolActive() || !cubicState.placed) return;
 
+  rememberSavedCubicCurveMode();
   const segments = getCubicSegments();
   const segmentGaps = getCubicSegmentGaps();
   const curveId = cubicState.curveId ?? foundry.utils.randomID();
@@ -221,6 +331,7 @@ export async function applyCubicWalls(deps) {
             index: segment.index,
             wallIds: [],
             handles: cloneHandles(deps),
+            curveMode: cubicState.curveMode,
             segments: cubicState.segments,
             segmentGaps,
             wallTypeBySegment: deps.cloneWallTypeBySegment(cubicState.wallTypeBySegment),
@@ -284,6 +395,7 @@ export function clearCubicPreview(deps) {
   cubicState.curveId = null;
   cubicState.wallIds = [];
   cubicState.wallTypeBySegment = {};
+  cubicState.curveMode = getCubicInitialCurveMode();
   cubicState.segmentGaps = [];
   cubicState.graphics?.destroy();
   cubicState.graphics = null;
@@ -318,6 +430,7 @@ export function loadCubicCurveFromWall(wall, deps) {
   cubicState.curveId = cubicData.curveId ?? null;
   cubicState.wallIds = Array.isArray(cubicData.wallIds) ? [...cubicData.wallIds] : [wall.document.id];
   cubicState.wallTypeTool = deps.getWallTypeToolFromDocument(wall.document) ?? cubicData.wallTypeTool ?? "walls";
+  cubicState.curveMode = normalizeCubicCurveMode(cubicData.curveMode);
   cubicState.segments = deps.clamp(Number(cubicData.segments) || DEFAULT_CUBIC_SEGMENTS, 2, 64);
   cubicState.segmentGaps = reconcileCubicSegmentGaps(cubicData.segmentGaps, cubicState.segments);
   cubicState.handles = cubicData.handles.map((handle) => ({

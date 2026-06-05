@@ -72,10 +72,11 @@ Basic workflow:
 2. Select the Cubic Bezier Wall tool.
 3. Click-drag on the canvas to place the initial curve.
 4. Drag the red endpoint handles or green Bezier handles to adjust the curve.
-5. Use `+` and `-`, or Ctrl-scrollwheel, to change the number of generated wall segments.
-6. Use the check button or Enter to create wall segments, or Escape to cancel.
+5. Right-click the curve to toggle between one-handle arc mode and two-handle Bezier mode.
+6. Use `+` and `-`, or Ctrl-scrollwheel, to change the number of generated wall segments.
+7. Use the check button or Enter to create wall segments, or Escape to cancel.
 
-Bezier metadata is stored on each generated wall segment. Ctrl-left-click any generated segment to reopen the curve editor so it can be adjusted and re-applied.
+Curve metadata is stored on each generated wall segment. Ctrl-left-click any generated segment to reopen the curve editor, including arc/Bezier mode, handles, segment count, hidden segments, and per-segment wall types, so it can be adjusted and re-applied.
 
 ### Ellipse Walls
 
@@ -131,11 +132,14 @@ Basic workflow:
 5. Double-click back on the first point to stop drawing as a closed polygon.
 6. Drag points to reposition them.
 7. Left-click a segment to add a point, or to restore a hidden segment.
-8. Alt-click a point to remove it.
-9. Alt-click a segment to hide it.
-10. Use the check button or Enter to create wall segments, or Escape to cancel.
+8. Right-click a segment to cycle it between a straight line, an arc, and a Bezier curve.
+9. Drag the curve handles on arc and Bezier segments to adjust their shape.
+10. Use Ctrl-scrollwheel to change the generated point count for curved segments. Straight line segments remain single wall segments.
+11. Alt-click a point to remove it.
+12. Alt-click a segment to hide it.
+13. Use the check button or Enter to create wall segments, or Escape to cancel.
 
-Polyline metadata is stored on each generated wall segment. Ctrl-left-click any generated segment to reopen the polyline editor, including closed polygon state, hidden segments, and per-segment wall types.
+Polyline metadata is stored on each generated wall segment. Ctrl-left-click any generated segment to reopen the polyline editor, including closed polygon state, hidden segments, curve modes and handles, curved segment detail, and per-segment wall types.
 
 ## License
 

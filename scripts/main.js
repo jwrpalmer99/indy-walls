@@ -53,14 +53,18 @@ import {
   editCubicSegmentWithUndo as editCubicSegmentWithUndoImpl,
   getAllCubicSegments,
   getCubicSegmentAt as getCubicSegmentAtImpl,
+  getCubicEditableHandleIndexes,
+  getCubicInitialCurveMode,
   getCubicPoints,
   getCubicSegmentGaps,
   getCubicSegments,
   getExistingCurveWallIds as getExistingCurveWallIdsImpl,
   initializeCubicControls,
   loadCubicCurveFromWall as loadCubicCurveFromWallImpl,
+  normalizeCubicCurveMode,
   reconcileCubicSegmentGaps,
-  setHandle
+  setHandle,
+  toggleCubicCurveModeWithUndo as toggleCubicCurveModeWithUndoImpl
 } from "./shapes/cubic.js";
 import {
   applyEllipseWalls as applyEllipseWallsImpl,
@@ -123,9 +127,12 @@ import {
 import {
   applyPolylineWalls as applyPolylineWallsImpl,
   cancelPolylineEditingForDeletedWall as cancelPolylineEditingForDeletedWallImpl,
+  changePolylineCurveSegments as changePolylineCurveSegmentsImpl,
   clearPolylinePreview as clearPolylinePreviewImpl,
   closePolyline as closePolylineImpl,
   commitPolylineSegmentEdit as commitPolylineSegmentEditImpl,
+  cyclePolylineSegmentCurveWithUndo as cyclePolylineSegmentCurveWithUndoImpl,
+  DEFAULT_POLYLINE_CURVE_SEGMENTS,
   drawPolylinePreview as drawPolylinePreviewImpl,
   editPolylineSegment as editPolylineSegmentImpl,
   editPolylineSegmentWithUndo as editPolylineSegmentWithUndoImpl,
@@ -138,17 +145,22 @@ import {
   getPolylineSegmentAt as getPolylineSegmentAtImpl,
   getPolylineSegmentEditFromEvent as getPolylineSegmentEditFromEventImpl,
   getPolylineSegmentGaps,
+  clonePolylineSegmentCurves,
+  getPolylineCurveHandleAt as getPolylineCurveHandleAtImpl,
   getPolylineSegments,
   getPolylineVertexAt as getPolylineVertexAtImpl,
   getPolylineVertexHitRadius as getPolylineVertexHitRadiusImpl,
   getPolylineVertices as getPolylineVerticesImpl,
+  reconcilePolylineSegmentCurves,
   handlePolylineCanvasClick as handlePolylineCanvasClickImpl,
   isPolylineClosePoint as isPolylineClosePointImpl,
   loadPolylineFromWall as loadPolylineFromWallImpl,
   polylineState,
   reconcilePolylineSegmentGaps,
   removePolylineVertex as removePolylineVertexImpl,
-  setPolylineVertex as setPolylineVertexImpl
+  setPolylineCurveHandle as setPolylineCurveHandleImpl,
+  setPolylineVertex as setPolylineVertexImpl,
+  translatePolylineSegmentCurves
 } from "./shapes/polyline.js";
 import {
   getSegmentWallData,
@@ -617,6 +629,7 @@ function patchWallsLayer() {
       cubicState.curveId = null;
       cubicState.wallIds = [];
       cubicState.wallTypeBySegment = {};
+      cubicState.curveMode = getCubicInitialCurveMode();
       cubicState.segmentGaps = [];
       setHandle(0, point);
       setHandle(1, point);
@@ -695,7 +708,8 @@ function patchWallsLayer() {
       ellipseDraggingVertex: ellipseState.draggingVertex,
       rectangleDraggingHandle: rectangleState.draggingHandle,
       rectangleDraggingVertex: rectangleState.draggingVertex,
-      polylineDraggingVertex: polylineState.draggingVertex
+      polylineDraggingVertex: polylineState.draggingVertex,
+      polylineDraggingCurveHandle: polylineState.draggingCurveHandle
     });
     if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive() && !isPolylineToolActive()) {
       return originalDragDrop.call(this, event);
@@ -791,7 +805,7 @@ function patchWallsLayer() {
   };
 
   WallsLayer.prototype._onMouseWheel = function(event) {
-    if (!getActiveEditorState()?.placed || !event.ctrlKey || isPolylineToolActive()) {
+    if (!getActiveEditorState()?.placed || !event.ctrlKey) {
       return originalMouseWheel.call(this, event);
     }
 
@@ -898,6 +912,7 @@ function registerRectangleCanvasClickHandler() {
   view.addEventListener("mouseup", handleEditorCanvasMouseEvent, {capture: true});
   view.addEventListener("click", handleRectangleCanvasClick, {capture: true});
   view.addEventListener("dblclick", handlePolylineCanvasDoubleClick, {capture: true});
+  view.addEventListener("contextmenu", handleEditorCanvasContextMenu, {capture: true});
   rectangleCanvasClickViews.add(view);
   debugShapeSelection("registered rectangle canvas click handler", {
     tagName: view.tagName,
@@ -1190,6 +1205,56 @@ function handlePolylineCanvasDoubleClick(event) {
   drawPolylinePreview();
   pushEditorUndoSnapshot(polylineState, snapshot);
   scheduleEditorInteractionReset(event);
+}
+
+function handleEditorCanvasContextMenu(event) {
+  if (handleCubicCanvasContextMenu(event)) return;
+  handlePolylineCanvasContextMenu(event);
+}
+
+function handleCubicCanvasContextMenu(event) {
+  if (!isCubicToolActive() || !cubicState.placed) return false;
+
+  for (const point of getCanvasClickCandidatePoints(event)) {
+    const segment = getCubicSegmentAt({x: point.x, y: point.y});
+    if (!segment) continue;
+
+    debugShapeSelection("cubic canvas contextmenu toggle curve mode", {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      segment,
+      curveMode: cubicState.curveMode
+    });
+    consumeCanvasInteraction(event);
+    event.preventDefault();
+    event.stopPropagation();
+    toggleCubicCurveModeWithUndo();
+    scheduleEditorInteractionReset(event);
+    return true;
+  }
+
+  return false;
+}
+
+function handlePolylineCanvasContextMenu(event) {
+  if (!isPolylineToolActive() || !polylineState.placed) return;
+
+  for (const point of getCanvasClickCandidatePoints(event)) {
+    const segment = getPolylineSegmentAt({x: point.x, y: point.y});
+    if (!segment) continue;
+
+    debugShapeSelection("polyline canvas contextmenu cycle segment curve", {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      segment
+    });
+    consumeCanvasInteraction(event);
+    event.preventDefault();
+    event.stopPropagation();
+    cyclePolylineSegmentCurveWithUndo(segment.sourceIndex ?? segment.index);
+    scheduleEditorInteractionReset(event);
+    return;
+  }
 }
 
 function shouldClosePolylineAtEvent(event) {
@@ -1555,6 +1620,7 @@ function handleEditorDomPointerDown(event) {
     rectangleState.draggingHandle = null;
     rectangleState.draggingVertex = null;
     polylineState.draggingVertex = null;
+    polylineState.draggingCurveHandle = null;
   }
   else if (hit.tool === CUBIC_TOOL) {
     if (hit.initialPlacement) initializeCubicDomPlacement(hit.editorPoint);
@@ -1572,6 +1638,7 @@ function handleEditorDomPointerDown(event) {
     }
   }
   else if (hit.tool === POLYLINE_TOOL) {
+    polylineState.draggingCurveHandle = hit.handle;
     polylineState.draggingVertex = hit.vertex;
   }
   else if (hit.handle !== null) {
@@ -1626,9 +1693,13 @@ function handleEditorDomPointerMove(event) {
     });
     ellipseState.placed = true;
     drawEllipsePreview();
-  } else if (editorDomDragState.tool === POLYLINE_TOOL && editorDomDragState.vertex) {
-    setPolylineVertex(editorDomDragState.vertex.index, point);
-    polylineState.previewPoint = null;
+  } else if (editorDomDragState.tool === POLYLINE_TOOL) {
+    if (editorDomDragState.handle) {
+      setPolylineCurveHandle(editorDomDragState.handle, point);
+    } else if (editorDomDragState.vertex) {
+      setPolylineVertex(editorDomDragState.vertex.index, point);
+      polylineState.previewPoint = null;
+    }
     drawPolylinePreview();
   } else if (editorDomDragState.handle !== null) {
     setRectangleHandle(editorDomDragState.handle, point);
@@ -1701,6 +1772,7 @@ function finalizeEditorDomDrag(event=null, cancelled=false) {
     drawRectanglePreview();
   } else if (editorDomDragState.tool === POLYLINE_TOOL) {
     polylineState.draggingVertex = null;
+    polylineState.draggingCurveHandle = null;
     polylineState.hoveredVertex = null;
     if (cancelled) cancelEditorOperation(polylineState);
     else commitEditorOperation(polylineState);
@@ -1820,6 +1892,16 @@ function getEditorDomDragHit(event) {
         hitPoint: point,
         editorPoint: movePoint
       });
+      const curveHandle = getPolylineCurveHandleAt(point);
+      if (curveHandle) return withDomPointerDragData(event, {
+        tool: POLYLINE_TOOL,
+        handle: curveHandle,
+        vertex: null,
+        move: false,
+        coordinateLabel: label,
+        hitPoint: point,
+        editorPoint: curveHandle.point
+      });
       const vertex = getPolylineVertexAt(point);
       if (vertex) return withDomPointerDragData(event, {
         tool: POLYLINE_TOOL,
@@ -1920,6 +2002,7 @@ function initializeCubicDomPlacement(point) {
   cubicState.curveId = null;
   cubicState.wallIds = [];
   cubicState.wallTypeBySegment = {};
+  cubicState.curveMode = getCubicInitialCurveMode();
   cubicState.segmentGaps = [];
   setHandle(0, point);
   setHandle(1, point);
@@ -2058,7 +2141,8 @@ function hasActiveEditorDrag() {
     || !!ellipseState.draggingVertex
     || rectangleState.draggingHandle !== null
     || !!rectangleState.draggingVertex
-    || !!polylineState.draggingVertex;
+    || !!polylineState.draggingVertex
+    || !!polylineState.draggingCurveHandle;
 }
 
 function finalizeActiveEditorDrag(event=null, cancelled=false) {
@@ -2084,8 +2168,9 @@ function finalizeActiveEditorDrag(event=null, cancelled=false) {
     if (cancelled) cancelEditorOperation(cubicState);
     else commitEditorOperation(cubicState);
     drawCubicPreview();
-  } else if (isPolylineToolActive() && polylineState.draggingVertex) {
+  } else if (isPolylineToolActive() && (polylineState.draggingVertex || polylineState.draggingCurveHandle)) {
     polylineState.draggingVertex = null;
+    polylineState.draggingCurveHandle = null;
     polylineState.hoveredVertex = null;
     if (cancelled) cancelEditorOperation(polylineState);
     else commitEditorOperation(polylineState);
@@ -2358,7 +2443,7 @@ function getWallPlaceable(id) {
 
 function registerCurveEditorShortcuts() {
   window.addEventListener("wheel", (event) => {
-    if (!getActiveEditorState()?.placed || !event.ctrlKey || isPolylineToolActive()) return;
+    if (!getActiveEditorState()?.placed || !event.ctrlKey) return;
 
     event.preventDefault();
     event.stopPropagation();
@@ -2530,6 +2615,7 @@ function changeActiveSegments(delta) {
   if (isCubicToolActive()) changeCubicSegments(delta);
   else if (isEllipseToolActive()) changeEllipseSegments(delta);
   else if (isRectangleToolActive()) changeRectangleSegments(delta);
+  else if (isPolylineToolActive()) changePolylineCurveSegments(delta);
 
   if (snapshot) pushEditorUndoSnapshot(state, snapshot);
 }
@@ -2696,6 +2782,7 @@ function getEditorSnapshot(state) {
     return {
       placed: cubicState.placed,
       handles: clonePoints(cubicState.handles),
+      curveMode: cubicState.curveMode,
       segments: cubicState.segments,
       segmentGaps: [...cubicState.segmentGaps],
       wallTypeBySegment: cloneWallTypeBySegment(cubicState.wallTypeBySegment),
@@ -2722,6 +2809,8 @@ function getEditorSnapshot(state) {
       closed: polylineState.closed,
       points: clonePoints(polylineState.points),
       segmentGaps: [...polylineState.segmentGaps],
+      segmentCurves: clonePolylineSegmentCurves(polylineState.segmentCurves),
+      curveSegments: polylineState.curveSegments,
       wallTypeBySegment: cloneWallTypeBySegment(polylineState.wallTypeBySegment),
       wallTypeTool: polylineState.wallTypeTool
     };
@@ -2743,6 +2832,7 @@ function restoreEditorSnapshot(state, snapshot) {
   if (state === cubicState) {
     cubicState.placed = snapshot.placed;
     cubicState.handles = clonePoints(snapshot.handles);
+    cubicState.curveMode = normalizeCubicCurveMode(snapshot.curveMode);
     cubicState.segments = snapshot.segments;
     cubicState.segmentGaps = reconcileCubicSegmentGaps(snapshot.segmentGaps, cubicState.segments);
     cubicState.wallTypeBySegment = cloneWallTypeBySegment(snapshot.wallTypeBySegment);
@@ -2775,9 +2865,12 @@ function restoreEditorSnapshot(state, snapshot) {
     polylineState.closed = !!snapshot.closed;
     polylineState.points = clonePoints(snapshot.points ?? []);
     polylineState.segmentGaps = reconcilePolylineSegmentGaps(snapshot.segmentGaps, getPolylineSegmentCount());
+    polylineState.segmentCurves = reconcilePolylineSegmentCurves(snapshot.segmentCurves, getPolylineSegmentCount());
+    polylineState.curveSegments = clamp(Number(snapshot.curveSegments) || DEFAULT_POLYLINE_CURVE_SEGMENTS, 2, 64);
     polylineState.wallTypeBySegment = cloneWallTypeBySegment(snapshot.wallTypeBySegment);
     polylineState.wallTypeTool = snapshot.wallTypeTool;
     polylineState.draggingVertex = null;
+    polylineState.draggingCurveHandle = null;
     polylineState.hoveredVertex = null;
     polylineState.previewPoint = null;
     drawPolylinePreview();
@@ -2922,7 +3015,10 @@ function translateEditorShape(tool, dx, dy) {
   if (tool === CUBIC_TOOL) cubicState.handles = translatePoints(cubicState.handles, dx, dy);
   else if (tool === ELLIPSE_TOOL) ellipseState.handles = translatePoints(ellipseState.handles, dx, dy);
   else if (tool === RECTANGLE_TOOL) rectangleState.handles = translatePoints(rectangleState.handles, dx, dy);
-  else if (tool === POLYLINE_TOOL) polylineState.points = translatePoints(polylineState.points, dx, dy);
+  else if (tool === POLYLINE_TOOL) {
+    polylineState.points = translatePoints(polylineState.points, dx, dy);
+    translatePolylineSegmentCurves(dx, dy);
+  }
 }
 
 function translatePoints(points, dx, dy) {
@@ -2940,8 +3036,10 @@ function getCubicHandleAt(point) {
   if (!cubicState.placed) return null;
   const style = getPreviewStyle();
   const radius = Math.max(style.endpointSize, style.handleSize);
-  const index = getHandleIndexAt(cubicState.handles, point, radius, style.outlineWidth);
-  return index < 0 ? null : index;
+  const handleIndexes = getCubicEditableHandleIndexes();
+  const handles = handleIndexes.map((index) => cubicState.handles[index]);
+  const index = getHandleIndexAt(handles, point, radius, style.outlineWidth);
+  return index < 0 ? null : handleIndexes[index];
 }
 
 function changeCubicSegments(delta) {
@@ -2962,6 +3060,10 @@ function editCubicSegmentWithUndo(index, remove=false) {
 
 function editCubicSegment(index, remove=false) {
   return editCubicSegmentImpl(index, remove, getCubicDeps());
+}
+
+function toggleCubicCurveModeWithUndo() {
+  return toggleCubicCurveModeWithUndoImpl(getCubicDeps());
 }
 
 function getEllipseHandleAt(point) {
@@ -3342,12 +3444,14 @@ function getSegmentKey(segment) {
 function getPolylineDeps() {
   return {
     MODULE_ID,
+    clamp,
     clearEditorHistory,
     clearPolylinePreview,
     clonePoints,
     cloneWallTypeBySegment,
     debugShapeSelection,
     deactivateOtherShapeStates,
+    drawBezierHandle,
     drawMoveHandle,
     drawPolylinePreview,
     drawPreviewVertex,
@@ -3453,6 +3557,10 @@ function drawPolylinePreview() {
   return drawPolylinePreviewImpl(getPolylineDeps());
 }
 
+function changePolylineCurveSegments(delta) {
+  return changePolylineCurveSegmentsImpl(delta, getPolylineDeps());
+}
+
 function getPolylineVertices() {
   return getPolylineVerticesImpl();
 }
@@ -3467,6 +3575,14 @@ function getPolylineVertexHitRadius() {
 
 function setPolylineVertex(index, point) {
   return setPolylineVertexImpl(index, point);
+}
+
+function getPolylineCurveHandleAt(point) {
+  return getPolylineCurveHandleAtImpl(point, getPolylineDeps());
+}
+
+function setPolylineCurveHandle(handle, point) {
+  return setPolylineCurveHandleImpl(handle, point);
 }
 
 function getPolylineSegmentAt(point) {
@@ -3487,6 +3603,10 @@ function editPolylineSegmentWithUndo(index, remove=false, point=null) {
 
 function editPolylineSegment(index, remove=false, point=null) {
   return editPolylineSegmentImpl(index, remove, point, getPolylineDeps());
+}
+
+function cyclePolylineSegmentCurveWithUndo(index) {
+  return cyclePolylineSegmentCurveWithUndoImpl(index, getPolylineDeps());
 }
 
 function removePolylineVertex(index) {

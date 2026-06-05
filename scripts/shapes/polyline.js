@@ -1,6 +1,10 @@
 export const POLYLINE_TOOL = "indyPolylineWall";
 export const POLYLINE_FLAG = "polyline";
 export const POLYLINE_EDIT_BUTTONS_ID = "indy-walls-polyline-edit-buttons";
+export const DEFAULT_POLYLINE_CURVE_SEGMENTS = 10;
+export const POLYLINE_SEGMENT_LINE = "line";
+export const POLYLINE_SEGMENT_ARC = "arc";
+export const POLYLINE_SEGMENT_BEZIER = "bezier";
 
 export const polylineState = {
   active: false,
@@ -8,6 +12,7 @@ export const polylineState = {
   drawing: false,
   closed: false,
   draggingVertex: null,
+  draggingCurveHandle: null,
   hoveredVertex: null,
   polylineId: null,
   wallIds: [],
@@ -18,6 +23,8 @@ export const polylineState = {
   wallTypeTool: "walls",
   wallTypeBySegment: {},
   segmentGaps: [],
+  segmentCurves: {},
+  curveSegments: DEFAULT_POLYLINE_CURVE_SEGMENTS,
   graphics: null,
   previewPoint: null,
   points: []
@@ -29,6 +36,14 @@ export function getPolylineSegmentCount() {
 }
 
 export function getAllPolylineSegments() {
+  const segments = [];
+  for (const segment of getPolylineBaseSegments()) {
+    segments.push(...getPolylineWallSegmentsForBaseSegment(segment));
+  }
+  return segments;
+}
+
+export function getPolylineBaseSegments() {
   const segments = [];
   for (let i = 0; i < polylineState.points.length - 1; i++) {
     segments.push({index: i, a: polylineState.points[i], b: polylineState.points[i + 1]});
@@ -45,7 +60,7 @@ export function getAllPolylineSegments() {
 
 export function getPolylineSegments() {
   const gaps = getPolylineSegmentGaps();
-  return getAllPolylineSegments().filter((segment) => !gaps.includes(segment.index));
+  return getAllPolylineSegments().filter((segment) => !gaps.includes(segment.sourceIndex ?? segment.index));
 }
 
 export function getPolylineSegmentGaps() {
@@ -62,6 +77,99 @@ export function reconcilePolylineSegmentGaps(source, segmentCount) {
     .sort((a, b) => a - b);
 }
 
+export function getPolylineSegmentCurve(index) {
+  const curves = reconcilePolylineSegmentCurves(polylineState.segmentCurves, getPolylineSegmentCount());
+  polylineState.segmentCurves = curves;
+  return curves[String(index)] ?? null;
+}
+
+export function reconcilePolylineSegmentCurves(source={}, segmentCount=getPolylineSegmentCount()) {
+  const result = {};
+  for (const [key, value] of Object.entries(source ?? {})) {
+    const index = Number(key);
+    if (!Number.isInteger(index) || index < 0 || index >= segmentCount) continue;
+    const curve = normalizePolylineSegmentCurve(value);
+    if (curve) result[String(index)] = curve;
+  }
+  return result;
+}
+
+export function normalizePolylineSegmentCurve(value) {
+  const mode = value?.mode;
+  if (mode !== POLYLINE_SEGMENT_ARC && mode !== POLYLINE_SEGMENT_BEZIER) return null;
+  const handles = Array.isArray(value.handles) ? value.handles : [];
+  const count = mode === POLYLINE_SEGMENT_ARC ? 1 : 2;
+  if (handles.length < count) return null;
+  const normalized = handles.slice(0, count).map((handle) => ({
+    x: Number(handle?.x) || 0,
+    y: Number(handle?.y) || 0
+  }));
+  return {mode, handles: normalized};
+}
+
+export function clonePolylineSegmentCurves(source={}) {
+  return reconcilePolylineSegmentCurves(source, Infinity);
+}
+
+export function changePolylineCurveSegments(delta, deps) {
+  if (!deps.isPolylineToolActive() || !hasPolylineCurvedSegments()) return;
+  polylineState.curveSegments = deps.clamp(polylineState.curveSegments + delta, 2, 64);
+  deps.drawPolylinePreview();
+}
+
+export function hasPolylineCurvedSegments() {
+  return Object.keys(reconcilePolylineSegmentCurves(polylineState.segmentCurves, getPolylineSegmentCount())).length > 0;
+}
+
+export function getPolylineWallSegmentsForBaseSegment(segment) {
+  const curve = getPolylineSegmentCurve(segment.index);
+  if (!curve) return [{...segment, sourceIndex: segment.index, curveIndex: 0, curveSegments: 1}];
+
+  const points = getPolylineSegmentPoints(segment, curve, polylineState.curveSegments);
+  const segments = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    segments.push({
+      index: segment.index,
+      sourceIndex: segment.index,
+      curveIndex: i,
+      curveSegments: points.length - 1,
+      a: points[i],
+      b: points[i + 1]
+    });
+  }
+  return segments;
+}
+
+export function getPolylineSegmentPoints(segment, curve=getPolylineSegmentCurve(segment.index), subdivisions=polylineState.curveSegments) {
+  const count = Math.max(Number(subdivisions) || DEFAULT_POLYLINE_CURVE_SEGMENTS, 1);
+  if (!curve) return [segment.a, segment.b];
+
+  const points = [];
+  for (let i = 0; i <= count; i++) {
+    const t = i / count;
+    points.push(curve.mode === POLYLINE_SEGMENT_BEZIER
+      ? getCubicBezierPoint(segment.a, curve.handles[0], curve.handles[1], segment.b, t)
+      : getQuadraticBezierPoint(segment.a, curve.handles[0], segment.b, t));
+  }
+  return points;
+}
+
+export function getQuadraticBezierPoint(p0, p1, p2, t) {
+  const mt = 1 - t;
+  return {
+    x: (mt * mt * p0.x) + (2 * mt * t * p1.x) + (t * t * p2.x),
+    y: (mt * mt * p0.y) + (2 * mt * t * p1.y) + (t * t * p2.y)
+  };
+}
+
+export function getCubicBezierPoint(p0, p1, p2, p3, t) {
+  const mt = 1 - t;
+  return {
+    x: (mt ** 3 * p0.x) + (3 * mt ** 2 * t * p1.x) + (3 * mt * t ** 2 * p2.x) + (t ** 3 * p3.x),
+    y: (mt ** 3 * p0.y) + (3 * mt ** 2 * t * p1.y) + (3 * mt * t ** 2 * p2.y) + (t ** 3 * p3.y)
+  };
+}
+
 export function shiftPolylineGapsForInsert(source, splitIndex) {
   return [...new Set((source ?? []).map((gap) => {
     const index = Number(gap);
@@ -69,6 +177,16 @@ export function shiftPolylineGapsForInsert(source, splitIndex) {
     return index > splitIndex ? index + 1 : index;
   }).filter((index) => index !== null))]
     .sort((a, b) => a - b);
+}
+
+export function shiftPolylineCurvesForInsert(source={}, splitIndex) {
+  const result = {};
+  for (const [key, value] of Object.entries(source ?? {})) {
+    const index = Number(key);
+    if (!Number.isInteger(index) || index === splitIndex) continue;
+    result[String(index > splitIndex ? index + 1 : index)] = clonePolylineCurve(value);
+  }
+  return result;
 }
 
 export function shiftPolylineGapsForRemove(source, vertexIndex, pointCountBefore, closed=false) {
@@ -93,6 +211,56 @@ export function shiftPolylineGapsForRemove(source, vertexIndex, pointCountBefore
     }
   }
   return [...result].filter((index) => index >= 0 && index < segmentCountAfter).sort((a, b) => a - b);
+}
+
+export function shiftPolylineCurvesForRemove(source={}, vertexIndex, pointCountBefore, closed=false) {
+  if (closed) return shiftClosedPolylineCurvesForRemove(source, vertexIndex, pointCountBefore);
+
+  const result = {};
+  const segmentCountBefore = Math.max(pointCountBefore - 1, 0);
+  const segmentCountAfter = Math.max(pointCountBefore - 2, 0);
+  for (const [key, value] of Object.entries(source ?? {})) {
+    const index = Number(key);
+    if (!Number.isInteger(index)) continue;
+    if (vertexIndex === 0) {
+      if (index > 0) result[String(index - 1)] = clonePolylineCurve(value);
+    } else if (vertexIndex === pointCountBefore - 1) {
+      if (index < segmentCountBefore - 1) result[String(index)] = clonePolylineCurve(value);
+    } else if (index === vertexIndex || index === vertexIndex - 1) {
+      continue;
+    } else {
+      result[String(index > vertexIndex ? index - 1 : index)] = clonePolylineCurve(value);
+    }
+  }
+  return Object.fromEntries(Object.entries(result)
+    .filter(([key]) => {
+      const index = Number(key);
+      return Number.isInteger(index) && index >= 0 && index < segmentCountAfter;
+    }));
+}
+
+export function shiftClosedPolylineCurvesForRemove(source={}, vertexIndex, pointCountBefore) {
+  const result = {};
+  const segmentCountAfter = Math.max(pointCountBefore - 1, 0);
+  const previousSegment = vertexIndex === 0 ? pointCountBefore - 1 : vertexIndex - 1;
+  const nextSegment = vertexIndex;
+
+  for (const [key, value] of Object.entries(source ?? {})) {
+    const index = Number(key);
+    if (!Number.isInteger(index)) continue;
+    if (index === previousSegment || index === nextSegment) continue;
+    result[String(index > vertexIndex ? index - 1 : index)] = clonePolylineCurve(value);
+  }
+  return Object.fromEntries(Object.entries(result)
+    .filter(([key]) => {
+      const index = Number(key);
+      return Number.isInteger(index) && index >= 0 && index < segmentCountAfter;
+    }));
+}
+
+export function clonePolylineCurve(curve) {
+  const normalized = normalizePolylineSegmentCurve(curve);
+  return normalized ? {mode: normalized.mode, handles: normalized.handles.map((point) => ({x: point.x, y: point.y}))} : null;
 }
 
 export function shiftClosedPolylineGapsForRemove(source, vertexIndex, pointCountBefore) {
@@ -193,6 +361,8 @@ export function handlePolylineCanvasClick(event, deps) {
     polylineState.wallIds = [];
     polylineState.wallTypeBySegment = {};
     polylineState.segmentGaps = [];
+    polylineState.segmentCurves = {};
+    polylineState.curveSegments = DEFAULT_POLYLINE_CURVE_SEGMENTS;
     polylineState.closed = false;
     polylineState.points = [point];
     polylineState.previewPoint = point;
@@ -266,7 +436,7 @@ export function drawPolylinePreview(deps) {
   }
 
   for (const segment of allSegments) {
-    if (!gaps.includes(segment.index)) continue;
+    if (!gaps.includes(segment.sourceIndex ?? segment.index)) continue;
     graphics.lineStyle(
       deps.getScaledRadius(Math.max(style.guideWidth, 1)),
       deps.getSegmentPreviewColor(polylineState, segment, style),
@@ -274,6 +444,13 @@ export function drawPolylinePreview(deps) {
     );
     graphics.moveTo(segment.a.x, segment.a.y);
     graphics.lineTo(segment.b.x, segment.b.y);
+  }
+
+  for (const segment of getPolylineBaseSegments()) {
+    const curve = getPolylineSegmentCurve(segment.index);
+    if (!curve) continue;
+    drawPolylineCurveControls(graphics, segment, curve, style, deps);
+    drawPolylineCurveIntermediatePoints(graphics, segment, curve, style, deps, gaps.includes(segment.index));
   }
 
   const last = polylineState.points.at(-1);
@@ -316,6 +493,49 @@ export function setPolylineVertex(index, point) {
   polylineState.points[index] = {x: point.x, y: point.y};
 }
 
+export function getPolylineCurveHandleAt(point, deps) {
+  if (!polylineState.placed) return null;
+  const style = deps.getPreviewStyle();
+  const radius = deps.getScaledRadius(style.handleSize + style.outlineWidth + 8);
+  let best = null;
+  let bestDistance = Infinity;
+
+  for (const [segmentIndex, curve] of Object.entries(reconcilePolylineSegmentCurves(polylineState.segmentCurves, getPolylineSegmentCount()))) {
+    for (let handleIndex = 0; handleIndex < curve.handles.length; handleIndex++) {
+      const handle = curve.handles[handleIndex];
+      const distance = Math.hypot(handle.x - point.x, handle.y - point.y);
+      if (distance <= radius && distance < bestDistance) {
+        best = {segmentIndex: Number(segmentIndex), handleIndex, point: handle};
+        bestDistance = distance;
+      }
+    }
+  }
+
+  return best;
+}
+
+export function setPolylineCurveHandle(handle, point) {
+  if (!handle || !Number.isInteger(handle.segmentIndex) || !Number.isInteger(handle.handleIndex)) return;
+  const curve = getPolylineSegmentCurve(handle.segmentIndex);
+  if (!curve?.handles?.[handle.handleIndex]) return;
+  curve.handles[handle.handleIndex] = {x: point.x, y: point.y};
+  polylineState.segmentCurves = {
+    ...polylineState.segmentCurves,
+    [String(handle.segmentIndex)]: curve
+  };
+}
+
+export function translatePolylineSegmentCurves(dx, dy) {
+  const result = {};
+  for (const [key, curve] of Object.entries(reconcilePolylineSegmentCurves(polylineState.segmentCurves, getPolylineSegmentCount()))) {
+    result[key] = {
+      mode: curve.mode,
+      handles: curve.handles.map((handle) => ({x: handle.x + dx, y: handle.y + dy}))
+    };
+  }
+  polylineState.segmentCurves = result;
+}
+
 export function drawPolylineVertex(graphics, vertex, style, deps) {
   const radius = deps.getScaledRadius(style.splitVertexSize);
   const highlighted = polylineState.draggingVertex?.index === vertex.index || polylineState.hoveredVertex?.index === vertex.index;
@@ -327,6 +547,41 @@ export function drawPolylineVertex(graphics, vertex, style, deps) {
   );
   graphics.drawCircle(vertex.point.x, vertex.point.y, radius);
   graphics.endFill();
+}
+
+export function drawPolylineCurveIntermediatePoints(graphics, segment, curve, style, deps, missing=false) {
+  const points = getPolylineSegmentPoints(segment, curve, polylineState.curveSegments).slice(1, -1);
+  if (!points.length) return;
+
+  const radius = deps.getScaledRadius(Math.max(style.vertexSize * 0.55, 2));
+  const outlineWidth = deps.getScaledRadius(Math.max(style.outlineWidth * 0.6, 0.75));
+  for (const point of points) {
+    graphics.beginFill(style.vertexColor, missing ? 0.28 : 0.82);
+    graphics.lineStyle(outlineWidth, style.wallColor, missing ? 0.2 : 0.7);
+    graphics.drawCircle(point.x, point.y, radius);
+    graphics.endFill();
+  }
+}
+
+export function drawPolylineCurveControls(graphics, segment, curve, style, deps) {
+  const handles = curve.handles ?? [];
+  graphics.lineStyle(deps.getScaledRadius(style.guideWidth), style.wallColor, 0.55);
+  if (curve.mode === POLYLINE_SEGMENT_ARC) {
+    const [control] = handles;
+    graphics.moveTo(segment.a.x, segment.a.y);
+    graphics.lineTo(control.x, control.y);
+    graphics.lineTo(segment.b.x, segment.b.y);
+    deps.drawBezierHandle(graphics, control, style);
+    return;
+  }
+
+  const [controlA, controlB] = handles;
+  graphics.moveTo(segment.a.x, segment.a.y);
+  graphics.lineTo(controlA.x, controlA.y);
+  graphics.moveTo(segment.b.x, segment.b.y);
+  graphics.lineTo(controlB.x, controlB.y);
+  deps.drawBezierHandle(graphics, controlA, style);
+  deps.drawBezierHandle(graphics, controlB, style);
 }
 
 export function getPolylineSegmentAt(point, deps) {
@@ -398,11 +653,79 @@ export function editPolylineSegment(index, remove=false, point=null, deps) {
   return addPolylineVertexAtSegment(index, point, deps);
 }
 
+export function cyclePolylineSegmentCurveWithUndo(index, deps) {
+  const snapshot = deps.getEditorSnapshot(polylineState);
+  const edited = cyclePolylineSegmentCurve(index, deps);
+  if (edited) deps.pushEditorUndoSnapshot(polylineState, snapshot);
+  return edited;
+}
+
+export function cyclePolylineSegmentCurve(index, deps) {
+  if (!Number.isInteger(index) || index < 0 || index >= getPolylineSegmentCount()) return false;
+  const segment = getPolylineBaseSegments()[index];
+  if (!segment) return false;
+
+  const current = getPolylineSegmentCurve(index);
+  if (!current) {
+    polylineState.segmentCurves = {
+      ...polylineState.segmentCurves,
+      [String(index)]: createDefaultPolylineArc(segment)
+    };
+  } else if (current.mode === POLYLINE_SEGMENT_ARC) {
+    polylineState.segmentCurves = {
+      ...polylineState.segmentCurves,
+      [String(index)]: createDefaultPolylineBezier(segment, current.handles[0])
+    };
+  } else {
+    const next = {...polylineState.segmentCurves};
+    delete next[String(index)];
+    polylineState.segmentCurves = next;
+  }
+
+  deps.drawPolylinePreview();
+  return true;
+}
+
+export function createDefaultPolylineArc(segment) {
+  const control = getDefaultCurveControlPoint(segment, 0.28);
+  return {mode: POLYLINE_SEGMENT_ARC, handles: [control]};
+}
+
+export function createDefaultPolylineBezier(segment, existingControl=null) {
+  const control = existingControl ?? getDefaultCurveControlPoint(segment, 0.28);
+  const dx = segment.b.x - segment.a.x;
+  const dy = segment.b.y - segment.a.y;
+  return {
+    mode: POLYLINE_SEGMENT_BEZIER,
+    handles: [
+      {
+        x: segment.a.x + (dx * 0.35) + ((control.x - ((segment.a.x + segment.b.x) / 2)) * 0.8),
+        y: segment.a.y + (dy * 0.35) + ((control.y - ((segment.a.y + segment.b.y) / 2)) * 0.8)
+      },
+      {
+        x: segment.b.x - (dx * 0.35) + ((control.x - ((segment.a.x + segment.b.x) / 2)) * 0.8),
+        y: segment.b.y - (dy * 0.35) + ((control.y - ((segment.a.y + segment.b.y) / 2)) * 0.8)
+      }
+    ]
+  };
+}
+
+export function getDefaultCurveControlPoint(segment, amount=0.25) {
+  const dx = segment.b.x - segment.a.x;
+  const dy = segment.b.y - segment.a.y;
+  const length = Math.hypot(dx, dy);
+  if (!length) return {x: segment.a.x, y: segment.a.y};
+  return {
+    x: (segment.a.x + segment.b.x) / 2 + (dy / length) * length * amount,
+    y: (segment.a.y + segment.b.y) / 2 - (dx / length) * length * amount
+  };
+}
+
 export function addPolylineVertexAtSegment(index, point, deps) {
   if (!Number.isInteger(index) || !Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return false;
   if (index < 0 || index >= getPolylineSegmentCount()) return false;
 
-  const segment = getAllPolylineSegments()[index];
+  const segment = getPolylineBaseSegments()[index];
   if (!segment) return false;
   const minDistance = deps.getScaledRadius(Math.max(deps.getPreviewStyle().vertexSize, 4));
   if (Math.hypot(segment.a.x - point.x, segment.a.y - point.y) <= minDistance) return false;
@@ -414,6 +737,7 @@ export function addPolylineVertexAtSegment(index, point, deps) {
   polylineState.points.splice(insertIndex, 0, {x: point.x, y: point.y});
   polylineState.segmentGaps = shiftPolylineGapsForInsert(polylineState.segmentGaps, index);
   polylineState.wallTypeBySegment = shiftPolylineWallTypesForInsert(polylineState.wallTypeBySegment, index);
+  polylineState.segmentCurves = shiftPolylineCurvesForInsert(polylineState.segmentCurves, index);
   polylineState.previewPoint = null;
   deps.drawPolylinePreview();
   return true;
@@ -428,6 +752,7 @@ export function removePolylineVertex(index, deps) {
   polylineState.points.splice(index, 1);
   polylineState.segmentGaps = shiftPolylineGapsForRemove(polylineState.segmentGaps, index, pointCountBefore, closed);
   polylineState.wallTypeBySegment = shiftPolylineWallTypesForRemove(polylineState.wallTypeBySegment, index, pointCountBefore, closed);
+  polylineState.segmentCurves = shiftPolylineCurvesForRemove(polylineState.segmentCurves, index, pointCountBefore, closed);
   polylineState.previewPoint = null;
   deps.drawPolylinePreview();
   return true;
@@ -438,6 +763,7 @@ export async function applyPolylineWalls(deps) {
 
   const segments = getPolylineSegments();
   const segmentGaps = getPolylineSegmentGaps();
+  const segmentCurves = reconcilePolylineSegmentCurves(polylineState.segmentCurves, getPolylineSegmentCount());
   const polylineId = polylineState.polylineId ?? foundry.utils.randomID();
   const walls = [];
   const wallSegmentIndexes = [];
@@ -447,7 +773,7 @@ export async function applyPolylineWalls(deps) {
     const wallData = deps.getSegmentWallData(polylineState, deps.getSegmentKey(segment));
     const c = [Math.round(a.x), Math.round(a.y), Math.round(b.x), Math.round(b.y)];
     if ((c[0] === c[2]) && (c[1] === c[3])) continue;
-    wallSegmentIndexes.push(segment.index);
+    wallSegmentIndexes.push(segment.sourceIndex ?? segment.index);
     walls.push({
       ...wallData,
       c,
@@ -460,6 +786,8 @@ export async function applyPolylineWalls(deps) {
             points: deps.clonePoints(polylineState.points),
             closed: polylineState.closed,
             segmentGaps,
+            segmentCurves,
+            curveSegments: polylineState.curveSegments,
             wallTypeBySegment: deps.cloneWallTypeBySegment(polylineState.wallTypeBySegment),
             wallTypeTool: polylineState.wallTypeTool
           }
@@ -516,11 +844,14 @@ export function clearPolylinePreview(deps) {
   polylineState.placed = false;
   polylineState.drawing = false;
   polylineState.draggingVertex = null;
+  polylineState.draggingCurveHandle = null;
   polylineState.hoveredVertex = null;
   polylineState.polylineId = null;
   polylineState.wallIds = [];
   polylineState.wallTypeBySegment = {};
   polylineState.segmentGaps = [];
+  polylineState.segmentCurves = {};
+  polylineState.curveSegments = DEFAULT_POLYLINE_CURVE_SEGMENTS;
   polylineState.closed = false;
   polylineState.previewPoint = null;
   polylineState.points = [];
@@ -552,6 +883,7 @@ export function loadPolylineFromWall(wall, deps) {
   polylineState.placed = true;
   polylineState.drawing = false;
   polylineState.draggingVertex = null;
+  polylineState.draggingCurveHandle = null;
   polylineState.hoveredVertex = null;
   polylineState.polylineId = polylineData.polylineId ?? null;
   polylineState.wallIds = Array.isArray(polylineData.wallIds) ? [...polylineData.wallIds] : [wall.document.id];
@@ -562,6 +894,8 @@ export function loadPolylineFromWall(wall, deps) {
   }));
   polylineState.closed = !!polylineData.closed;
   polylineState.segmentGaps = reconcilePolylineSegmentGaps(polylineData.segmentGaps, getPolylineSegmentCount());
+  polylineState.segmentCurves = reconcilePolylineSegmentCurves(polylineData.segmentCurves, getPolylineSegmentCount());
+  polylineState.curveSegments = deps.clamp(Number(polylineData.curveSegments) || DEFAULT_POLYLINE_CURVE_SEGMENTS, 2, 64);
   polylineState.previewPoint = null;
   polylineState.wallTypeBySegment = {
     ...deps.cloneWallTypeBySegment(polylineData.wallTypeBySegment),
