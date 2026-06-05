@@ -51,18 +51,13 @@ import {
   CUBIC_EDIT_BUTTONS_ID,
   CUBIC_FLAG,
   CUBIC_TOOL,
-  DEFAULT_CUBIC_SEGMENTS,
   cubicState,
   drawCubicPreview as drawCubicPreviewImpl,
-  editCubicSegment as editCubicSegmentImpl,
   editCubicSegmentWithUndo as editCubicSegmentWithUndoImpl,
-  getAllCubicSegments,
   getCubicSegmentAt as getCubicSegmentAtImpl,
   getCubicEditableHandleIndexes,
   getCubicInitialCurveMode,
   getCubicPoints,
-  getCubicSegmentGaps,
-  getCubicSegments,
   getExistingCurveWallIds as getExistingCurveWallIdsImpl,
   initializeCubicControls,
   loadCubicCurveFromWall as loadCubicCurveFromWallImpl,
@@ -76,23 +71,16 @@ import {
   cancelEllipseEditingForDeletedWall as cancelEllipseEditingForDeletedWallImpl,
   changeEllipseSegments as changeEllipseSegmentsImpl,
   clearEllipsePreview as clearEllipsePreviewImpl,
-  DEFAULT_ELLIPSE_SEGMENTS,
   drawEllipsePreview as drawEllipsePreviewImpl,
-  editEllipseSegment as editEllipseSegmentImpl,
   editEllipseSegmentWithUndo as editEllipseSegmentWithUndoImpl,
   ELLIPSE_EDIT_BUTTONS_ID,
   ELLIPSE_FLAG,
   ELLIPSE_TOOL,
   ellipseState,
-  getAllEllipseSegments,
   getEllipseGeometry,
   getEllipsePoints,
   getEllipseSegmentAt as getEllipseSegmentAtImpl,
-  getEllipseSegmentGaps,
-  getEllipseSegments,
   getEllipseVertexAt as getEllipseVertexAtImpl,
-  getEllipseVertexHitRadius as getEllipseVertexHitRadiusImpl,
-  getEllipseVertices,
   getExistingEllipseWallIds as getExistingEllipseWallIdsImpl,
   loadEllipseFromWall as loadEllipseFromWallImpl,
   reconcileEllipseSegmentGaps,
@@ -139,23 +127,17 @@ import {
   cyclePolylineSegmentCurveWithUndo as cyclePolylineSegmentCurveWithUndoImpl,
   DEFAULT_POLYLINE_CURVE_SEGMENTS,
   drawPolylinePreview as drawPolylinePreviewImpl,
-  editPolylineSegment as editPolylineSegmentImpl,
   editPolylineSegmentWithUndo as editPolylineSegmentWithUndoImpl,
   getExistingPolylineWallIds as getExistingPolylineWallIdsImpl,
   POLYLINE_EDIT_BUTTONS_ID,
   POLYLINE_FLAG,
   POLYLINE_TOOL,
-  getAllPolylineSegments,
   getPolylineSegmentCount,
   getPolylineSegmentAt as getPolylineSegmentAtImpl,
   getPolylineSegmentEditFromEvent as getPolylineSegmentEditFromEventImpl,
-  getPolylineSegmentGaps,
   clonePolylineSegmentCurves,
   getPolylineCurveHandleAt as getPolylineCurveHandleAtImpl,
-  getPolylineSegments,
   getPolylineVertexAt as getPolylineVertexAtImpl,
-  getPolylineVertexHitRadius as getPolylineVertexHitRadiusImpl,
-  getPolylineVertices as getPolylineVerticesImpl,
   reconcilePolylineSegmentCurves,
   handlePolylineCanvasClick as handlePolylineCanvasClickImpl,
   isPolylineClosePoint as isPolylineClosePointImpl,
@@ -1008,8 +990,6 @@ function registerRectangleCanvasClickHandler() {
   view.addEventListener("pointermove", updateLastCanvasPointerPoint, {capture: true});
   view.addEventListener("pointerup", handleCanvasSegmentEditPointerUp, {capture: true});
   view.addEventListener("pointercancel", handleCanvasSegmentEditPointerCancel, {capture: true});
-  view.addEventListener("mousedown", handleEditorCanvasMouseEvent, {capture: true});
-  view.addEventListener("mouseup", handleEditorCanvasMouseEvent, {capture: true});
   view.addEventListener("click", handleRectangleCanvasClick, {capture: true});
   view.addEventListener("dblclick", handlePolylineCanvasDoubleClick, {capture: true});
   view.addEventListener("contextmenu", handleEditorCanvasContextMenu, {capture: true});
@@ -1122,11 +1102,6 @@ function handleCanvasSegmentEditPointerCancel(event) {
   consumeCanvasInteraction(event);
   clearPendingCanvasSegmentEdit();
   scheduleEditorInteractionReset(event);
-}
-
-function handleEditorCanvasMouseEvent(event) {
-  if (Number.isFinite(event.button) && event.button !== 0) return;
-  if (isControlInteraction(event) || !isPlacedEditorActive()) return;
 }
 
 function startControlShapeSelect(event) {
@@ -1442,20 +1417,6 @@ function commitCanvasSegmentEdit(tool, edit, event=null) {
   if (tool === "ellipse") return commitEllipseSegmentEdit(edit, event);
   if (tool === "rectangle") return commitRectangleSideEdit(edit, event);
   if (tool === "polyline") return commitPolylineSegmentEdit(edit, event);
-  return false;
-}
-
-function loadShapeFromCanvasClick(event) {
-  for (const point of getCanvasClickCandidatePoints(event)) {
-    const scan = getIndyWallAtPoint(point, "canvas click");
-    if (!scan?.wall || !loadShapeFromExistingWall(scan.wall)) continue;
-
-    debugShapeSelection("canvas click loaded shape", {
-      point,
-      wallId: scan.wall.document?.id ?? scan.wall.id
-    });
-    return true;
-  }
   return false;
 }
 
@@ -2388,18 +2349,6 @@ function isAltInteraction(event) {
     || event.originalEvent?.altKey);
 }
 
-function loadShapeAtInteractionPoint(event) {
-  const point = getInteractionPoint(event) ?? event.interactionData?.origin;
-  debugShapeSelection("layer shortcut point", {
-    point,
-    origin: event.interactionData?.origin,
-    ctrl: isControlInteraction(event)
-  });
-  if (!point) return false;
-
-  return loadShapeAtPoint(point, "layer shortcut");
-}
-
 function loadShapeAtPoint(point, source="unknown") {
   const scan = getIndyWallAtPoint(point, source);
   const wall = scan?.wall ?? null;
@@ -3216,10 +3165,6 @@ function editCubicSegmentWithUndo(index, remove=false) {
   return editCubicSegmentWithUndoImpl(index, remove, getCubicDeps());
 }
 
-function editCubicSegment(index, remove=false) {
-  return editCubicSegmentImpl(index, remove, getCubicDeps());
-}
-
 function toggleCubicCurveModeWithUndo() {
   return toggleCubicCurveModeWithUndoImpl(getCubicDeps());
 }
@@ -3233,10 +3178,6 @@ function getEllipseHandleAt(point) {
 
 function getEllipseVertexAt(point) {
   return getEllipseVertexAtImpl(point, getEllipseDeps());
-}
-
-function getEllipseVertexHitRadius() {
-  return getEllipseVertexHitRadiusImpl(getEllipseDeps());
 }
 
 function changeEllipseSegments(delta) {
@@ -3253,10 +3194,6 @@ function getEllipseSegmentAt(point) {
 
 function editEllipseSegmentWithUndo(index, remove=false) {
   return editEllipseSegmentWithUndoImpl(index, remove, getEllipseDeps());
-}
-
-function editEllipseSegment(index, remove=false) {
-  return editEllipseSegmentImpl(index, remove, getEllipseDeps());
 }
 
 function getRectangleHandleAt(point) {
@@ -3286,14 +3223,6 @@ function getRectangleVertexAt(point) {
     }
   }
   return null;
-}
-
-function updateRectangleHoveredVertex(point) {
-  const hovered = point ? getRectangleVertexAt(point) : null;
-  if (sameRectangleVertex(hovered, rectangleState.hoveredVertex)) return;
-
-  rectangleState.hoveredVertex = hovered;
-  drawRectanglePreview();
 }
 
 function changeRectangleSegments(delta, side=null) {
@@ -3720,16 +3649,8 @@ function changePolylineCurveSegments(delta) {
   return changePolylineCurveSegmentsImpl(delta, getPolylineDeps());
 }
 
-function getPolylineVertices() {
-  return getPolylineVerticesImpl();
-}
-
 function getPolylineVertexAt(point) {
   return getPolylineVertexAtImpl(point, getPolylineDeps());
-}
-
-function getPolylineVertexHitRadius() {
-  return getPolylineVertexHitRadiusImpl(getPolylineDeps());
 }
 
 function setPolylineVertex(index, point) {
@@ -3758,10 +3679,6 @@ function commitPolylineSegmentEdit(edit, event=null) {
 
 function editPolylineSegmentWithUndo(index, remove=false, point=null) {
   return editPolylineSegmentWithUndoImpl(index, remove, point, getPolylineDeps());
-}
-
-function editPolylineSegment(index, remove=false, point=null) {
-  return editPolylineSegmentImpl(index, remove, point, getPolylineDeps());
 }
 
 function cyclePolylineSegmentCurveWithUndo(index) {

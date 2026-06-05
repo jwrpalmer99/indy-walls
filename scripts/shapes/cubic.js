@@ -1,3 +1,4 @@
+import {getQuadraticBezierPoint} from "../curve-common.js";
 import {
   destroyPreviewGraphics,
   preparePreviewGraphics
@@ -64,14 +65,14 @@ export function initializeCubicControls() {
   controlB.y = end.y - (dy * 0.10) + (ny * length * 0.35);
 }
 
-export function initializeCubicArcControl() {
+function initializeCubicArcControl() {
   const [start, controlA,, end] = cubicState.handles;
   const point = getDefaultCubicArcControlPoint(start, end);
   controlA.x = point.x;
   controlA.y = point.y;
 }
 
-export function getDefaultCubicArcControlPoint(start, end, amount=0.28) {
+function getDefaultCubicArcControlPoint(start, end, amount=0.28) {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
   const length = Math.hypot(dx, dy);
@@ -100,15 +101,7 @@ export function getCubicPoints(segments) {
   return points;
 }
 
-export function getQuadraticBezierPoint(p0, p1, p2, t) {
-  const mt = 1 - t;
-  return {
-    x: (mt * mt * p0.x) + (2 * mt * t * p1.x) + (t * t * p2.x),
-    y: (mt * mt * p0.y) + (2 * mt * t * p1.y) + (t * t * p2.y)
-  };
-}
-
-export function getAllCubicSegments() {
+function getAllCubicSegments() {
   const points = getCubicPoints(cubicState.segments);
   const segments = [];
   for (let i = 0; i < points.length - 1; i++) {
@@ -117,12 +110,12 @@ export function getAllCubicSegments() {
   return segments;
 }
 
-export function getCubicSegments() {
+function getCubicSegments() {
   const gaps = getCubicSegmentGaps();
   return getAllCubicSegments().filter((segment) => !gaps.includes(segment.index));
 }
 
-export function getCubicSegmentGaps() {
+function getCubicSegmentGaps() {
   const gaps = reconcileCubicSegmentGaps(cubicState.segmentGaps, cubicState.segments);
   cubicState.segmentGaps = gaps;
   return gaps;
@@ -222,7 +215,7 @@ export function editCubicSegmentWithUndo(index, remove=false, deps) {
   return edited;
 }
 
-export function editCubicSegment(index, remove=false, deps) {
+function editCubicSegment(index, remove=false, deps) {
   const gaps = getCubicSegmentGaps();
   if (remove) {
     if (gaps.includes(index)) return false;
@@ -244,7 +237,7 @@ export function toggleCubicCurveModeWithUndo(deps) {
   return edited;
 }
 
-export function toggleCubicCurveMode(deps) {
+function toggleCubicCurveMode(deps) {
   if (!cubicState.placed) return false;
   if (cubicState.curveMode === CUBIC_CURVE_BEZIER) {
     convertCubicBezierToArc();
@@ -260,11 +253,11 @@ export function getCubicInitialCurveMode() {
   return normalizeCubicCurveMode(cubicState.lastSavedCurveMode);
 }
 
-export function rememberSavedCubicCurveMode() {
+function rememberSavedCubicCurveMode() {
   cubicState.lastSavedCurveMode = normalizeCubicCurveMode(cubicState.curveMode);
 }
 
-export function convertCubicBezierToArc() {
+function convertCubicBezierToArc() {
   const [start, controlA, controlB, end] = cubicState.handles;
   cubicState.curveMode = CUBIC_CURVE_ARC;
   cubicState.handles[1] = {
@@ -278,7 +271,7 @@ export function convertCubicBezierToArc() {
   }
 }
 
-export function convertCubicArcToBezier() {
+function convertCubicArcToBezier() {
   const [start, control,, end] = cubicState.handles;
   const dx = end.x - start.x;
   const dy = end.y - start.y;
@@ -445,7 +438,7 @@ export function loadCubicCurveFromWall(wall, deps) {
   deps.drawCubicPreview();
 }
 
-export function cloneHandles(deps) {
+function cloneHandles(deps) {
   return deps.clonePoints(cubicState.handles);
 }
 

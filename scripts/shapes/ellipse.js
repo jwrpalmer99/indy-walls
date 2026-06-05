@@ -110,13 +110,13 @@ export function getEllipseGeometry() {
   };
 }
 
-export function getEllipseVertices() {
+function getEllipseVertices() {
   return getEllipsePoints(ellipseState.segments)
     .slice(0, -1)
     .map((point, index) => ({index, point}));
 }
 
-export function getAllEllipseSegments() {
+function getAllEllipseSegments() {
   const points = getEllipsePoints(ellipseState.segments);
   const segments = [];
   for (let i = 0; i < points.length - 1; i++) {
@@ -125,12 +125,12 @@ export function getAllEllipseSegments() {
   return segments;
 }
 
-export function getEllipseSegments() {
+function getEllipseSegments() {
   const gaps = getEllipseSegmentGaps();
   return getAllEllipseSegments().filter((segment) => !gaps.includes(segment.index));
 }
 
-export function getEllipseSegmentGaps() {
+function getEllipseSegmentGaps() {
   const gaps = reconcileEllipseSegmentGaps(ellipseState.segmentGaps, ellipseState.segments);
   ellipseState.segmentGaps = gaps;
   return gaps;
@@ -153,7 +153,7 @@ export function setEllipseRotationFromVertex(vertex, point) {
   ellipseState.rotation = normalizeAngle(pointerAngle - baseAngle);
 }
 
-export function normalizeAngle(angle) {
+function normalizeAngle(angle) {
   const fullTurn = Math.PI * 2;
   return ((angle % fullTurn) + fullTurn) % fullTurn;
 }
@@ -219,7 +219,7 @@ export function getEllipseVertexAt(point, deps) {
   return null;
 }
 
-export function getEllipseVertexHitRadius(deps) {
+function getEllipseVertexHitRadius(deps) {
   const style = deps.getPreviewStyle();
   return deps.getSplitVertexHitRadius(style);
 }
@@ -250,7 +250,7 @@ export function editEllipseSegmentWithUndo(index, remove=false, deps) {
   return edited;
 }
 
-export function editEllipseSegment(index, remove=false, deps) {
+function editEllipseSegment(index, remove=false, deps) {
   const gaps = getEllipseSegmentGaps();
   if (remove) {
     if (gaps.includes(index)) return false;
@@ -265,7 +265,7 @@ export function editEllipseSegment(index, remove=false, deps) {
   return true;
 }
 
-export function drawEllipseSplitVertex(graphics, vertex, style, deps) {
+function drawEllipseSplitVertex(graphics, vertex, style, deps) {
   const radius = deps.getScaledRadius(style.splitVertexSize);
   const highlighted = ellipseState.draggingVertex?.index === vertex.index;
   graphics.beginFill(highlighted ? style.vertexActiveColor : style.vertexColor, 0.98);

@@ -33,24 +33,6 @@ export function resetEditorCursor(event=null) {
   if (document.body?.style) document.body.style.cursor = "";
 }
 
-export function scheduleCanvasInteractionReset(event=null) {
-  debugInteractionManagers("schedule interaction reset start", event);
-  resetCanvasCursor(event);
-  debugInteractionManagers("after immediate interaction reset", event);
-  globalThis.queueMicrotask?.(() => {
-    resetCanvasCursor(event);
-    debugInteractionManagers("after microtask interaction reset", event);
-  });
-  setTimeout(() => {
-    resetCanvasCursor(event);
-    debugInteractionManagers("after timeout 0 interaction reset", event);
-  }, 0);
-  setTimeout(() => {
-    resetCanvasCursor(event);
-    debugInteractionManagers("after timeout 50 interaction reset", event);
-  }, 50);
-}
-
 export function scheduleEditorInteractionReset(event=null) {
   debugInteractionManagers("schedule editor interaction reset start", event);
   resetEditorCursor(event);

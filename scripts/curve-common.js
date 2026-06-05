@@ -51,6 +51,22 @@ export function clonePoints(points) {
   return points.map((point) => ({x: point.x, y: point.y}));
 }
 
+export function getQuadraticBezierPoint(p0, p1, p2, t) {
+  const mt = 1 - t;
+  return {
+    x: (mt * mt * p0.x) + (2 * mt * t * p1.x) + (t * t * p2.x),
+    y: (mt * mt * p0.y) + (2 * mt * t * p1.y) + (t * t * p2.y)
+  };
+}
+
+export function getCubicBezierPoint(p0, p1, p2, p3, t) {
+  const mt = 1 - t;
+  return {
+    x: (mt ** 3 * p0.x) + (3 * mt ** 2 * t * p1.x) + (3 * mt * t ** 2 * p2.x) + (t ** 3 * p3.x),
+    y: (mt ** 3 * p0.y) + (3 * mt ** 2 * t * p1.y) + (3 * mt * t ** 2 * p2.y) + (t ** 3 * p3.y)
+  };
+}
+
 export function ensureEditButtons({id, buttons}) {
   if (document.getElementById(id)) return;
 
