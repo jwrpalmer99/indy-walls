@@ -147,12 +147,12 @@ Basic workflow:
 7. Left-click a segment to add a point, or to restore a hidden segment.
 8. Right-click a segment to cycle it between a straight line, an arc, and a Bezier curve.
 9. Drag the curve handles on arc and Bezier segments to adjust their shape.
-10. Use Ctrl-scrollwheel to change the generated point count for curved segments. Straight line segments remain single wall segments.
+10. Use Ctrl-scrollwheel over a curved segment to change that segment's generated point count.
 11. Alt-click a point to remove it.
 12. Alt-click a segment to hide it.
 13. Use the check button or Enter to create wall segments, or Escape to cancel.
 
-Polyline metadata is stored on each generated wall segment. Ctrl-left-click any generated segment to reopen the polyline editor, including closed polygon state, hidden segments, curve modes and handles, curved segment detail, and per-segment wall types.
+Polyline metadata is stored on each generated wall segment. Ctrl-left-click any generated segment to reopen the polyline editor, including closed polygon state, hidden segments, curve modes and handles, global and per-segment curved detail, and per-segment wall types.
 
 ## License
 

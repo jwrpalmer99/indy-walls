@@ -139,6 +139,7 @@ import {
   getPolylineSegmentCount,
   getPolylineSegmentAt as getPolylineSegmentAtImpl,
   getPolylineSegmentEditFromEvent as getPolylineSegmentEditFromEventImpl,
+  clonePolylineCurveSegmentsBySegment,
   clonePolylineSegmentCurves,
   getPolylineCurveHandleAt as getPolylineCurveHandleAtImpl,
   getPolylineVertexAt as getPolylineVertexAtImpl,
@@ -2967,6 +2968,7 @@ function getEditorSnapshot(state) {
       segmentGaps: [...polylineState.segmentGaps],
       segmentCurves: clonePolylineSegmentCurves(polylineState.segmentCurves),
       curveSegments: polylineState.curveSegments,
+      curveSegmentsBySegment: clonePolylineCurveSegmentsBySegment(polylineState.curveSegmentsBySegment),
       wallTypeBySegment: cloneWallTypeBySegment(polylineState.wallTypeBySegment),
       wallTypeTool: polylineState.wallTypeTool
     };
@@ -3023,6 +3025,7 @@ function restoreEditorSnapshot(state, snapshot) {
     polylineState.segmentGaps = reconcilePolylineSegmentGaps(snapshot.segmentGaps, getPolylineSegmentCount());
     polylineState.segmentCurves = reconcilePolylineSegmentCurves(snapshot.segmentCurves, getPolylineSegmentCount());
     polylineState.curveSegments = clamp(Number(snapshot.curveSegments) || DEFAULT_POLYLINE_CURVE_SEGMENTS, 2, 64);
+    polylineState.curveSegmentsBySegment = clonePolylineCurveSegmentsBySegment(snapshot.curveSegmentsBySegment);
     polylineState.wallTypeBySegment = cloneWallTypeBySegment(snapshot.wallTypeBySegment);
     polylineState.wallTypeTool = snapshot.wallTypeTool;
     polylineState.draggingVertex = null;
@@ -3786,7 +3789,7 @@ function drawPolylinePreview() {
 }
 
 function changePolylineCurveSegments(delta) {
-  return changePolylineCurveSegmentsImpl(delta, getPolylineDeps());
+  return changePolylineCurveSegmentsImpl(delta, getPolylineDeps(), getLastCanvasPointerPoint());
 }
 
 function getPolylineVertexAt(point) {
