@@ -39,6 +39,11 @@ import {
   registerStyleSettings
 } from "./preview-style.js";
 import {
+  configurePreviewGraphicsForFoundry,
+  destroyPreviewGraphics,
+  preparePreviewGraphics
+} from "./preview-graphics.js";
+import {
   applyCubicWalls as applyCubicWallsImpl,
   cancelCubicEditingForDeletedWall as cancelCubicEditingForDeletedWallImpl,
   changeCubicSegments as changeCubicSegmentsImpl,
@@ -3378,51 +3383,13 @@ function configureRectanglePreviewInteraction(graphics) {
 }
 
 function prepareRectanglePreviewGraphics(layer) {
-  if (!layer?.preview) return null;
-  if (!rectangleState.graphics || rectangleState.graphics._destroyed) {
-    rectangleState.graphics = new PIXI.Graphics();
-    configurePreviewGraphicsForFoundry(rectangleState.graphics);
-    layer.preview.addChild(rectangleState.graphics);
-    configureRectanglePreviewInteraction(rectangleState.graphics);
-  } else if (!rectangleState.graphics.parent) {
-    configurePreviewGraphicsForFoundry(rectangleState.graphics);
-    layer.preview.addChild(rectangleState.graphics);
-    configureRectanglePreviewInteraction(rectangleState.graphics);
-  } else {
-    configurePreviewGraphicsForFoundry(rectangleState.graphics);
-  }
-
-  try {
-    rectangleState.graphics.clear();
-  } catch (error) {
-    try {
-      destroyRectanglePreviewGraphics();
-      rectangleState.graphics = new PIXI.Graphics();
-      configurePreviewGraphicsForFoundry(rectangleState.graphics);
-      layer.preview.addChild(rectangleState.graphics);
-      configureRectanglePreviewInteraction(rectangleState.graphics);
-      rectangleState.graphics.clear();
-    } catch (_recoveryError) {
-      destroyRectanglePreviewGraphics();
-      rectangleState.graphics = null;
-      return null;
-    }
-  }
-  return rectangleState.graphics;
-}
-
-function configurePreviewGraphicsForFoundry(graphics) {
-  if (!graphics || graphics._indyWallsPreviewCompatible) return;
-  graphics._onDragEnd = () => {};
-  graphics._indyWallsPreviewCompatible = true;
+  return preparePreviewGraphics(rectangleState, layer, {
+    configure: configureRectanglePreviewInteraction
+  });
 }
 
 function destroyRectanglePreviewGraphics() {
-  try {
-    rectangleState.graphics?.destroy();
-  } catch (_error) {
-    // The canvas may already have invalidated the PIXI object during scene teardown.
-  }
+  destroyPreviewGraphics(rectangleState);
 }
 
 function drawRectangleInteractionHits(graphics, style) {

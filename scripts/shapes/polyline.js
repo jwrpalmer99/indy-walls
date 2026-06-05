@@ -1,3 +1,8 @@
+import {
+  destroyPreviewGraphics,
+  preparePreviewGraphics
+} from "../preview-graphics.js";
+
 export const POLYLINE_TOOL = "indyPolylineWall";
 export const POLYLINE_FLAG = "polyline";
 export const POLYLINE_EDIT_BUTTONS_ID = "indy-walls-polyline-edit-buttons";
@@ -413,7 +418,7 @@ export function drawPolylinePreview(deps) {
   const layer = canvas?.walls;
   if (!layer) return;
 
-  const graphics = preparePolylinePreviewGraphics(layer);
+  const graphics = preparePreviewGraphics(polylineState, layer);
   if (!graphics) return;
   deps.setPolylineEditingState(polylineState.placed);
   if (!polylineState.placed) return;
@@ -848,54 +853,9 @@ export function clearPolylinePreview(deps) {
   polylineState.closed = false;
   polylineState.previewPoint = null;
   polylineState.points = [];
-  destroyPolylinePreviewGraphics();
+  destroyPreviewGraphics(polylineState);
   polylineState.graphics = null;
   deps.setPolylineEditingState(false);
-}
-
-export function preparePolylinePreviewGraphics(layer) {
-  if (!layer?.preview) return null;
-  if (!polylineState.graphics || polylineState.graphics._destroyed) {
-    polylineState.graphics = new PIXI.Graphics();
-    configurePolylinePreviewGraphics(polylineState.graphics);
-    layer.preview.addChild(polylineState.graphics);
-  } else if (!polylineState.graphics.parent) {
-    configurePolylinePreviewGraphics(polylineState.graphics);
-    layer.preview.addChild(polylineState.graphics);
-  } else {
-    configurePolylinePreviewGraphics(polylineState.graphics);
-  }
-
-  try {
-    polylineState.graphics.clear();
-  } catch (error) {
-    try {
-      destroyPolylinePreviewGraphics();
-      polylineState.graphics = new PIXI.Graphics();
-      configurePolylinePreviewGraphics(polylineState.graphics);
-      layer.preview.addChild(polylineState.graphics);
-      polylineState.graphics.clear();
-    } catch (_recoveryError) {
-      destroyPolylinePreviewGraphics();
-      polylineState.graphics = null;
-      return null;
-    }
-  }
-  return polylineState.graphics;
-}
-
-export function configurePolylinePreviewGraphics(graphics) {
-  if (!graphics || graphics._indyWallsPreviewCompatible) return;
-  graphics._onDragEnd = () => {};
-  graphics._indyWallsPreviewCompatible = true;
-}
-
-export function destroyPolylinePreviewGraphics() {
-  try {
-    polylineState.graphics?.destroy();
-  } catch (_error) {
-    // The canvas may already have invalidated the PIXI object during scene teardown.
-  }
 }
 
 export function cancelPolylineEditingForDeletedWall(wallDocument, deps) {

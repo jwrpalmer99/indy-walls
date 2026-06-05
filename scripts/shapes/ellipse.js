@@ -1,3 +1,8 @@
+import {
+  destroyPreviewGraphics,
+  preparePreviewGraphics
+} from "../preview-graphics.js";
+
 export const ELLIPSE_TOOL = "indyEllipseWall";
 export const ELLIPSE_FLAG = "ellipse";
 export const ELLIPSE_EDIT_BUTTONS_ID = "indy-walls-ellipse-edit-buttons";
@@ -164,7 +169,7 @@ export function drawEllipsePreview(deps) {
   const layer = canvas?.walls;
   if (!layer) return;
 
-  const graphics = prepareEllipsePreviewGraphics(layer);
+  const graphics = preparePreviewGraphics(ellipseState, layer);
   if (!graphics) return;
   deps.setEllipseEditingState(ellipseState.placed);
   if (!ellipseState.placed) return;
@@ -366,54 +371,9 @@ export function clearEllipsePreview(deps) {
   ellipseState.wallTypeBySegment = {};
   ellipseState.rotation = 0;
   ellipseState.segmentGaps = [];
-  destroyEllipsePreviewGraphics();
+  destroyPreviewGraphics(ellipseState);
   ellipseState.graphics = null;
   deps.setEllipseEditingState(false);
-}
-
-export function prepareEllipsePreviewGraphics(layer) {
-  if (!layer?.preview) return null;
-  if (!ellipseState.graphics || ellipseState.graphics._destroyed) {
-    ellipseState.graphics = new PIXI.Graphics();
-    configureEllipsePreviewGraphics(ellipseState.graphics);
-    layer.preview.addChild(ellipseState.graphics);
-  } else if (!ellipseState.graphics.parent) {
-    configureEllipsePreviewGraphics(ellipseState.graphics);
-    layer.preview.addChild(ellipseState.graphics);
-  } else {
-    configureEllipsePreviewGraphics(ellipseState.graphics);
-  }
-
-  try {
-    ellipseState.graphics.clear();
-  } catch (error) {
-    try {
-      destroyEllipsePreviewGraphics();
-      ellipseState.graphics = new PIXI.Graphics();
-      configureEllipsePreviewGraphics(ellipseState.graphics);
-      layer.preview.addChild(ellipseState.graphics);
-      ellipseState.graphics.clear();
-    } catch (_recoveryError) {
-      destroyEllipsePreviewGraphics();
-      ellipseState.graphics = null;
-      return null;
-    }
-  }
-  return ellipseState.graphics;
-}
-
-export function configureEllipsePreviewGraphics(graphics) {
-  if (!graphics || graphics._indyWallsPreviewCompatible) return;
-  graphics._onDragEnd = () => {};
-  graphics._indyWallsPreviewCompatible = true;
-}
-
-export function destroyEllipsePreviewGraphics() {
-  try {
-    ellipseState.graphics?.destroy();
-  } catch (_error) {
-    // The canvas may already have invalidated the PIXI object during scene teardown.
-  }
 }
 
 export function cancelEllipseEditingForDeletedWall(wallDocument, deps) {

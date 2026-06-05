@@ -1,3 +1,8 @@
+import {
+  destroyPreviewGraphics,
+  preparePreviewGraphics
+} from "../preview-graphics.js";
+
 export const CUBIC_TOOL = "indyCubicBezier";
 export const CUBIC_FLAG = "cubicBezier";
 export const CUBIC_EDIT_BUTTONS_ID = "indy-walls-cubic-edit-buttons";
@@ -142,7 +147,7 @@ export function drawCubicPreview(deps) {
   const layer = canvas?.walls;
   if (!layer) return;
 
-  const graphics = prepareCubicPreviewGraphics(layer);
+  const graphics = preparePreviewGraphics(cubicState, layer);
   if (!graphics) return;
   deps.setCubicEditingState(cubicState.placed);
   if (!cubicState.placed) return;
@@ -390,54 +395,9 @@ export function clearCubicPreview(deps) {
   cubicState.wallTypeBySegment = {};
   cubicState.curveMode = getCubicInitialCurveMode();
   cubicState.segmentGaps = [];
-  destroyCubicPreviewGraphics();
+  destroyPreviewGraphics(cubicState);
   cubicState.graphics = null;
   deps.setCubicEditingState(false);
-}
-
-export function prepareCubicPreviewGraphics(layer) {
-  if (!layer?.preview) return null;
-  if (!cubicState.graphics || cubicState.graphics._destroyed) {
-    cubicState.graphics = new PIXI.Graphics();
-    configureCubicPreviewGraphics(cubicState.graphics);
-    layer.preview.addChild(cubicState.graphics);
-  } else if (!cubicState.graphics.parent) {
-    configureCubicPreviewGraphics(cubicState.graphics);
-    layer.preview.addChild(cubicState.graphics);
-  } else {
-    configureCubicPreviewGraphics(cubicState.graphics);
-  }
-
-  try {
-    cubicState.graphics.clear();
-  } catch (error) {
-    try {
-      destroyCubicPreviewGraphics();
-      cubicState.graphics = new PIXI.Graphics();
-      configureCubicPreviewGraphics(cubicState.graphics);
-      layer.preview.addChild(cubicState.graphics);
-      cubicState.graphics.clear();
-    } catch (_recoveryError) {
-      destroyCubicPreviewGraphics();
-      cubicState.graphics = null;
-      return null;
-    }
-  }
-  return cubicState.graphics;
-}
-
-export function configureCubicPreviewGraphics(graphics) {
-  if (!graphics || graphics._indyWallsPreviewCompatible) return;
-  graphics._onDragEnd = () => {};
-  graphics._indyWallsPreviewCompatible = true;
-}
-
-export function destroyCubicPreviewGraphics() {
-  try {
-    cubicState.graphics?.destroy();
-  } catch (_error) {
-    // The canvas may already have invalidated the PIXI object during scene teardown.
-  }
 }
 
 export function cancelCubicEditingForDeletedWall(wallDocument, deps) {
