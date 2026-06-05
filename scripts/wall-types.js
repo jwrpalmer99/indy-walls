@@ -9,60 +9,60 @@ export const SEGMENT_WALL_TYPE_KEYBINDINGS = {
 
 export const WALL_TYPE_DATA = {
   walls: () => ({
-    light: CONST.WALL_SENSE_TYPES.NORMAL,
-    sight: CONST.WALL_SENSE_TYPES.NORMAL,
-    sound: CONST.WALL_SENSE_TYPES.NORMAL,
-    move: CONST.WALL_MOVEMENT_TYPES.NORMAL,
-    door: CONST.WALL_DOOR_TYPES.NONE,
-    ds: CONST.WALL_DOOR_STATES.CLOSED
+    light: getSenseTypes().NORMAL,
+    sight: getSenseTypes().NORMAL,
+    sound: getSenseTypes().NORMAL,
+    move: getMovementTypes().NORMAL,
+    door: getDoorTypes().NONE,
+    ds: getDoorStates().CLOSED
   }),
   terrain: () => ({
-    light: CONST.WALL_SENSE_TYPES.LIMITED,
-    sight: CONST.WALL_SENSE_TYPES.LIMITED,
-    sound: CONST.WALL_SENSE_TYPES.LIMITED,
-    move: CONST.WALL_MOVEMENT_TYPES.NORMAL,
-    door: CONST.WALL_DOOR_TYPES.NONE,
-    ds: CONST.WALL_DOOR_STATES.CLOSED
+    light: getSenseTypes().LIMITED,
+    sight: getSenseTypes().LIMITED,
+    sound: getSenseTypes().LIMITED,
+    move: getMovementTypes().NORMAL,
+    door: getDoorTypes().NONE,
+    ds: getDoorStates().CLOSED
   }),
   invisible: () => ({
-    light: CONST.WALL_SENSE_TYPES.NONE,
-    sight: CONST.WALL_SENSE_TYPES.NONE,
-    sound: CONST.WALL_SENSE_TYPES.NONE,
-    move: CONST.WALL_MOVEMENT_TYPES.NORMAL,
-    door: CONST.WALL_DOOR_TYPES.NONE,
-    ds: CONST.WALL_DOOR_STATES.CLOSED
+    light: getSenseTypes().NONE,
+    sight: getSenseTypes().NONE,
+    sound: getSenseTypes().NONE,
+    move: getMovementTypes().NORMAL,
+    door: getDoorTypes().NONE,
+    ds: getDoorStates().CLOSED
   }),
   ethereal: () => ({
-    light: CONST.WALL_SENSE_TYPES.NORMAL,
-    sight: CONST.WALL_SENSE_TYPES.NORMAL,
-    sound: CONST.WALL_SENSE_TYPES.NONE,
-    move: CONST.WALL_MOVEMENT_TYPES.NONE,
-    door: CONST.WALL_DOOR_TYPES.NONE,
-    ds: CONST.WALL_DOOR_STATES.CLOSED
+    light: getSenseTypes().NORMAL,
+    sight: getSenseTypes().NORMAL,
+    sound: getSenseTypes().NONE,
+    move: getMovementTypes().NONE,
+    door: getDoorTypes().NONE,
+    ds: getDoorStates().CLOSED
   }),
   windows: () => ({
-    light: CONST.WALL_SENSE_TYPES.NORMAL,
-    sight: CONST.WALL_SENSE_TYPES.NORMAL,
-    sound: CONST.WALL_SENSE_TYPES.NORMAL,
-    move: CONST.WALL_MOVEMENT_TYPES.NONE,
-    door: CONST.WALL_DOOR_TYPES.NONE,
-    ds: CONST.WALL_DOOR_STATES.CLOSED
+    light: getSenseTypes().NORMAL,
+    sight: getSenseTypes().NORMAL,
+    sound: getSenseTypes().NORMAL,
+    move: getMovementTypes().NONE,
+    door: getDoorTypes().NONE,
+    ds: getDoorStates().CLOSED
   }),
   doors: () => ({
-    light: CONST.WALL_SENSE_TYPES.NORMAL,
-    sight: CONST.WALL_SENSE_TYPES.NORMAL,
-    sound: CONST.WALL_SENSE_TYPES.NORMAL,
-    move: CONST.WALL_MOVEMENT_TYPES.NORMAL,
-    door: CONST.WALL_DOOR_TYPES.DOOR,
-    ds: CONST.WALL_DOOR_STATES.CLOSED
+    light: getSenseTypes().NORMAL,
+    sight: getSenseTypes().NORMAL,
+    sound: getSenseTypes().NORMAL,
+    move: getMovementTypes().NORMAL,
+    door: getDoorTypes().DOOR,
+    ds: getDoorStates().CLOSED
   }),
   secret: () => ({
-    light: CONST.WALL_SENSE_TYPES.NORMAL,
-    sight: CONST.WALL_SENSE_TYPES.NORMAL,
-    sound: CONST.WALL_SENSE_TYPES.NORMAL,
-    move: CONST.WALL_MOVEMENT_TYPES.NORMAL,
-    door: CONST.WALL_DOOR_TYPES.SECRET,
-    ds: CONST.WALL_DOOR_STATES.CLOSED
+    light: getSenseTypes().NORMAL,
+    sight: getSenseTypes().NORMAL,
+    sound: getSenseTypes().NORMAL,
+    move: getMovementTypes().NORMAL,
+    door: getDoorTypes().SECRET,
+    ds: getDoorStates().CLOSED
   })
 };
 
@@ -94,9 +94,9 @@ export function getSegmentWallData(state, key) {
 }
 
 export function getWallTypeToolFromDocument(wallDocument) {
-  const senses = CONST.WALL_SENSE_TYPES;
-  const movement = CONST.WALL_MOVEMENT_TYPES;
-  const doors = CONST.WALL_DOOR_TYPES;
+  const senses = getSenseTypes();
+  const movement = getMovementTypes();
+  const doors = getDoorTypes();
   const {light, sight, sound, move, door} = wallDocument;
 
   if (door === doors.DOOR) return "doors";
@@ -112,4 +112,20 @@ export function getWallTypeToolFromDocument(wallDocument) {
   if ((light === senses.NORMAL) && (sight === senses.NORMAL) && (sound === senses.NORMAL)
     && (move === movement.NORMAL)) return "walls";
   return null;
+}
+
+export function getSenseTypes() {
+  return CONST.EDGE_SENSE_TYPES ?? CONST.WALL_SENSE_TYPES;
+}
+
+export function getMovementTypes() {
+  return CONST.EDGE_MOVEMENT_TYPES ?? CONST.WALL_MOVEMENT_TYPES;
+}
+
+export function getDoorTypes() {
+  return CONST.WALL_DOOR_TYPES;
+}
+
+export function getDoorStates() {
+  return CONST.WALL_DOOR_STATES;
 }
