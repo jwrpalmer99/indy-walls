@@ -100,6 +100,7 @@ import {
   getDefaultRectangleSideRatios,
   getRectangleBounds,
   getRectangleBoundsSides,
+  getRectangleCornerHandles,
   getRectangleRatioSpacing,
   getRectangleSegmentIndexAt,
   getRectangleSegmentKey,
@@ -2045,7 +2046,7 @@ function getEditorDomDragHit(event) {
       move: false,
       coordinateLabel: label,
       hitPoint: point,
-      editorPoint: rectangleState.handles[handle]
+      editorPoint: getRectangleCornerHandlePoint(handle)
     });
     const vertex = getRectangleVertexAt(point);
     if (vertex) return withDomPointerDragData(event, {
@@ -3202,15 +3203,18 @@ function getRectangleHandleAt(point) {
   const radius = getRectangleCornerHitRadius(style);
   let bestIndex = null;
   let bestDistance = Infinity;
-  for (let i = 0; i < rectangleState.handles.length; i++) {
-    const handle = rectangleState.handles[i];
-    const distance = Math.hypot(handle.x - point.x, handle.y - point.y);
+  for (const handle of getRectangleCornerHandles()) {
+    const distance = Math.hypot(handle.point.x - point.x, handle.point.y - point.y);
     if (distance <= radius && distance < bestDistance) {
-      bestIndex = i;
+      bestIndex = handle.index;
       bestDistance = distance;
     }
   }
   return bestIndex;
+}
+
+function getRectangleCornerHandlePoint(index) {
+  return getRectangleCornerHandles().find((handle) => handle.index === index)?.point ?? null;
 }
 
 function getRectangleVertexAt(point) {
@@ -3380,19 +3384,19 @@ function drawRectanglePreview() {
     graphics.lineTo(b.x, b.y);
   }
 
-  const [a, b] = rectangleState.handles;
   const bounds = getRectangleBounds();
   drawRectangleBoundsGuide(graphics, bounds, style);
 
   for (const {a: start} of segments) {
     drawPreviewVertex(graphics, start, style);
   }
-  drawPreviewVertex(graphics, segments.at(-1)?.b ?? a, style);
+  drawPreviewVertex(graphics, segments.at(-1)?.b ?? rectangleState.handles[0], style);
   for (const vertex of getRectangleSideVertices()) {
     drawRectangleSplitVertex(graphics, vertex, style);
   }
-  drawEndpoint(graphics, a, style);
-  drawEndpoint(graphics, b, style);
+  for (const handle of getRectangleCornerHandles()) {
+    drawEndpoint(graphics, handle.point, style);
+  }
   drawMoveHandle(graphics, getEditorShapeCenter(RECTANGLE_TOOL), style);
 }
 
@@ -3497,8 +3501,8 @@ function getRectangleCornerHitRadius(style=getPreviewStyle()) {
 function isNearRectangleCorner(point) {
   if (!rectangleState.placed) return false;
   const radius = getRectangleCornerHitRadius();
-  return rectangleState.handles.some((handle) => {
-    return Math.hypot(handle.x - point.x, handle.y - point.y) <= radius;
+  return getRectangleCornerHandles().some((handle) => {
+    return Math.hypot(handle.point.x - point.x, handle.point.y - point.y) <= radius;
   });
 }
 

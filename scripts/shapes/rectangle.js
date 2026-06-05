@@ -54,7 +54,19 @@ export const rectangleState = {
 };
 
 export function setRectangleHandle(index, point) {
-  rectangleState.handles[index] = {x: point.x, y: point.y};
+  if (index === 0 || index === 1) {
+    rectangleState.handles[index] = {x: point.x, y: point.y};
+    return;
+  }
+
+  const [a, b] = rectangleState.handles;
+  if (index === 2) {
+    rectangleState.handles[0] = {x: point.x, y: a.y};
+    rectangleState.handles[1] = {x: b.x, y: point.y};
+  } else if (index === 3) {
+    rectangleState.handles[0] = {x: a.x, y: point.y};
+    rectangleState.handles[1] = {x: point.x, y: b.y};
+  }
 }
 
 export function setRectangleVertex(vertex, point) {
@@ -82,6 +94,16 @@ export function getRectangleBounds() {
     width: maxX - minX,
     height: maxY - minY
   };
+}
+
+export function getRectangleCornerHandles() {
+  const [a, b] = rectangleState.handles;
+  return [
+    {index: 0, point: a},
+    {index: 1, point: b},
+    {index: 2, point: {x: a.x, y: b.y}},
+    {index: 3, point: {x: b.x, y: a.y}}
+  ];
 }
 
 export function getDefaultRectangleSideRatios() {
