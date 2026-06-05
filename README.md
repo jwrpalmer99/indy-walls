@@ -8,6 +8,10 @@ Compatibility:
 - Minimum Foundry VTT version: 13
 - Verified Foundry VTT version: 14
 
+Required dependencies:
+
+- [libWrapper](https://github.com/ruipin/fvtt-lib-wrapper) (`lib-wrapper`) is required for coordinated wrapping of Foundry wall interaction handlers.
+
 Optional dependencies:
 
 - [lib - ColorSettings](https://github.com/ardittristan/VTTColorSettings) (`colorsettings`) is recommended for color picker controls in the module settings. Indy Walls still works without it and falls back to plain hex text fields.

@@ -13,6 +13,12 @@
   "manifest": "#{MANIFEST}#",
   "download": "#{DOWNLOAD}#",
   "relationships": {
+    "requires": [
+      {
+        "id": "lib-wrapper",
+        "type": "module"
+      }
+    ],
     "recommends": [
       {
         "id": "colorsettings",
@@ -20,7 +26,6 @@
       }
     ]
   },
-  "socket": true,
   "styles": ["styles/indy-walls.css"],
   "languages": [
     {

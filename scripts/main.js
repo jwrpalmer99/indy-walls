@@ -210,10 +210,12 @@ const lastCanvasPointerState = {
 };
 let copiedEditorShape = null;
 let activePreviewRedrawFrame = null;
+let wallsLayerWrappersRegistered = false;
 
 const hiddenEditWalls = new Map();
 const rectangleCanvasClickViews = new WeakSet();
 const editorDomDragViews = new WeakSet();
+const wallObjectWrapperTargets = new Set();
 
 Hooks.once("init", () => {
   configurePreviewStyle({moduleId: MODULE_ID, onChange: redrawActivePreview});
@@ -247,7 +249,7 @@ Hooks.once("init", () => {
   registerStyleSettings();
   registerSegmentWallTypeKeybindings();
 
-  patchWallsLayer();
+  registerLibWrapperPatches();
   registerWallTypeControlShortcuts();
   registerCurveEditorShortcuts();
   registerControlKeyTracking();
@@ -589,17 +591,21 @@ function registerWallTypeControlShortcuts() {
   }, {capture: true});
 }
 
+function registerLibWrapperPatches() {
+  if (globalThis.libWrapper) {
+    patchWallsLayer();
+    return;
+  }
+  Hooks.once("libWrapper.Ready", () => patchWallsLayer());
+}
+
 function patchWallsLayer() {
   const WallsLayer = CONFIG.Canvas.layers.walls?.layerClass;
-  if (!WallsLayer || WallsLayer.prototype._indyWallsCubicPatched) return;
+  if (!WallsLayer || wallsLayerWrappersRegistered) return;
+  if (!isLibWrapperReady()) return;
+  if (!WallsLayer.prototype?._onDragLeftStart) return;
 
-  const originalDragStart = WallsLayer.prototype._onDragLeftStart;
-  const originalDragMove = WallsLayer.prototype._onDragLeftMove;
-  const originalDragDrop = WallsLayer.prototype._onDragLeftDrop;
-  const originalDragCancel = WallsLayer.prototype._onDragLeftCancel;
-  const originalMouseWheel = WallsLayer.prototype._onMouseWheel;
-
-  WallsLayer.prototype._onDragLeftStart = function(event) {
+  libWrapper.register(MODULE_ID, "CONFIG.Canvas.layers.walls.layerClass.prototype._onDragLeftStart", function(wrapped, event) {
     debugShapeSelection("walls layer drag left start", {
       ctrl: isControlInteraction(event),
       activeTool: game.activeTool,
@@ -607,7 +613,7 @@ function patchWallsLayer() {
     });
 
     if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive() && !isPolylineToolActive()) {
-      return originalDragStart.call(this, event);
+      return wrapped(event);
     }
     if (isPolylineToolActive()) {
       consumeCanvasInteraction(event);
@@ -743,11 +749,11 @@ function patchWallsLayer() {
     }
 
     drawCubicPreview();
-  };
+  }, libWrapper.MIXED);
 
-  WallsLayer.prototype._onDragLeftMove = function(event) {
+  libWrapper.register(MODULE_ID, "CONFIG.Canvas.layers.walls.layerClass.prototype._onDragLeftMove", function(wrapped, event) {
     if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive() && !isPolylineToolActive()) {
-      return originalDragMove.call(this, event);
+      return wrapped(event);
     }
     if (isPolylineToolActive()) return;
 
@@ -799,9 +805,9 @@ function patchWallsLayer() {
 
     cubicState.placed = true;
     drawCubicPreview();
-  };
+  }, libWrapper.MIXED);
 
-  WallsLayer.prototype._onDragLeftDrop = function(event) {
+  libWrapper.register(MODULE_ID, "CONFIG.Canvas.layers.walls.layerClass.prototype._onDragLeftDrop", function(wrapped, event) {
     debugShapeSelection("walls layer drag left drop", {
       activeTool: game.activeTool,
       editorActive: isAnyEditorToolActive(),
@@ -814,7 +820,7 @@ function patchWallsLayer() {
       polylineDraggingCurveHandle: polylineState.draggingCurveHandle
     });
     if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive() && !isPolylineToolActive()) {
-      return originalDragDrop.call(this, event);
+      return wrapped(event);
     }
     if (isPolylineToolActive()) {
       event.interactionData.clearPreviewContainer = false;
@@ -852,9 +858,9 @@ function patchWallsLayer() {
     commitEditorOperation(cubicState);
     markSuppressCubicSegmentClick();
     drawCubicPreview();
-  };
+  }, libWrapper.MIXED);
 
-  WallsLayer.prototype._onDragLeftCancel = function(event) {
+  libWrapper.register(MODULE_ID, "CONFIG.Canvas.layers.walls.layerClass.prototype._onDragLeftCancel", function(wrapped, event) {
     debugShapeSelection("walls layer drag left cancel", {
       activeTool: game.activeTool,
       editorActive: isAnyEditorToolActive(),
@@ -866,7 +872,7 @@ function patchWallsLayer() {
       polylineDraggingVertex: polylineState.draggingVertex
     });
     if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive() && !isPolylineToolActive()) {
-      return originalDragCancel.call(this, event);
+      return wrapped(event);
     }
     if (isPolylineToolActive()) {
       event.interactionData.clearPreviewContainer = false;
@@ -904,21 +910,27 @@ function patchWallsLayer() {
     cancelEditorOperation(cubicState);
     markSuppressCubicSegmentClick();
     drawCubicPreview();
-  };
+  }, libWrapper.MIXED);
 
-  WallsLayer.prototype._onMouseWheel = function(event) {
+  libWrapper.register(MODULE_ID, "CONFIG.Canvas.layers.walls.layerClass.prototype._onMouseWheel", function(wrapped, event) {
     if (!getActiveEditorState()?.placed || !event.ctrlKey) {
-      return originalMouseWheel.call(this, event);
+      return wrapped(event);
     }
 
     event.preventDefault();
     const delta = Math.sign(event.deltaY ?? event.delta);
     changeActiveSegments(delta < 0 ? 1 : -1);
-  };
+  }, libWrapper.MIXED);
 
-  WallsLayer.prototype._indyWallsCubicPatched = true;
+  wallsLayerWrappersRegistered = true;
 
   patchAvailableWallObjectInteractions();
+}
+
+function isLibWrapperReady() {
+  if (globalThis.libWrapper) return true;
+  ui.notifications?.error("Indy Walls requires the libWrapper module to be installed and active.");
+  return false;
 }
 
 function patchAvailableWallObjectInteractions() {
@@ -936,23 +948,21 @@ function patchWallObjectInteractions(WallClass) {
     debugShapeSelection("patchWallObjectInteractions skipped: no WallClass");
     return;
   }
-  if (WallClass.prototype._indyWallsObjectPatched) {
-    debugShapeSelection("patchWallObjectInteractions skipped: already patched", {
-      wallClassName: WallClass.name
-    });
-    return;
-  }
+  if (!isLibWrapperReady()) return;
+  if (!CONFIG.Wall?.objectClass?.prototype) return;
 
   for (const method of ["_onDragLeftStart", "_onClickLeft"]) {
-    const original = WallClass.prototype[method];
-    WallClass.prototype[method] = function(event) {
+    if (!CONFIG.Wall.objectClass.prototype[method]) continue;
+    const target = `CONFIG.Wall.objectClass.prototype.${method}`;
+    if (wallObjectWrapperTargets.has(target)) continue;
+    libWrapper.register(MODULE_ID, target, function(wrapped, event) {
       const editorActive = isAnyEditorToolActive();
       debugShapeSelection("wall object event", {
         method,
         wallId: this.document?.id ?? this.id,
         ctrl: isControlInteraction(event),
         hasIndyShapeFlag: hasIndyShapeFlag(this.document),
-        hasOriginal: !!original,
+        hasOriginal: !!wrapped,
         editorActive
       });
 
@@ -962,18 +972,18 @@ function patchWallObjectInteractions(WallClass) {
         return;
       }
 
-      if (!editorActive) return original?.call(this, event);
+      if (!editorActive) return wrapped(event);
 
       if (method === "_onDragLeftStart" && shouldRouteWallObjectDragStartToEditor(event)) {
         consumeCanvasInteraction(event);
         return canvas?.walls?._onDragLeftStart?.(event);
       }
 
-      return original?.call(this, event);
-    };
+      return wrapped(event);
+    }, libWrapper.MIXED);
+    wallObjectWrapperTargets.add(target);
   }
 
-  WallClass.prototype._indyWallsObjectPatched = true;
   debugShapeSelection("patchWallObjectInteractions patched", {
     wallClassName: WallClass.name
   });
