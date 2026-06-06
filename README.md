@@ -74,6 +74,10 @@ The Wall Controls include a Convert to Indy Walls button for GMs. It scans plain
 
 The inline tolerance sliders and matching stored settings control how aggressively rectangle, ellipse, arc, and Bezier fits are accepted. The default value of `1` keeps the automatic scene-size-derived tolerance; lower values are stricter, and higher values, up to `10`, allow looser fits.
 
+### Clean Up Walls
+
+The Wall Controls include a Clean Up Walls button for GMs. It snaps nearby plain Foundry wall endpoints together using the wall cleanup snap tolerance module setting, deletes walls that collapse to zero length, and removes duplicate wall lines when their wall data matches. Existing Indy shape walls are skipped so their saved shape metadata is not desynced.
+
 ### Preview Styling
 
 Module settings include client-side controls for the editor preview wall color and width, per-type segment preview colors, regular vertex color and size, active vertex color, endpoint color and size, Bezier handle color and size, center handle color and size, outline color and width, and the active Indy shape tool button highlight color, glow, and border width.

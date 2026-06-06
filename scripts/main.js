@@ -22,6 +22,7 @@ import {
   convertSceneWallsToIndyWalls as convertSceneWallsToIndyWallsImpl
 } from "./conversion.js";
 import {drawDoorGlyphForSegment} from "./door-glyphs.js";
+import {cleanupSceneWalls as cleanupSceneWallsImpl} from "./wall-cleanup.js";
 import {
   configureInteractionHelpers,
   consumeCanvasInteraction,
@@ -187,7 +188,9 @@ const RECTANGLE_CONVERSION_TOLERANCE_SETTING = "rectangleConversionTolerance";
 const ELLIPSE_CONVERSION_TOLERANCE_SETTING = "ellipseConversionTolerance";
 const ARC_CONVERSION_TOLERANCE_SETTING = "arcConversionTolerance";
 const BEZIER_CONVERSION_TOLERANCE_SETTING = "bezierConversionTolerance";
+const WALL_CLEANUP_TOLERANCE_SETTING = "wallCleanupTolerance";
 const CONVERT_TO_INDY_TOOL = "indyConvertToIndyWalls";
+const CLEANUP_WALLS_TOOL = "indyCleanupWalls";
 const shapeLoadState = {
   allowControlWallLoad: false
 };
@@ -281,6 +284,7 @@ Hooks.once("init", () => {
   registerConversionToleranceSetting(ELLIPSE_CONVERSION_TOLERANCE_SETTING, "EllipseConversionTolerance");
   registerConversionToleranceSetting(ARC_CONVERSION_TOLERANCE_SETTING, "ArcConversionTolerance");
   registerConversionToleranceSetting(BEZIER_CONVERSION_TOLERANCE_SETTING, "BezierConversionTolerance");
+  registerWallCleanupSettings();
   registerActiveToolHighlightSettings();
   registerStyleSettings();
   registerSegmentWallTypeKeybindings();
@@ -324,6 +328,18 @@ function registerConversionToleranceSetting(setting, label) {
     type: Number,
     default: 1,
     range: {min: 0, max: 10, step: 0.05}
+  });
+}
+
+function registerWallCleanupSettings() {
+  game.settings.register(MODULE_ID, WALL_CLEANUP_TOLERANCE_SETTING, {
+    name: game.i18n.localize("indy-walls.Settings.WallCleanupTolerance.Name"),
+    hint: game.i18n.localize("indy-walls.Settings.WallCleanupTolerance.Hint"),
+    scope: "world",
+    config: true,
+    type: Number,
+    default: 8,
+    range: {min: 0, max: 100, step: 1}
   });
 }
 
@@ -608,6 +624,24 @@ Hooks.on("getSceneControlButtons", (controls) => {
       ]
     }
   };
+
+  wallTools[CLEANUP_WALLS_TOOL] = {
+    name: CLEANUP_WALLS_TOOL,
+    order: 18,
+    title: "indy-walls.Controls.CleanupWalls",
+    icon: "fa-solid fa-broom",
+    button: true,
+    onClick: () => cleanupSceneWalls(),
+    onChange: (_event, active) => {
+      if (active) cleanupSceneWalls();
+    },
+    toolclip: {
+      heading: "indy-walls.Controls.CleanupWalls",
+      items: [
+        {paragraph: "indy-walls.Tooltips.CleanupWalls"}
+      ]
+    }
+  };
 });
 
 Hooks.on("renderSceneControls", () => {
@@ -678,6 +712,12 @@ async function updateSelectedWalls(toolName) {
   });
 
   await canvas.scene.updateEmbeddedDocuments("Wall", updates);
+}
+
+function cleanupSceneWalls() {
+  cancelConversionPreview();
+  const tolerance = clamp(Number(game.settings.get(MODULE_ID, WALL_CLEANUP_TOLERANCE_SETTING)) || 0, 0, 100);
+  return cleanupSceneWallsImpl({moduleId: MODULE_ID, tolerance});
 }
 
 function registerWallTypeControlShortcuts() {
