@@ -51,3 +51,5 @@ export function destroyPreviewGraphics(state) {
     // The canvas may already have invalidated the PIXI object during scene teardown.
   }
 }
+
+

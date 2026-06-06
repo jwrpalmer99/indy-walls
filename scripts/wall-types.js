@@ -1,3 +1,5 @@
+import {mergePreservedWallData} from "./wall-preservation.js";
+
 export const SEGMENT_WALL_TYPE_KEYBINDINGS = {
   walls: {label: "Normal", key: "KeyX"},
   doors: {label: "Door", key: "KeyD"},
@@ -66,6 +68,8 @@ export const WALL_TYPE_DATA = {
   })
 };
 
+const WALL_TYPE_FIELDS = ["light", "sight", "sound", "move", "door"];
+
 const WALL_TYPE_TOOL_ALIASES = {
   wall: "walls",
   normal: "walls",
@@ -90,7 +94,20 @@ export function getWallTypeToolName(toolName) {
 
 export function getSegmentWallData(state, key) {
   const tool = state?.wallTypeBySegment?.[key] ?? state?.wallTypeTool ?? "walls";
-  return WALL_TYPE_DATA[tool]?.() ?? WALL_TYPE_DATA.walls();
+  const data = WALL_TYPE_DATA[tool]?.() ?? WALL_TYPE_DATA.walls();
+  const typePatch = getWallTypePatch(tool) ?? getWallTypePatch("walls");
+  return mergePreservedWallData(data, state, key, typePatch);
+}
+
+export function getWallTypePatch(toolName) {
+  const data = WALL_TYPE_DATA[toolName]?.();
+  if (!data) return null;
+
+  const patch = {};
+  for (const key of WALL_TYPE_FIELDS) {
+    if (key in data) patch[key] = data[key];
+  }
+  return patch;
 }
 
 export function getWallTypeToolFromDocument(wallDocument) {
@@ -129,3 +146,5 @@ export function getDoorTypes() {
 export function getDoorStates() {
   return CONST.WALL_DOOR_STATES;
 }
+
+

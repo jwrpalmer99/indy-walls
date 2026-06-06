@@ -180,3 +180,5 @@ export function drawMoveHandle(graphics, point, style=getPreviewStyle()) {
 export function getSplitVertexHitRadius(style=getPreviewStyle()) {
   return getScaledRadius(style.splitVertexSize + (style.outlineWidth / 2));
 }
+
+

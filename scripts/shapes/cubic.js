@@ -27,6 +27,7 @@ export const cubicState = {
   pendingUndoSnapshot: null,
   wallTypeTool: "walls",
   wallTypeBySegment: {},
+  wallDataBySegment: {},
   curveMode: CUBIC_CURVE_BEZIER,
   lastSavedCurveMode: CUBIC_CURVE_BEZIER,
   curveModeMemory: {},
@@ -350,6 +351,7 @@ export async function applyCubicWalls(deps) {
       ...wallData,
       c,
       flags: {
+        ...(wallData.flags ?? {}),
         [deps.MODULE_ID]: {
           [CUBIC_FLAG]: {
             curveId,
@@ -360,6 +362,7 @@ export async function applyCubicWalls(deps) {
             segments: cubicState.segments,
             segmentGaps,
             wallTypeBySegment: deps.cloneWallTypeBySegment(cubicState.wallTypeBySegment),
+            wallDataBySegment: deps.cloneWallDataBySegment(cubicState.wallDataBySegment),
             wallTypeTool: cubicState.wallTypeTool
           }
         }
@@ -399,6 +402,7 @@ export function clearCubicPreview(deps) {
   cubicState.curveId = null;
   cubicState.wallIds = [];
   cubicState.wallTypeBySegment = {};
+  cubicState.wallDataBySegment = {};
   cubicState.curveMode = getCubicInitialCurveMode();
   cubicState.curveModeMemory = {};
   cubicState.segmentGaps = [];
@@ -447,6 +451,10 @@ export function loadCubicCurveFromWall(wall, deps) {
     ...deps.cloneWallTypeBySegment(cubicData.wallTypeBySegment),
     ...deps.getShapeWallTypeByIndexedFlag(cubicState.wallIds, CUBIC_FLAG)
   };
+  cubicState.wallDataBySegment = {
+    ...deps.cloneWallDataBySegment(cubicData.wallDataBySegment),
+    ...deps.getShapeWallDataByIndexedFlag(cubicState.wallIds, CUBIC_FLAG)
+  };
 
   canvas.walls.activate({tool: CUBIC_TOOL});
   deps.hideEditSessionWalls(cubicState.wallIds);
@@ -481,3 +489,5 @@ function cloneCubicHandles(source=cubicState.handles) {
 export function getExistingCurveWallIds() {
   return cubicState.wallIds.filter((id) => canvas.scene.walls.has(id));
 }
+
+

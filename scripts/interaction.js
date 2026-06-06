@@ -194,3 +194,5 @@ function addUniqueInteractionPoint(points, label, point) {
   );
   if (!duplicate) points.push({label, point});
 }
+
+

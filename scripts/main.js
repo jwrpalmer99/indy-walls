@@ -159,11 +159,15 @@ import {
 } from "./shapes/polyline.js";
 import {
   getSegmentWallData,
+  getWallTypePatch,
   getWallTypeToolFromDocument,
   getWallTypeToolName,
-  SEGMENT_WALL_TYPE_KEYBINDINGS,
-  WALL_TYPE_DATA
+  SEGMENT_WALL_TYPE_KEYBINDINGS
 } from "./wall-types.js";
+import {
+  cloneWallDataBySegment,
+  getPreservedWallDataFromDocument
+} from "./wall-preservation.js";
 
 const MODULE_ID = "indy-walls";
 const QUICK_WALL_TYPE_SETTING = "quickWallTypeChange";
@@ -415,10 +419,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
     tool.onChange = async (event, active) => {
       originalOnChange?.(event, active);
       if (!active) return;
-      cubicState.wallTypeTool = toolName;
-      ellipseState.wallTypeTool = toolName;
-      rectangleState.wallTypeTool = toolName;
-      polylineState.wallTypeTool = toolName;
+      setAllShapeWallTypeTools(toolName);
       if (isControlInteraction(event)) await updateSelectedWalls(toolName);
     };
     tool._indyWallsWrapped = true;
@@ -572,22 +573,30 @@ async function updateSelectedWalls(toolName) {
   const selectedWalls = canvas?.walls?.controlled ?? [];
   if (!selectedWalls.length) return;
 
-  const wallData = WALL_TYPE_DATA[toolName]?.();
-  if (!wallData) return;
+  const wallTypePatch = getWallTypePatch(toolName);
+  if (!wallTypePatch) return;
 
   const updates = selectedWalls.map((wall) => {
     const update = {
       _id: wall.document.id,
-      ...wallData
+      ...wallTypePatch
     };
     const cubicData = wall.document.getFlag(MODULE_ID, CUBIC_FLAG);
-    if (cubicData) update[`flags.${MODULE_ID}.${CUBIC_FLAG}.wallTypeTool`] = toolName;
+    if (cubicData) {
+      update[`flags.${MODULE_ID}.${CUBIC_FLAG}.wallTypeTool`] = toolName;
+    }
     const ellipseData = wall.document.getFlag(MODULE_ID, ELLIPSE_FLAG);
-    if (ellipseData) update[`flags.${MODULE_ID}.${ELLIPSE_FLAG}.wallTypeTool`] = toolName;
+    if (ellipseData) {
+      update[`flags.${MODULE_ID}.${ELLIPSE_FLAG}.wallTypeTool`] = toolName;
+    }
     const rectangleData = wall.document.getFlag(MODULE_ID, RECTANGLE_FLAG);
-    if (rectangleData) update[`flags.${MODULE_ID}.${RECTANGLE_FLAG}.wallTypeTool`] = toolName;
+    if (rectangleData) {
+      update[`flags.${MODULE_ID}.${RECTANGLE_FLAG}.wallTypeTool`] = toolName;
+    }
     const polylineData = wall.document.getFlag(MODULE_ID, POLYLINE_FLAG);
-    if (polylineData) update[`flags.${MODULE_ID}.${POLYLINE_FLAG}.wallTypeTool`] = toolName;
+    if (polylineData) {
+      update[`flags.${MODULE_ID}.${POLYLINE_FLAG}.wallTypeTool`] = toolName;
+    }
     return update;
   });
 
@@ -607,12 +616,18 @@ function registerWallTypeControlShortcuts() {
 
     event.preventDefault();
     event.stopPropagation();
-    cubicState.wallTypeTool = toolName;
-    ellipseState.wallTypeTool = toolName;
-    rectangleState.wallTypeTool = toolName;
-    polylineState.wallTypeTool = toolName;
+    setAllShapeWallTypeTools(toolName);
     updateSelectedWalls(toolName);
   }, {capture: true});
+}
+
+function setAllShapeWallTypeTools(toolName) {
+  for (const state of [cubicState, ellipseState, rectangleState, polylineState]) setShapeWallTypeTool(state, toolName);
+}
+
+function setShapeWallTypeTool(state, toolName) {
+  if (!state || state.wallTypeTool === toolName) return;
+  state.wallTypeTool = toolName;
 }
 
 function registerLibWrapperPatches() {
@@ -676,6 +691,7 @@ function patchWallsLayer() {
         ellipseState.ellipseId = null;
         ellipseState.wallIds = [];
         ellipseState.wallTypeBySegment = {};
+        ellipseState.wallDataBySegment = {};
         ellipseState.rotation = 0;
         ellipseState.segmentGaps = [];
         setEllipseHandle(0, point);
@@ -735,6 +751,7 @@ function patchWallsLayer() {
         rectangleState.rectangleId = null;
         rectangleState.wallIds = [];
         rectangleState.wallTypeBySegment = {};
+        rectangleState.wallDataBySegment = {};
         rectangleState.sideRatios = getDefaultRectangleSideRatios();
         rectangleState.sideEnabled = getDefaultRectangleSideEnabled();
         rectangleState.sideGaps = getDefaultRectangleSideGaps();
@@ -760,6 +777,7 @@ function patchWallsLayer() {
       cubicState.curveId = null;
       cubicState.wallIds = [];
       cubicState.wallTypeBySegment = {};
+      cubicState.wallDataBySegment = {};
       cubicState.curveMode = getCubicInitialCurveMode();
       cubicState.curveModeMemory = {};
       cubicState.segmentGaps = [];
@@ -2145,6 +2163,7 @@ function initializeCubicDomPlacement(point) {
   cubicState.curveId = null;
   cubicState.wallIds = [];
   cubicState.wallTypeBySegment = {};
+  cubicState.wallDataBySegment = {};
   cubicState.curveMode = getCubicInitialCurveMode();
   cubicState.curveModeMemory = {};
   cubicState.segmentGaps = [];
@@ -2164,6 +2183,7 @@ function initializeEllipseDomPlacement(point) {
   ellipseState.ellipseId = null;
   ellipseState.wallIds = [];
   ellipseState.wallTypeBySegment = {};
+  ellipseState.wallDataBySegment = {};
   ellipseState.rotation = 0;
   ellipseState.segmentGaps = [];
   setEllipseHandle(0, point);
@@ -2180,6 +2200,7 @@ function initializeRectangleDomPlacement(point) {
   rectangleState.rectangleId = null;
   rectangleState.wallIds = [];
   rectangleState.wallTypeBySegment = {};
+  rectangleState.wallDataBySegment = {};
   rectangleState.sideRatios = getDefaultRectangleSideRatios();
   rectangleState.sideEnabled = getDefaultRectangleSideEnabled();
   rectangleState.sideGaps = getDefaultRectangleSideGaps();
@@ -2775,7 +2796,7 @@ function changeActiveSegments(delta) {
 }
 
 async function changeHoveredSegmentWallType(toolName) {
-  if (!WALL_TYPE_DATA[toolName] || isEditableTarget(document.activeElement)) return false;
+  if (!getWallTypePatch(toolName) || isEditableTarget(document.activeElement)) return false;
 
   const state = getActiveEditorState();
   const point = getLastCanvasPointerPoint();
@@ -2832,12 +2853,12 @@ async function changeHoveredFoundryWallType(toolName, point=null) {
   }
   if (getWallTypeToolFromDocument(wall.document) === toolName) return true;
 
-  const wallData = WALL_TYPE_DATA[toolName]?.();
-  if (!wallData) return false;
+  const wallTypePatch = getWallTypePatch(toolName);
+  if (!wallTypePatch) return false;
 
   await canvas.scene.updateEmbeddedDocuments("Wall", [{
     _id: wall.document.id,
-    ...wallData
+    ...wallTypePatch
   }]);
   debugShapeSelection("changed hovered Foundry wall type", {
     toolName,
@@ -3012,6 +3033,7 @@ function getEditorSnapshot(state) {
       segments: cubicState.segments,
       segmentGaps: [...cubicState.segmentGaps],
       wallTypeBySegment: cloneWallTypeBySegment(cubicState.wallTypeBySegment),
+      wallDataBySegment: cloneWallDataBySegment(cubicState.wallDataBySegment),
       wallTypeTool: cubicState.wallTypeTool
     };
   }
@@ -3024,6 +3046,7 @@ function getEditorSnapshot(state) {
       rotation: ellipseState.rotation,
       segmentGaps: [...ellipseState.segmentGaps],
       wallTypeBySegment: cloneWallTypeBySegment(ellipseState.wallTypeBySegment),
+      wallDataBySegment: cloneWallDataBySegment(ellipseState.wallDataBySegment),
       wallTypeTool: ellipseState.wallTypeTool
     };
   }
@@ -3040,6 +3063,7 @@ function getEditorSnapshot(state) {
       curveSegmentsBySegment: clonePolylineCurveSegmentsBySegment(polylineState.curveSegmentsBySegment),
       segmentModeMemory: clonePolylineSegmentModeMemory(polylineState.segmentModeMemory),
       wallTypeBySegment: cloneWallTypeBySegment(polylineState.wallTypeBySegment),
+      wallDataBySegment: cloneWallDataBySegment(polylineState.wallDataBySegment),
       wallTypeTool: polylineState.wallTypeTool
     };
   }
@@ -3052,6 +3076,7 @@ function getEditorSnapshot(state) {
     sideEnabled: cloneRectangleSideEnabled(rectangleState.sideEnabled),
     sideGaps: cloneRectangleSideGaps(rectangleState.sideGaps),
     wallTypeBySegment: cloneWallTypeBySegment(rectangleState.wallTypeBySegment),
+    wallDataBySegment: cloneWallDataBySegment(rectangleState.wallDataBySegment),
     wallTypeTool: rectangleState.wallTypeTool
   };
 }
@@ -3065,6 +3090,7 @@ function restoreEditorSnapshot(state, snapshot) {
     cubicState.segments = snapshot.segments;
     cubicState.segmentGaps = reconcileCubicSegmentGaps(snapshot.segmentGaps, cubicState.segments);
     cubicState.wallTypeBySegment = cloneWallTypeBySegment(snapshot.wallTypeBySegment);
+    cubicState.wallDataBySegment = cloneWallDataBySegment(snapshot.wallDataBySegment);
     cubicState.wallTypeTool = snapshot.wallTypeTool;
     cubicState.draggingHandle = null;
     cubicState.initializing = false;
@@ -3079,6 +3105,7 @@ function restoreEditorSnapshot(state, snapshot) {
     ellipseState.rotation = Number(snapshot.rotation) || 0;
     ellipseState.segmentGaps = reconcileEllipseSegmentGaps(snapshot.segmentGaps, ellipseState.segments);
     ellipseState.wallTypeBySegment = cloneWallTypeBySegment(snapshot.wallTypeBySegment);
+    ellipseState.wallDataBySegment = cloneWallDataBySegment(snapshot.wallDataBySegment);
     ellipseState.wallTypeTool = snapshot.wallTypeTool;
     ellipseState.draggingHandle = null;
     ellipseState.draggingVertex = null;
@@ -3099,6 +3126,7 @@ function restoreEditorSnapshot(state, snapshot) {
     polylineState.curveSegmentsBySegment = clonePolylineCurveSegmentsBySegment(snapshot.curveSegmentsBySegment);
     polylineState.segmentModeMemory = clonePolylineSegmentModeMemory(snapshot.segmentModeMemory);
     polylineState.wallTypeBySegment = cloneWallTypeBySegment(snapshot.wallTypeBySegment);
+    polylineState.wallDataBySegment = cloneWallDataBySegment(snapshot.wallDataBySegment);
     polylineState.wallTypeTool = snapshot.wallTypeTool;
     polylineState.draggingVertex = null;
     polylineState.draggingCurveHandle = null;
@@ -3115,6 +3143,7 @@ function restoreEditorSnapshot(state, snapshot) {
   rectangleState.sideEnabled = cloneRectangleSideEnabled(snapshot.sideEnabled);
   rectangleState.sideGaps = cloneRectangleSideGaps(snapshot.sideGaps);
   rectangleState.wallTypeBySegment = cloneWallTypeBySegment(snapshot.wallTypeBySegment);
+  rectangleState.wallDataBySegment = cloneWallDataBySegment(snapshot.wallDataBySegment);
   rectangleState.wallTypeTool = snapshot.wallTypeTool;
   rectangleState.draggingHandle = null;
   rectangleState.draggingVertex = null;
@@ -3437,6 +3466,19 @@ function getShapeWallTypeByIndexedFlag(wallIds, flagName) {
   return result;
 }
 
+function getShapeWallDataByIndexedFlag(wallIds, flagName) {
+  const result = {};
+  for (const id of wallIds ?? []) {
+    const wallDocument = getWallDocumentById(id);
+    const data = wallDocument?.getFlag(MODULE_ID, flagName);
+    const index = Number(data?.index);
+    if (!Number.isInteger(index)) continue;
+    const preserved = getPreservedWallDataFromDocument(wallDocument, MODULE_ID);
+    if (preserved !== null) result[String(index)] = preserved;
+  }
+  return result;
+}
+
 function getRectangleWallTypeBySegment(wallIds) {
   const result = {};
   const segments = getRectangleSegments();
@@ -3450,6 +3492,23 @@ function getRectangleWallTypeBySegment(wallIds) {
     if (!key) continue;
     const tool = getWallTypeToolFromDocument(wallDocument) ?? data?.wallTypeTool;
     if (tool) result[key] = tool;
+  }
+  return result;
+}
+
+function getRectangleWallDataBySegment(wallIds) {
+  const result = {};
+  const segments = getRectangleSegments();
+  for (const id of wallIds ?? []) {
+    const wallDocument = getWallDocumentById(id);
+    const data = wallDocument?.getFlag(MODULE_ID, RECTANGLE_FLAG);
+    const explicitKey = data?.side && Number.isInteger(Number(data?.segmentIndex))
+      ? getRectangleSegmentKey({side: data.side, index: Number(data.segmentIndex)})
+      : null;
+    const key = explicitKey ?? getSegmentKeyFromWallCoordinates(segments, wallDocument?.c);
+    if (!key) continue;
+    const preserved = getPreservedWallDataFromDocument(wallDocument, MODULE_ID);
+    if (preserved !== null) result[key] = preserved;
   }
   return result;
 }
@@ -3709,6 +3768,7 @@ function getPolylineDeps() {
     clearEditorHistory,
     clearPolylinePreview,
     clonePoints,
+    cloneWallDataBySegment,
     cloneWallTypeBySegment,
     debugShapeSelection,
     deactivateOtherShapeStates,
@@ -3726,6 +3786,7 @@ function getPolylineDeps() {
     getSegmentKey,
     getSegmentPreviewColor,
     getSegmentWallData,
+    getShapeWallDataByIndexedFlag,
     getShapeWallTypeByIndexedFlag,
     getSplitVertexHitRadius,
     getWallTypeToolFromDocument,
@@ -3754,6 +3815,7 @@ function getCubicDeps() {
     clearCubicPreview,
     clearEditorHistory,
     clonePoints,
+    cloneWallDataBySegment,
     cloneWallTypeBySegment,
     deactivateOtherShapeStates,
     drawBezierHandle,
@@ -3770,6 +3832,7 @@ function getCubicDeps() {
     getSegmentKey,
     getSegmentPreviewColor,
     getSegmentWallData,
+    getShapeWallDataByIndexedFlag,
     getShapeWallTypeByIndexedFlag,
     getWallTypeToolFromDocument,
     hideEditSessionWalls,
@@ -3789,6 +3852,7 @@ function getEllipseDeps() {
     clearEditorHistory,
     clearEllipsePreview,
     clonePoints,
+    cloneWallDataBySegment,
     cloneWallTypeBySegment,
     deactivateOtherShapeStates,
     drawEndpoint,
@@ -3803,6 +3867,7 @@ function getEllipseDeps() {
     getSegmentKey,
     getSegmentPreviewColor,
     getSegmentWallData,
+    getShapeWallDataByIndexedFlag,
     getShapeWallTypeByIndexedFlag,
     getSplitVertexHitRadius,
     getWallTypeToolFromDocument,
@@ -3823,6 +3888,7 @@ function getRectangleDeps() {
     clearEditorHistory,
     clearRectanglePreview,
     clonePoints,
+    cloneWallDataBySegment,
     cloneWallTypeBySegment,
     debugInteractionManagers,
     deactivateOtherShapeStates,
@@ -3836,6 +3902,7 @@ function getRectangleDeps() {
     getEditorShapeCenter,
     getEditorSnapshot,
     getPreviewStyle,
+    getRectangleWallDataBySegment,
     getRectangleWallTypeBySegment,
     getScaledRadius,
     getSegmentKey,
@@ -4089,3 +4156,5 @@ function getExistingRectangleWallIds() {
 function getExistingPolylineWallIds() {
   return getExistingPolylineWallIdsImpl();
 }
+
+

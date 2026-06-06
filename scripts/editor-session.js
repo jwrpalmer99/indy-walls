@@ -42,3 +42,5 @@ export function snapshotsEqual(a, b) {
 export function cloneWallTypeBySegment(source={}) {
   return {...(source ?? {})};
 }
+
+

@@ -22,6 +22,7 @@ export const rectangleState = {
   pendingUndoSnapshot: null,
   wallTypeTool: "walls",
   wallTypeBySegment: {},
+  wallDataBySegment: {},
   sideSegments: {
     top: DEFAULT_RECTANGLE_SEGMENTS,
     right: DEFAULT_RECTANGLE_SEGMENTS,
@@ -238,6 +239,13 @@ export function getRectangleSegmentKey(segment) {
   return `${segment.side}:${segment.index}`;
 }
 
+function parseRectangleSegmentKey(key) {
+  const [side, indexText] = String(key).split(":");
+  const index = Number(indexText);
+  if (!["top", "right", "bottom", "left"].includes(side) || !Number.isInteger(index) || index < 0) return null;
+  return {side, index};
+}
+
 export function getSideSegments(side, start, end) {
   if (!rectangleState.sideEnabled[side]) return [];
 
@@ -439,9 +447,12 @@ function addRectangleVertexAt({side, ratio}, deps) {
   if (ratio < spacing || ratio > (1 - spacing)) return false;
   if (ratios.some((existing) => Math.abs(existing - ratio) < spacing)) return false;
 
+  const splitIndex = getRectangleSegmentIndexAt(side, ratio);
   rectangleState.sideSegments[side] += 1;
   rectangleState.sideRatios[side] = reconcileRectangleSideRatios([...ratios, ratio], rectangleState.sideSegments[side]);
-  rectangleState.sideGaps[side] = reconcileRectangleSideGaps(rectangleState.sideGaps[side], rectangleState.sideSegments[side]);
+  rectangleState.sideGaps[side] = shiftRectangleSideGapsForInsert(rectangleState.sideGaps[side], splitIndex, rectangleState.sideSegments[side]);
+  rectangleState.wallTypeBySegment = shiftRectangleWallTypesForInsert(rectangleState.wallTypeBySegment, side, splitIndex, rectangleState.sideSegments[side]);
+  rectangleState.wallDataBySegment = shiftRectangleWallTypesForInsert(rectangleState.wallDataBySegment, side, splitIndex, rectangleState.sideSegments[side]);
   deps.drawRectanglePreview();
   return true;
 }
@@ -478,12 +489,82 @@ export function removeRectangleVertex(vertex, deps) {
   if (ratios[index] === undefined) return false;
 
   ratios.splice(index, 1);
+  const segmentCountBefore = rectangleState.sideSegments[side];
   rectangleState.sideSegments[side] -= 1;
   rectangleState.sideRatios[side] = reconcileRectangleSideRatios(ratios, rectangleState.sideSegments[side]);
-  rectangleState.sideGaps[side] = reconcileRectangleSideGaps(rectangleState.sideGaps[side], rectangleState.sideSegments[side]);
+  rectangleState.sideGaps[side] = shiftRectangleSideGapsForRemove(rectangleState.sideGaps[side], index, segmentCountBefore);
+  rectangleState.wallTypeBySegment = shiftRectangleWallTypesForRemove(rectangleState.wallTypeBySegment, side, index, segmentCountBefore);
+  rectangleState.wallDataBySegment = shiftRectangleWallTypesForRemove(rectangleState.wallDataBySegment, side, index, segmentCountBefore);
   rectangleState.hoveredVertex = null;
   deps.drawRectanglePreview();
   return true;
+}
+
+function shiftRectangleSideGapsForInsert(source, splitIndex, segmentCountAfter) {
+  return [...new Set((source ?? []).map((gap) => {
+    const index = Number(gap);
+    if (!Number.isInteger(index)) return null;
+    return index >= splitIndex ? index + 1 : index;
+  }).filter((gap) => gap !== null))]
+    .filter((gap) => gap >= 0 && gap < segmentCountAfter)
+    .sort((a, b) => a - b);
+}
+
+function shiftRectangleSideGapsForRemove(source, vertexIndex, segmentCountBefore) {
+  const segmentCountAfter = Math.max(segmentCountBefore - 1, 0);
+  const result = new Set();
+  for (const gap of source ?? []) {
+    const index = Number(gap);
+    if (!Number.isInteger(index)) continue;
+    if (index < vertexIndex) result.add(index);
+    else if (index === vertexIndex || index === vertexIndex + 1) result.add(vertexIndex);
+    else result.add(index - 1);
+  }
+  return [...result]
+    .filter((gap) => gap >= 0 && gap < segmentCountAfter)
+    .sort((a, b) => a - b);
+}
+
+function shiftRectangleWallTypesForInsert(source={}, side, splitIndex, segmentCountAfter) {
+  const result = {};
+  const splitKey = `${side}:${splitIndex}`;
+  const splitType = source?.[splitKey];
+  for (const [key, value] of Object.entries(source ?? {})) {
+    const parsed = parseRectangleSegmentKey(key);
+    if (!parsed) continue;
+    if (parsed.side !== side) {
+      result[key] = value;
+      continue;
+    }
+    const nextIndex = parsed.index > splitIndex ? parsed.index + 1 : parsed.index;
+    if (nextIndex >= 0 && nextIndex < segmentCountAfter) result[`${side}:${nextIndex}`] = value;
+  }
+  if (splitType && splitIndex + 1 < segmentCountAfter) result[`${side}:${splitIndex + 1}`] = splitType;
+  return result;
+}
+
+function shiftRectangleWallTypesForRemove(source={}, side, vertexIndex, segmentCountBefore) {
+  const result = {};
+  const segmentCountAfter = Math.max(segmentCountBefore - 1, 0);
+  const leftType = source?.[`${side}:${vertexIndex}`];
+  const rightType = source?.[`${side}:${vertexIndex + 1}`];
+  for (const [key, value] of Object.entries(source ?? {})) {
+    const parsed = parseRectangleSegmentKey(key);
+    if (!parsed) continue;
+    if (parsed.side !== side) {
+      result[key] = value;
+      continue;
+    }
+    if (parsed.index < vertexIndex) result[key] = value;
+    else if (parsed.index === vertexIndex || parsed.index === vertexIndex + 1) continue;
+    else {
+      const nextIndex = parsed.index - 1;
+      if (nextIndex >= 0 && nextIndex < segmentCountAfter) result[`${side}:${nextIndex}`] = value;
+    }
+  }
+  const mergedType = leftType ?? rightType;
+  if (mergedType && vertexIndex >= 0 && vertexIndex < segmentCountAfter) result[`${side}:${vertexIndex}`] = mergedType;
+  return result;
 }
 
 function disableRectangleSide(side, deps) {
@@ -493,9 +574,15 @@ function disableRectangleSide(side, deps) {
   rectangleState.sideSegments[side] = DEFAULT_RECTANGLE_SEGMENTS;
   rectangleState.sideRatios[side] = [];
   rectangleState.sideGaps[side] = [];
+  rectangleState.wallTypeBySegment = removeRectangleWallTypesForSide(rectangleState.wallTypeBySegment, side);
+  rectangleState.wallDataBySegment = removeRectangleWallTypesForSide(rectangleState.wallDataBySegment, side);
   rectangleState.hoveredVertex = null;
   deps.drawRectanglePreview();
   return true;
+}
+
+function removeRectangleWallTypesForSide(source={}, side) {
+  return Object.fromEntries(Object.entries(source ?? {}).filter(([key]) => parseRectangleSegmentKey(key)?.side !== side));
 }
 
 export function drawRectanglePreview(deps) {
@@ -626,6 +713,7 @@ export async function applyRectangleWalls(deps) {
       ...wallData,
       c,
       flags: {
+        ...(wallData.flags ?? {}),
         [deps.MODULE_ID]: {
           [RECTANGLE_FLAG]: {
             rectangleId,
@@ -639,6 +727,7 @@ export async function applyRectangleWalls(deps) {
             sideEnabled: cloneRectangleSideEnabled(rectangleState.sideEnabled),
             sideGaps: cloneRectangleSideGaps(rectangleState.sideGaps),
             wallTypeBySegment: deps.cloneWallTypeBySegment(rectangleState.wallTypeBySegment),
+            wallDataBySegment: deps.cloneWallDataBySegment(rectangleState.wallDataBySegment),
             wallTypeTool: rectangleState.wallTypeTool
           }
         }
@@ -678,6 +767,7 @@ export function clearRectanglePreview(deps) {
   rectangleState.rectangleId = null;
   rectangleState.wallIds = [];
   rectangleState.wallTypeBySegment = {};
+  rectangleState.wallDataBySegment = {};
   rectangleState.sideRatios = getDefaultRectangleSideRatios();
   rectangleState.sideEnabled = getDefaultRectangleSideEnabled();
   rectangleState.sideGaps = getDefaultRectangleSideGaps();
@@ -726,6 +816,10 @@ export function loadRectangleFromWall(wall, deps) {
     ...deps.cloneWallTypeBySegment(rectangleData.wallTypeBySegment),
     ...deps.getRectangleWallTypeBySegment(rectangleState.wallIds)
   };
+  rectangleState.wallDataBySegment = {
+    ...deps.cloneWallDataBySegment(rectangleData.wallDataBySegment),
+    ...deps.getRectangleWallDataBySegment(rectangleState.wallIds)
+  };
 
   canvas.walls.activate({tool: RECTANGLE_TOOL});
   deps.hideEditSessionWalls(rectangleState.wallIds);
@@ -766,3 +860,5 @@ function normalizeRectangleSideGaps(source={}, sideSegments=normalizeRectangleSi
     left: reconcileRectangleSideGaps(source.left, sideSegments.left)
   };
 }
+
+

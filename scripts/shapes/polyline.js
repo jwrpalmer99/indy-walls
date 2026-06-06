@@ -31,6 +31,7 @@ export const polylineState = {
   pendingUndoSnapshot: null,
   wallTypeTool: "walls",
   wallTypeBySegment: {},
+  wallDataBySegment: {},
   segmentGaps: [],
   segmentCurves: {},
   curveSegments: DEFAULT_POLYLINE_CURVE_SEGMENTS,
@@ -259,10 +260,15 @@ function clampPolylineCurveSegmentCount(value, deps={}) {
   return clampFn(Number(value) || DEFAULT_POLYLINE_CURVE_SEGMENTS, 2, 64);
 }
 
-function shiftPolylineGapsForInsert(source, splitIndex) {
+function shiftPolylineGapsForInsert(source, splitIndex, splitCurveIndex=null) {
   return [...new Set((source ?? []).map((gap) => {
     const {index, curveIndex} = parsePolylineGapKey(gap);
-    if (!Number.isInteger(index) || index < 0 || index === splitIndex) return null;
+    if (!Number.isInteger(index) || index < 0) return null;
+    if (index === splitIndex) {
+      if (!Number.isInteger(curveIndex) || curveIndex < 0) return formatPolylineGapKey(index + 1);
+      if (!Number.isInteger(splitCurveIndex) || splitCurveIndex < 0) return null;
+      return formatPolylineGapKey(curveIndex <= splitCurveIndex ? index : index + 1);
+    }
     return formatPolylineGapKey(index > splitIndex ? index + 1 : index, curveIndex);
   }).filter((gap) => gap !== null))]
     .sort(comparePolylineGapKeys);
@@ -573,6 +579,7 @@ export function handlePolylineCanvasClick(event, deps) {
     polylineState.polylineId = null;
     polylineState.wallIds = [];
     polylineState.wallTypeBySegment = {};
+    polylineState.wallDataBySegment = {};
     polylineState.segmentGaps = [];
     polylineState.segmentCurves = {};
     polylineState.curveSegments = DEFAULT_POLYLINE_CURVE_SEGMENTS;
@@ -1096,9 +1103,13 @@ function addPolylineVertexAtSegment(index, point, deps) {
   const insertIndex = polylineState.closed && index === polylineState.points.length - 1
     ? polylineState.points.length
     : index + 1;
+  const splitSegment = getPolylineSegmentAt(point, deps);
+  const splitSegmentIndex = Number(splitSegment?.sourceIndex ?? splitSegment?.index);
+  const splitCurveIndex = splitSegmentIndex === index ? Number(splitSegment.curveIndex) : null;
   polylineState.points.splice(insertIndex, 0, {x: point.x, y: point.y});
-  polylineState.segmentGaps = shiftPolylineGapsForInsert(polylineState.segmentGaps, index);
+  polylineState.segmentGaps = shiftPolylineGapsForInsert(polylineState.segmentGaps, index, splitCurveIndex);
   polylineState.wallTypeBySegment = shiftPolylineWallTypesForInsert(polylineState.wallTypeBySegment, index);
+  polylineState.wallDataBySegment = shiftPolylineWallTypesForInsert(polylineState.wallDataBySegment, index);
   polylineState.segmentCurves = shiftPolylineCurvesForInsert(polylineState.segmentCurves, index);
   polylineState.curveSegmentsBySegment = shiftPolylineCurveSegmentsForInsert(polylineState.curveSegmentsBySegment, index);
   polylineState.segmentModeMemory = shiftPolylineSegmentModeMemoryForInsert(polylineState.segmentModeMemory, index);
@@ -1116,6 +1127,7 @@ export function removePolylineVertex(index, deps) {
   polylineState.points.splice(index, 1);
   polylineState.segmentGaps = shiftPolylineGapsForRemove(polylineState.segmentGaps, index, pointCountBefore, closed);
   polylineState.wallTypeBySegment = shiftPolylineWallTypesForRemove(polylineState.wallTypeBySegment, index, pointCountBefore, closed);
+  polylineState.wallDataBySegment = shiftPolylineWallTypesForRemove(polylineState.wallDataBySegment, index, pointCountBefore, closed);
   polylineState.segmentCurves = shiftPolylineCurvesForRemove(polylineState.segmentCurves, index, pointCountBefore, closed);
   polylineState.curveSegmentsBySegment = shiftPolylineCurveSegmentsForRemove(polylineState.curveSegmentsBySegment, index, pointCountBefore, closed);
   polylineState.segmentModeMemory = shiftPolylineSegmentModeMemoryForRemove(polylineState.segmentModeMemory, index, pointCountBefore, closed);
@@ -1143,6 +1155,7 @@ export async function applyPolylineWalls(deps) {
       ...wallData,
       c,
       flags: {
+        ...(wallData.flags ?? {}),
         [deps.MODULE_ID]: {
           [POLYLINE_FLAG]: {
             polylineId,
@@ -1155,6 +1168,7 @@ export async function applyPolylineWalls(deps) {
             curveSegments: polylineState.curveSegments,
             curveSegmentsBySegment,
             wallTypeBySegment: deps.cloneWallTypeBySegment(polylineState.wallTypeBySegment),
+            wallDataBySegment: deps.cloneWallDataBySegment(polylineState.wallDataBySegment),
             wallTypeTool: polylineState.wallTypeTool
           }
         }
@@ -1194,6 +1208,7 @@ export function clearPolylinePreview(deps) {
   polylineState.polylineId = null;
   polylineState.wallIds = [];
   polylineState.wallTypeBySegment = {};
+  polylineState.wallDataBySegment = {};
   polylineState.segmentGaps = [];
   polylineState.segmentCurves = {};
   polylineState.curveSegments = DEFAULT_POLYLINE_CURVE_SEGMENTS;
@@ -1255,6 +1270,10 @@ export function loadPolylineFromWall(wall, deps) {
     ...deps.cloneWallTypeBySegment(polylineData.wallTypeBySegment),
     ...deps.getShapeWallTypeByIndexedFlag(polylineState.wallIds, POLYLINE_FLAG)
   };
+  polylineState.wallDataBySegment = {
+    ...deps.cloneWallDataBySegment(polylineData.wallDataBySegment),
+    ...deps.getShapeWallDataByIndexedFlag(polylineState.wallIds, POLYLINE_FLAG)
+  };
 
   canvas.walls.activate({tool: POLYLINE_TOOL});
   deps.hideEditSessionWalls(polylineState.wallIds);
@@ -1264,3 +1283,5 @@ export function loadPolylineFromWall(wall, deps) {
 export function getExistingPolylineWallIds() {
   return polylineState.wallIds.filter((id) => canvas.scene.walls.has(id));
 }
+
+

@@ -25,6 +25,7 @@ export const ellipseState = {
   pendingUndoSnapshot: null,
   wallTypeTool: "walls",
   wallTypeBySegment: {},
+  wallDataBySegment: {},
   segments: DEFAULT_ELLIPSE_SEGMENTS,
   rotation: 0,
   segmentGaps: [],
@@ -298,6 +299,7 @@ export async function applyEllipseWalls(deps) {
       ...wallData,
       c,
       flags: {
+        ...(wallData.flags ?? {}),
         [deps.MODULE_ID]: {
           [ELLIPSE_FLAG]: {
             ellipseId,
@@ -308,6 +310,7 @@ export async function applyEllipseWalls(deps) {
             rotation: ellipseState.rotation,
             segmentGaps,
             wallTypeBySegment: deps.cloneWallTypeBySegment(ellipseState.wallTypeBySegment),
+            wallDataBySegment: deps.cloneWallDataBySegment(ellipseState.wallDataBySegment),
             wallTypeTool: ellipseState.wallTypeTool
           }
         }
@@ -349,6 +352,7 @@ export function clearEllipsePreview(deps) {
   ellipseState.ellipseId = null;
   ellipseState.wallIds = [];
   ellipseState.wallTypeBySegment = {};
+  ellipseState.wallDataBySegment = {};
   ellipseState.rotation = 0;
   ellipseState.segmentGaps = [];
   destroyPreviewGraphics(ellipseState);
@@ -397,6 +401,10 @@ export function loadEllipseFromWall(wall, deps) {
     ...deps.cloneWallTypeBySegment(ellipseData.wallTypeBySegment),
     ...deps.getShapeWallTypeByIndexedFlag(ellipseState.wallIds, ELLIPSE_FLAG)
   };
+  ellipseState.wallDataBySegment = {
+    ...deps.cloneWallDataBySegment(ellipseData.wallDataBySegment),
+    ...deps.getShapeWallDataByIndexedFlag(ellipseState.wallIds, ELLIPSE_FLAG)
+  };
 
   canvas.walls.activate({tool: ELLIPSE_TOOL});
   deps.hideEditSessionWalls(ellipseState.wallIds);
@@ -406,3 +414,5 @@ export function loadEllipseFromWall(wall, deps) {
 export function getExistingEllipseWallIds() {
   return ellipseState.wallIds.filter((id) => canvas.scene.walls.has(id));
 }
+
+

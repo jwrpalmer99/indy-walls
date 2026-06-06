@@ -112,3 +112,5 @@ export function positionEditButtons({id, toolName, fallbackTop=120}) {
   controls.style.left = `${rect.right + 10}px`;
   controls.style.top = `${rect.top}px`;
 }
+
+
