@@ -449,37 +449,7 @@ function addRectangleVertexAt({side, ratio}, deps) {
 function removeRectangleVertexAt({side, ratio}, deps) {
   const ratios = getRectangleSideRatios(side);
   if (!ratios.length) return disableRectangleSide(side, deps);
-
-  const vertex = getNearestRectangleVertexOnSide(side, ratio);
-  if (vertex && isRectangleRatioWithinVertexHit(side, vertex.ratio, ratio, deps)) {
-    return removeRectangleVertex({side, index: vertex.index}, deps);
-  }
-
   return removeRectangleSegmentAt({side, ratio}, deps);
-}
-
-function isRectangleRatioWithinVertexHit(side, vertexRatio, hitRatio, deps) {
-  const bounds = getRectangleBounds();
-  const [, start, end] = getRectangleBoundsSides(bounds).find(([name]) => name === side) ?? [];
-  if (!start || !end) return false;
-  const sideLength = Math.hypot(end.x - start.x, end.y - start.y);
-  if (!sideLength) return false;
-  return Math.abs(vertexRatio - hitRatio) * sideLength <= getRectangleVertexHitRadius(deps);
-}
-
-function getNearestRectangleVertexOnSide(side, ratio) {
-  const ratios = getRectangleSideRatios(side);
-  let nearestIndex = 0;
-  let nearestDistance = Math.abs(ratios[0] - ratio);
-  for (let i = 1; i < ratios.length; i++) {
-    const distance = Math.abs(ratios[i] - ratio);
-    if (distance < nearestDistance) {
-      nearestIndex = i;
-      nearestDistance = distance;
-    }
-  }
-
-  return {index: nearestIndex, ratio: ratios[nearestIndex]};
 }
 
 function removeRectangleSegmentAt({side, ratio}, deps) {
