@@ -613,7 +613,6 @@ Hooks.on("getSceneControlButtons", (controls) => {
     title: "indy-walls.Controls.ConvertToIndyWalls",
     icon: "fa-solid fa-wand-magic-sparkles",
     button: true,
-    onClick: () => convertSceneWallsToIndyWallsImpl(),
     onChange: (_event, active) => {
       if (active) convertSceneWallsToIndyWallsImpl();
     },
@@ -631,7 +630,6 @@ Hooks.on("getSceneControlButtons", (controls) => {
     title: "indy-walls.Controls.CleanupWalls",
     icon: "fa-solid fa-broom",
     button: true,
-    onClick: () => cleanupSceneWalls(),
     onChange: (_event, active) => {
       if (active) cleanupSceneWalls();
     },

@@ -76,7 +76,7 @@ The inline tolerance sliders and matching stored settings control how aggressive
 
 ### Clean Up Walls
 
-The Wall Controls include a Clean Up Walls button for GMs. It snaps nearby plain Foundry wall endpoints together using the wall cleanup snap tolerance module setting, deletes walls that collapse to zero length, and removes duplicate wall lines when their wall data matches. Existing Indy shape walls are skipped so their saved shape metadata is not desynced.
+The Wall Controls include a Clean Up Walls button for GMs. It snaps nearby wall endpoints together using the wall cleanup snap tolerance module setting, deletes walls that collapse to zero length, and removes duplicate wall lines when their wall data matches. For Indy shapes, saved endpoint or vertex metadata is updated where possible so the editor reopens on the cleaned points, but curve handles are left unchanged.
 
 ### Preview Styling
 

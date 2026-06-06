@@ -183,7 +183,7 @@
       "Rectangle": "Click-drag to place the rectangle. Left-click a side to add a vertex, restore a gapped segment, or restore a removed side. Alt-click a segment to create a gap, Alt-click a vertex to remove it, drag vertices to reposition them, Enter creates walls, and Escape cancels.",
       "Polyline": "Click to place each vertex. Left-click a segment to add a point or restore a hidden segment, right-click a segment to cycle line/arc/Bezier modes, drag curve handles to shape arcs and Beziers, Ctrl-scroll changes curved segment detail, Alt-click hides segments or removes points, Enter creates walls, and Escape cancels.",
       "ConvertToIndyWalls": "Scans plain Foundry walls in the current scene and previews Indy shape metadata. Adjust tolerance, then Save to convert or Cancel to discard. Axis-aligned closed rectangles are converted to Indy rectangles first; remaining connected wall paths are converted to Indy polylines.",
-      "CleanupWalls": "Snaps nearby plain Foundry wall endpoints together using the wall cleanup tolerance setting, deletes collapsed walls, and removes duplicate lines with matching wall data. Existing Indy shape walls are skipped."
+      "CleanupWalls": "Snaps nearby wall endpoints together using the wall cleanup tolerance setting, deletes collapsed walls, and removes duplicate lines with matching wall data. Indy shape endpoint metadata is updated where possible, but curve handles are left unchanged."
     },
     "Notifications": {
       "WallTypesUpdated": "Indy Walls | Updated {count} selected wall(s).",
@@ -193,7 +193,7 @@
       "PolylineWallsCreated": "Indy Walls | Created {count} polyline wall segment(s).",
       "NoWallsToConvert": "Indy Walls | No plain walls found to convert.",
       "WallsConvertedToIndy": "Indy Walls | Converted {count} wall(s) into {rectangles} rectangle(s), {ellipses} ellipse(s), and {polylines} polyline(s).",
-      "NoWallsToClean": "Indy Walls | No plain walls found to clean.",
+      "NoWallsToClean": "Indy Walls | No walls found to clean.",
       "WallsAlreadyClean": "Indy Walls | No wall cleanup changes were needed.",
       "WallsCleaned": "Indy Walls | Cleaned walls: snapped {snapped} endpoint(s), updated {updated} wall(s), deleted {deleted} duplicate or collapsed wall(s)."
     }
