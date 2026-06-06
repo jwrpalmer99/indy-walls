@@ -6,9 +6,9 @@ const INDY_SHAPE_FLAGS = {
 };
 let cleanupSceneWallsPromise = null;
 
-export async function cleanupSceneWalls({moduleId, tolerance = 8, respectLevels = true} = {}) {
+export async function cleanupSceneWalls({moduleId, tolerance = 8, respectLevels = true, snapStandaloneTargets = false} = {}) {
   if (cleanupSceneWallsPromise) return cleanupSceneWallsPromise;
-  cleanupSceneWallsPromise = cleanupSceneWallsOnce({moduleId, tolerance, respectLevels});
+  cleanupSceneWallsPromise = cleanupSceneWallsOnce({moduleId, tolerance, respectLevels, snapStandaloneTargets});
   try {
     return await cleanupSceneWallsPromise;
   }
@@ -17,7 +17,7 @@ export async function cleanupSceneWalls({moduleId, tolerance = 8, respectLevels 
   }
 }
 
-async function cleanupSceneWallsOnce({moduleId, tolerance = 8, respectLevels = true} = {}) {
+async function cleanupSceneWallsOnce({moduleId, tolerance = 8, respectLevels = true, snapStandaloneTargets = false} = {}) {
   if (!game.user?.isGM || !canvas?.scene) return null;
 
   const wallDocuments = getWallDocuments();
@@ -27,7 +27,7 @@ async function cleanupSceneWallsOnce({moduleId, tolerance = 8, respectLevels = t
   }
 
   const records = buildWallRecords(wallDocuments, moduleId);
-  const smartResult = smartAdjustWallEndpoints(records, Math.max(0, Number(tolerance) || 0), respectLevels);
+  const smartResult = smartAdjustWallEndpoints(records, Math.max(0, Number(tolerance) || 0), respectLevels, snapStandaloneTargets);
   const splitResult = splitPlainWallsAtIntersections(records, respectLevels);
   const endpoints = buildWallEndpoints(records);
   const snapResult = snapWallEndpoints(endpoints, Math.max(0, Number(tolerance) || 0), respectLevels);
@@ -185,9 +185,11 @@ function snapWallEndpoints(endpoints, tolerance, respectLevels=true) {
   return {pointsByEndpoint, snappedEndpointCount};
 }
 
-function smartAdjustWallEndpoints(records, tolerance, respectLevels=true) {
+function smartAdjustWallEndpoints(records, tolerance, respectLevels=true, snapStandaloneTargets=false) {
   if (tolerance <= 0) return {adjustedEndpointCount: 0};
 
+  const grid = snapStandaloneTargets ? getGridSnapInfo() : null;
+  const sceneBounds = snapStandaloneTargets ? getSceneBounds() : null;
   let adjustedEndpointCount = 0;
 
   for (const record of records) {
@@ -205,6 +207,14 @@ function smartAdjustWallEndpoints(records, tolerance, respectLevels=true) {
         if (distanceToSegment <= tolerance) {
           candidates.push({point: projection.point, distance: distanceToSegment, priority: 1});
         }
+      }
+
+      if (snapStandaloneTargets) {
+        const gridPoint = getEndpointGridLineSnapPoint(endpoint, opposite, grid, tolerance);
+        if (gridPoint) candidates.push({point: gridPoint, distance: distance(endpoint, gridPoint), priority: 2});
+
+        const edgePoint = getEndpointMapEdgeSnapPoint(endpoint, opposite, sceneBounds, tolerance);
+        if (edgePoint) candidates.push({point: edgePoint, distance: distance(endpoint, edgePoint), priority: 3});
       }
 
       const best = candidates
@@ -372,6 +382,55 @@ function roundPoint(point) {
 
 function pointsAlmostEqual(a, b, epsilon=0.75) {
   return Math.hypot(a.x - b.x, a.y - b.y) <= epsilon;
+}
+
+function getEndpointGridLineSnapPoint(endpoint, opposite, grid, tolerance) {
+  if (!grid) return null;
+  const candidates = [];
+  const x = getNearestGridCoordinate(endpoint.x, grid.offsetX, grid.size);
+  const y = getNearestGridCoordinate(endpoint.y, grid.offsetY, grid.size);
+  if (Math.abs(endpoint.x - x) <= tolerance) candidates.push({x, y: endpoint.y});
+  if (Math.abs(endpoint.y - y) <= tolerance) candidates.push({x: endpoint.x, y});
+  return candidates
+    .filter((point) => !pointsAlmostEqual(point, opposite))
+    .sort((a, b) => distance(a, endpoint) - distance(b, endpoint))[0] ?? null;
+}
+
+function getEndpointMapEdgeSnapPoint(endpoint, opposite, sceneBounds, tolerance) {
+  if (!sceneBounds) return null;
+  const dx = endpoint.x - opposite.x;
+  const dy = endpoint.y - opposite.y;
+  if (Math.hypot(dx, dy) <= 0.0001) return null;
+
+  const candidates = [];
+  for (const x of [sceneBounds.minX, sceneBounds.maxX]) {
+    if (Math.abs(dx) <= 0.0001) continue;
+    const t = (x - opposite.x) / dx;
+    if (t < 1) continue;
+    const y = opposite.y + (dy * t);
+    if (y >= sceneBounds.minY - 0.001 && y <= sceneBounds.maxY + 0.001) candidates.push({x, y, distance: distance(endpoint, {x, y})});
+  }
+  for (const y of [sceneBounds.minY, sceneBounds.maxY]) {
+    if (Math.abs(dy) <= 0.0001) continue;
+    const t = (y - opposite.y) / dy;
+    if (t < 1) continue;
+    const x = opposite.x + (dx * t);
+    if (x >= sceneBounds.minX - 0.001 && x <= sceneBounds.maxX + 0.001) candidates.push({x, y, distance: distance(endpoint, {x, y})});
+  }
+
+  const best = candidates
+    .filter((candidate) => candidate.distance <= tolerance)
+    .sort((a, b) => a.distance - b.distance)[0];
+  return best ? {x: best.x, y: best.y} : null;
+}
+
+function getSceneBounds() {
+  const width = Number(canvas?.scene?.dimensions?.sceneWidth ?? canvas?.scene?.width);
+  const height = Number(canvas?.scene?.dimensions?.sceneHeight ?? canvas?.scene?.height);
+  const x = Number(canvas?.scene?.dimensions?.sceneX ?? 0) || 0;
+  const y = Number(canvas?.scene?.dimensions?.sceneY ?? 0) || 0;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+  return {minX: x, minY: y, maxX: x + width, maxY: y + height};
 }
 
 function buildCleanupPlan(records, pointsByEndpoint) {
