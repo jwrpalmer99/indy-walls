@@ -28,7 +28,8 @@
       "ArcConversionTolerance": "Arc",
       "BezierConversionTolerance": "Bezier",
       "ShapeLevels": "Indy shape levels",
-      "NoShapeLevels": "No levels"
+      "NoShapeLevels": "No levels",
+      "MixedShapeLevels": "Mixed"
     },
     "Settings": {
       "ColorPickerLabel": "Color Picker",

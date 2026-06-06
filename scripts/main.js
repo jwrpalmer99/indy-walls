@@ -2287,6 +2287,7 @@ function getEditorDomInitialPlacementHit(event) {
 
 function initializeCubicDomPlacement(point) {
   syncShapeLevelIdsFromPalette(cubicState, {force: true});
+  cubicState.levelIdsMixed = false;
   cubicState.placed = false;
   cubicState.initializing = true;
   cubicState.draggingHandle = 3;
@@ -2306,6 +2307,7 @@ function initializeCubicDomPlacement(point) {
 
 function initializeEllipseDomPlacement(point) {
   syncShapeLevelIdsFromPalette(ellipseState, {force: true});
+  ellipseState.levelIdsMixed = false;
   ellipseState.placed = false;
   ellipseState.initializing = true;
   ellipseState.initialOrigin = point;
@@ -2324,6 +2326,7 @@ function initializeEllipseDomPlacement(point) {
 
 function initializeRectangleDomPlacement(point) {
   syncShapeLevelIdsFromPalette(rectangleState, {force: true});
+  rectangleState.levelIdsMixed = false;
   rectangleState.placed = false;
   rectangleState.initializing = true;
   rectangleState.draggingHandle = 1;
@@ -3185,7 +3188,9 @@ function getEditorSnapshot(state) {
       segmentGaps: [...cubicState.segmentGaps],
       wallTypeBySegment: cloneWallTypeBySegment(cubicState.wallTypeBySegment),
       wallDataBySegment: cloneWallDataBySegment(cubicState.wallDataBySegment),
-      wallTypeTool: cubicState.wallTypeTool
+      wallTypeTool: cubicState.wallTypeTool,
+      levelIds: [...(cubicState.levelIds ?? [])],
+      levelIdsMixed: !!cubicState.levelIdsMixed
     };
   }
 
@@ -3198,7 +3203,9 @@ function getEditorSnapshot(state) {
       segmentGaps: [...ellipseState.segmentGaps],
       wallTypeBySegment: cloneWallTypeBySegment(ellipseState.wallTypeBySegment),
       wallDataBySegment: cloneWallDataBySegment(ellipseState.wallDataBySegment),
-      wallTypeTool: ellipseState.wallTypeTool
+      wallTypeTool: ellipseState.wallTypeTool,
+      levelIds: [...(ellipseState.levelIds ?? [])],
+      levelIdsMixed: !!ellipseState.levelIdsMixed
     };
   }
 
@@ -3215,7 +3222,9 @@ function getEditorSnapshot(state) {
       segmentModeMemory: clonePolylineSegmentModeMemory(polylineState.segmentModeMemory),
       wallTypeBySegment: cloneWallTypeBySegment(polylineState.wallTypeBySegment),
       wallDataBySegment: cloneWallDataBySegment(polylineState.wallDataBySegment),
-      wallTypeTool: polylineState.wallTypeTool
+      wallTypeTool: polylineState.wallTypeTool,
+      levelIds: [...(polylineState.levelIds ?? [])],
+      levelIdsMixed: !!polylineState.levelIdsMixed
     };
   }
 
@@ -3228,7 +3237,9 @@ function getEditorSnapshot(state) {
     sideGaps: cloneRectangleSideGaps(rectangleState.sideGaps),
     wallTypeBySegment: cloneWallTypeBySegment(rectangleState.wallTypeBySegment),
     wallDataBySegment: cloneWallDataBySegment(rectangleState.wallDataBySegment),
-    wallTypeTool: rectangleState.wallTypeTool
+    wallTypeTool: rectangleState.wallTypeTool,
+    levelIds: [...(rectangleState.levelIds ?? [])],
+    levelIdsMixed: !!rectangleState.levelIdsMixed
   };
 }
 
@@ -3243,8 +3254,11 @@ function restoreEditorSnapshot(state, snapshot) {
     cubicState.wallTypeBySegment = cloneWallTypeBySegment(snapshot.wallTypeBySegment);
     cubicState.wallDataBySegment = cloneWallDataBySegment(snapshot.wallDataBySegment);
     cubicState.wallTypeTool = snapshot.wallTypeTool;
+    cubicState.levelIds = normalizeLevelIds(snapshot.levelIds) ?? [];
+    cubicState.levelIdsMixed = !!snapshot.levelIdsMixed;
     cubicState.draggingHandle = null;
     cubicState.initializing = false;
+    renderAllShapeLevelControls();
     drawCubicPreview();
     return;
   }
@@ -3258,10 +3272,13 @@ function restoreEditorSnapshot(state, snapshot) {
     ellipseState.wallTypeBySegment = cloneWallTypeBySegment(snapshot.wallTypeBySegment);
     ellipseState.wallDataBySegment = cloneWallDataBySegment(snapshot.wallDataBySegment);
     ellipseState.wallTypeTool = snapshot.wallTypeTool;
+    ellipseState.levelIds = normalizeLevelIds(snapshot.levelIds) ?? [];
+    ellipseState.levelIdsMixed = !!snapshot.levelIdsMixed;
     ellipseState.draggingHandle = null;
     ellipseState.draggingVertex = null;
     ellipseState.initializing = false;
     ellipseState.initialOrigin = null;
+    renderAllShapeLevelControls();
     drawEllipsePreview();
     return;
   }
@@ -3279,10 +3296,13 @@ function restoreEditorSnapshot(state, snapshot) {
     polylineState.wallTypeBySegment = cloneWallTypeBySegment(snapshot.wallTypeBySegment);
     polylineState.wallDataBySegment = cloneWallDataBySegment(snapshot.wallDataBySegment);
     polylineState.wallTypeTool = snapshot.wallTypeTool;
+    polylineState.levelIds = normalizeLevelIds(snapshot.levelIds) ?? [];
+    polylineState.levelIdsMixed = !!snapshot.levelIdsMixed;
     polylineState.draggingVertex = null;
     polylineState.draggingCurveHandle = null;
     polylineState.hoveredVertex = null;
     polylineState.previewPoint = null;
+    renderAllShapeLevelControls();
     drawPolylinePreview();
     return;
   }
@@ -3296,10 +3316,13 @@ function restoreEditorSnapshot(state, snapshot) {
   rectangleState.wallTypeBySegment = cloneWallTypeBySegment(snapshot.wallTypeBySegment);
   rectangleState.wallDataBySegment = cloneWallDataBySegment(snapshot.wallDataBySegment);
   rectangleState.wallTypeTool = snapshot.wallTypeTool;
+  rectangleState.levelIds = normalizeLevelIds(snapshot.levelIds) ?? [];
+  rectangleState.levelIdsMixed = !!snapshot.levelIdsMixed;
   rectangleState.draggingHandle = null;
   rectangleState.draggingVertex = null;
   rectangleState.hoveredVertex = null;
   rectangleState.initializing = false;
+  renderAllShapeLevelControls();
   drawRectanglePreview();
 }
 
@@ -3690,10 +3713,13 @@ function getSegmentKey(segment) {
 
 function getSegmentWallData(state, key) {
   const paletteData = getWallPaletteWallData();
+  if (state?.levelIdsMixed) delete paletteData.levels;
   const segmentData = getSegmentWallDataImpl(state, key);
   const data = foundry.utils.mergeObject(paletteData, segmentData, {inplace: false});
-  const levelIds = getShapeLevelIds(state);
-  if (levelIds) data.levels = levelIds;
+  if (!state?.levelIdsMixed) {
+    const levelIds = getShapeLevelIds(state);
+    if (levelIds) data.levels = levelIds;
+  }
   return data;
 }
 
@@ -3720,24 +3746,51 @@ function getWallPaletteLevelIds() {
 }
 
 function getShapeLevelIds(state=getActiveEditorState()) {
+  if (state?.levelIdsMixed) return null;
   return normalizeLevelIds(state?.levelIds) ?? getWallPaletteLevelIds();
 }
 
 function setShapeLevelIds(state, levels) {
   if (!state) return;
+  state.levelIdsMixed = false;
   state.levelIds = normalizeLevelIds(levels) ?? [];
   renderAllShapeLevelControls();
 }
 
 function syncShapeLevelIdsFromPalette(state, {force=false}={}) {
   if (!state || (!force && Array.isArray(state.levelIds))) return;
+  state.levelIdsMixed = false;
   state.levelIds = getWallPaletteLevelIds();
   renderAllShapeLevelControls();
 }
 
-function syncShapeLevelIdsFromWall(state, wallDocument) {
+function syncShapeLevelIdsFromShapeWalls(state, wallIds, fallbackWallDocument=null) {
   if (!state) return;
-  state.levelIds = normalizeLevelIds(wallDocument?._source?.levels ?? wallDocument?.levels) ?? getWallPaletteLevelIds();
+  const documents = [...new Set(wallIds ?? [])]
+    .map((id) => getWallDocumentById(id))
+    .filter(Boolean);
+  if (!documents.length && fallbackWallDocument) documents.push(fallbackWallDocument);
+
+  const levelSets = documents.map((wallDocument) => getWallDocumentLevelIds(wallDocument));
+  if (!levelSets.length) {
+    state.levelIdsMixed = false;
+    state.levelIds = getWallPaletteLevelIds();
+    renderAllShapeLevelControls();
+    return;
+  }
+
+  const keys = [...new Set(levelSets.map(getLevelIdsKey))];
+  state.levelIdsMixed = keys.length > 1;
+  state.levelIds = state.levelIdsMixed ? [] : levelSets[0];
+  renderAllShapeLevelControls();
+}
+
+function getWallDocumentLevelIds(wallDocument) {
+  return normalizeLevelIds(wallDocument?._source?.levels ?? wallDocument?.levels) ?? [];
+}
+
+function getLevelIdsKey(levels) {
+  return [...(normalizeLevelIds(levels) ?? [])].sort((a, b) => a.localeCompare(b)).join("|");
 }
 
 function normalizeLevelIds(levels) {
@@ -3796,7 +3849,8 @@ function renderAllShapeLevelControls() {
 function renderShapeLevelControls(wrapper) {
   const levels = getSceneLevels();
   const state = getEditorStateForTool(wrapper.dataset.tool);
-  const selected = new Set(getShapeLevelIds(state) ?? []);
+  const mixed = !!state?.levelIdsMixed;
+  const selected = new Set(mixed ? [] : (getShapeLevelIds(state) ?? []));
   wrapper.hidden = levels.length <= 1;
 
   const summary = wrapper.querySelector(".indy-walls-level-summary");
@@ -3811,19 +3865,25 @@ function renderShapeLevelControls(wrapper) {
   const chips = document.createElement("span");
   chips.className = "indy-walls-level-chips";
   const selectedLevels = levels.filter((level) => selected.has(level.id));
-  for (const level of selectedLevels.slice(0, 3)) {
+  if (mixed) {
+    const chip = document.createElement("span");
+    chip.className = "indy-walls-level-chip indy-walls-level-chip-mixed";
+    chip.textContent = game.i18n.localize("indy-walls.Controls.MixedShapeLevels");
+    chips.append(chip);
+  }
+  for (const level of mixed ? [] : selectedLevels.slice(0, 3)) {
     const chip = document.createElement("span");
     chip.className = "indy-walls-level-chip";
     chip.textContent = level.name;
     chips.append(chip);
   }
-  if (selectedLevels.length > 3) {
+  if (!mixed && selectedLevels.length > 3) {
     const more = document.createElement("span");
     more.className = "indy-walls-level-chip";
     more.textContent = `+${selectedLevels.length - 3}`;
     chips.append(more);
   }
-  if (!selectedLevels.length) {
+  if (!mixed && !selectedLevels.length) {
     const chip = document.createElement("span");
     chip.className = "indy-walls-level-chip";
     chip.textContent = game.i18n.localize("indy-walls.Controls.NoShapeLevels");
@@ -3840,7 +3900,7 @@ function renderShapeLevelControls(wrapper) {
     checkbox.checked = selected.has(level.id);
     checkbox.addEventListener("change", (event) => {
       event.stopPropagation();
-      const next = new Set(getShapeLevelIds(state) ?? []);
+      const next = new Set(state?.levelIdsMixed ? [] : (getShapeLevelIds(state) ?? []));
       if (checkbox.checked) next.add(level.id);
       else next.delete(level.id);
       setShapeLevelIds(state, [...next]);
@@ -4012,7 +4072,10 @@ function getRectangleDeps() {
 }
 
 function handlePolylineCanvasClick(event) {
-  if (!polylineState.placed) syncShapeLevelIdsFromPalette(polylineState, {force: true});
+  if (!polylineState.placed) {
+    syncShapeLevelIdsFromPalette(polylineState, {force: true});
+    polylineState.levelIdsMixed = false;
+  }
   return handlePolylineCanvasClickImpl(event, getPolylineDeps());
 }
 
@@ -4220,23 +4283,27 @@ function cancelPolylineEditingForDeletedWall(wallDocument) {
 }
 
 function loadCubicCurveFromWall(wall) {
-  syncShapeLevelIdsFromWall(cubicState, wall?.document);
-  return loadCubicCurveFromWallImpl(wall, getCubicDeps());
+  const result = loadCubicCurveFromWallImpl(wall, getCubicDeps());
+  if (cubicState.placed) syncShapeLevelIdsFromShapeWalls(cubicState, cubicState.wallIds, wall?.document);
+  return result;
 }
 
 function loadEllipseFromWall(wall) {
-  syncShapeLevelIdsFromWall(ellipseState, wall?.document);
-  return loadEllipseFromWallImpl(wall, getEllipseDeps());
+  const result = loadEllipseFromWallImpl(wall, getEllipseDeps());
+  if (ellipseState.placed) syncShapeLevelIdsFromShapeWalls(ellipseState, ellipseState.wallIds, wall?.document);
+  return result;
 }
 
 function loadRectangleFromWall(wall) {
-  syncShapeLevelIdsFromWall(rectangleState, wall?.document);
-  return loadRectangleFromWallImpl(wall, getRectangleDeps());
+  const result = loadRectangleFromWallImpl(wall, getRectangleDeps());
+  if (rectangleState.placed) syncShapeLevelIdsFromShapeWalls(rectangleState, rectangleState.wallIds, wall?.document);
+  return result;
 }
 
 function loadPolylineFromWall(wall) {
-  syncShapeLevelIdsFromWall(polylineState, wall?.document);
-  return loadPolylineFromWallImpl(wall, getPolylineDeps());
+  const result = loadPolylineFromWallImpl(wall, getPolylineDeps());
+  if (polylineState.placed) syncShapeLevelIdsFromShapeWalls(polylineState, polylineState.wallIds, wall?.document);
+  return result;
 }
 
 function getExistingCurveWallIds() {

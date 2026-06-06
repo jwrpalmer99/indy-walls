@@ -80,6 +80,11 @@
   white-space: nowrap;
 }
 
+.indy-walls-level-chip-mixed {
+  background: rgb(255 159 0 / 20%);
+  border-color: rgb(255 159 0 / 58%);
+}
+
 .indy-walls-level-dropdown {
   background: rgb(30 30 30 / 96%);
   border: 1px solid #ff9f00;
