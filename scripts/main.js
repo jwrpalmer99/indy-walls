@@ -184,6 +184,8 @@ const ACTIVE_TOOL_HIGHLIGHT_COLOR_SETTING = "activeShapeToolHighlightColor";
 const ACTIVE_TOOL_HIGHLIGHT_GLOW_SETTING = "activeShapeToolHighlightGlow";
 const ACTIVE_TOOL_HIGHLIGHT_BORDER_WIDTH_SETTING = "activeShapeToolHighlightBorderWidth";
 const SHOW_DOOR_GLYPHS_SETTING = "showDoorGlyphsInEditor";
+const SHOW_SHORTCUT_HELP_SETTING = "showShortcutHelpInEditor";
+const SHORTCUT_HELP_POSITION_SETTING = "shortcutHelpPosition";
 const RECTANGLE_CONVERSION_TOLERANCE_SETTING = "rectangleConversionTolerance";
 const ELLIPSE_CONVERSION_TOLERANCE_SETTING = "ellipseConversionTolerance";
 const ARC_CONVERSION_TOLERANCE_SETTING = "arcConversionTolerance";
@@ -235,6 +237,7 @@ const lastCanvasPointerState = {
 const lastHoveredWallState = {
   id: null
 };
+let shortcutHelpDragState = null;
 let copiedEditorShape = null;
 let activePreviewRedrawFrame = null;
 let wallsLayerWrappersRegistered = false;
@@ -280,6 +283,21 @@ Hooks.once("init", () => {
     type: Boolean,
     default: true,
     onChange: redrawActivePreview
+  });
+  game.settings.register(MODULE_ID, SHOW_SHORTCUT_HELP_SETTING, {
+    name: game.i18n.localize("indy-walls.Settings.ShowShortcutHelpInEditor.Name"),
+    hint: game.i18n.localize("indy-walls.Settings.ShowShortcutHelpInEditor.Hint"),
+    scope: "client",
+    config: true,
+    type: Boolean,
+    default: true,
+    onChange: updateShortcutHelpVisibility
+  });
+  game.settings.register(MODULE_ID, SHORTCUT_HELP_POSITION_SETTING, {
+    scope: "client",
+    config: false,
+    type: Object,
+    default: {}
   });
   registerConversionToleranceSetting(RECTANGLE_CONVERSION_TOLERANCE_SETTING, "RectangleConversionTolerance");
   registerConversionToleranceSetting(ELLIPSE_CONVERSION_TOLERANCE_SETTING, "EllipseConversionTolerance");
@@ -662,6 +680,7 @@ Hooks.on("renderSceneControls", () => {
   positionEllipseEditButtons();
   positionRectangleEditButtons();
   positionPolylineEditButtons();
+  positionOpenShortcutHelpPanels();
 });
 
 function updateIndyToolButtonHighlights() {
@@ -3842,6 +3861,243 @@ function ensureShapeLevelControls(id, tool) {
   renderShapeLevelControls(wrapper);
 }
 
+function ensureShortcutHelpControls(id, tool) {
+  const controls = document.getElementById(id);
+  if (!controls || controls.querySelector(".indy-walls-shortcut-help")) return;
+  if (!game.settings.get(MODULE_ID, SHOW_SHORTCUT_HELP_SETTING)) return;
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "indy-walls-shortcut-help";
+  wrapper.dataset.tool = tool;
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "indy-walls-shortcut-help-button";
+  button.title = game.i18n.localize("indy-walls.Controls.ShortcutHelp");
+  button.setAttribute("aria-expanded", "false");
+  button.innerHTML = `<i class="fa-solid fa-circle-question"></i>`;
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const opening = !wrapper.classList.contains("open");
+    document.querySelectorAll(".indy-walls-shortcut-help.open").forEach((control) => {
+      if (control !== wrapper) setShortcutHelpOpen(control, false);
+    });
+    setShortcutHelpOpen(wrapper, opening);
+    button.blur();
+    if (opening) positionShortcutHelpPanel(wrapper);
+  });
+  wrapper.append(button);
+
+  const panel = document.createElement("div");
+  panel.className = "indy-walls-shortcut-help-panel";
+  wrapper.append(panel);
+
+  controls.append(wrapper);
+  renderShortcutHelpControls(wrapper);
+}
+
+function setShortcutHelpOpen(wrapper, open) {
+  wrapper.classList.toggle("open", open);
+  wrapper.querySelector(".indy-walls-shortcut-help-button")?.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function positionShortcutHelpPanel(wrapper) {
+  const button = wrapper.querySelector(".indy-walls-shortcut-help-button");
+  const panel = wrapper.querySelector(".indy-walls-shortcut-help-panel");
+  if (!button || !panel) return;
+
+  panel.style.maxHeight = `${Math.max(window.innerHeight - 16, 160)}px`;
+  const buttonRect = button.getBoundingClientRect();
+  const panelRect = panel.getBoundingClientRect();
+  const margin = 8;
+  const saved = getSavedShortcutHelpPosition();
+  if (saved) {
+    const position = clampShortcutHelpPanelPosition(saved.left, saved.top, panelRect, margin);
+    panel.style.left = `${position.left}px`;
+    panel.style.top = `${position.top}px`;
+    return;
+  }
+
+  const preferredRight = buttonRect.right + margin;
+  const preferredLeft = buttonRect.left - panelRect.width - margin;
+  const left = preferredRight + panelRect.width <= window.innerWidth - margin
+    ? preferredRight
+    : Math.max(margin, preferredLeft);
+  const top = Math.min(
+    Math.max(margin, buttonRect.top),
+    Math.max(margin, window.innerHeight - panelRect.height - margin)
+  );
+
+  panel.style.left = `${left}px`;
+  panel.style.top = `${top}px`;
+}
+
+function getSavedShortcutHelpPosition() {
+  const position = game.settings.get(MODULE_ID, SHORTCUT_HELP_POSITION_SETTING);
+  const left = Number(position?.left);
+  const top = Number(position?.top);
+  return Number.isFinite(left) && Number.isFinite(top) ? {left, top} : null;
+}
+
+function clampShortcutHelpPanelPosition(left, top, panelRect, margin=8) {
+  return {
+    left: Math.min(Math.max(margin, left), Math.max(margin, window.innerWidth - panelRect.width - margin)),
+    top: Math.min(Math.max(margin, top), Math.max(margin, window.innerHeight - panelRect.height - margin))
+  };
+}
+
+function beginShortcutHelpDrag(event, wrapper) {
+  if (event.button !== 0) return;
+  const panel = wrapper.querySelector(".indy-walls-shortcut-help-panel");
+  if (!panel) return;
+  const panelRect = panel.getBoundingClientRect();
+  shortcutHelpDragState = {
+    wrapper,
+    panel,
+    pointerId: event.pointerId,
+    offsetX: event.clientX - panelRect.left,
+    offsetY: event.clientY - panelRect.top
+  };
+  panel.classList.add("dragging");
+  window.addEventListener("pointermove", handleShortcutHelpDragMove, {capture: true});
+  window.addEventListener("pointerup", finishShortcutHelpDrag, {capture: true});
+  event.preventDefault();
+  event.stopPropagation();
+}
+
+function handleShortcutHelpDragMove(event) {
+  const state = shortcutHelpDragState;
+  if (!state || event.pointerId !== state.pointerId) return;
+  const panelRect = state.panel.getBoundingClientRect();
+  const position = clampShortcutHelpPanelPosition(event.clientX - state.offsetX, event.clientY - state.offsetY, panelRect);
+  state.panel.style.left = `${position.left}px`;
+  state.panel.style.top = `${position.top}px`;
+  event.preventDefault();
+}
+
+function finishShortcutHelpDrag(event) {
+  const state = shortcutHelpDragState;
+  if (!state || event.pointerId !== state.pointerId) return;
+  state.panel.classList.remove("dragging");
+  clearShortcutHelpDragListeners();
+  const panelRect = state.panel.getBoundingClientRect();
+  game.settings.set(MODULE_ID, SHORTCUT_HELP_POSITION_SETTING, {
+    left: Math.round(panelRect.left),
+    top: Math.round(panelRect.top)
+  });
+  shortcutHelpDragState = null;
+  event.preventDefault();
+}
+
+function cancelShortcutHelpDrag() {
+  shortcutHelpDragState?.panel?.classList.remove("dragging");
+  shortcutHelpDragState = null;
+  clearShortcutHelpDragListeners();
+}
+
+function clearShortcutHelpDragListeners() {
+  window.removeEventListener("pointermove", handleShortcutHelpDragMove, {capture: true});
+  window.removeEventListener("pointerup", finishShortcutHelpDrag, {capture: true});
+}
+
+function positionOpenShortcutHelpPanels() {
+  document.querySelectorAll(".indy-walls-shortcut-help.open").forEach(positionShortcutHelpPanel);
+}
+
+function updateShortcutHelpVisibility() {
+  if (!game.settings.get(MODULE_ID, SHOW_SHORTCUT_HELP_SETTING)) {
+    cancelShortcutHelpDrag();
+    document.querySelectorAll(".indy-walls-shortcut-help").forEach((control) => {
+      setShortcutHelpOpen(control, false);
+      control.remove();
+    });
+    return;
+  }
+
+  if (document.getElementById(CUBIC_EDIT_BUTTONS_ID)) ensureShortcutHelpControls(CUBIC_EDIT_BUTTONS_ID, CUBIC_TOOL);
+  if (document.getElementById(ELLIPSE_EDIT_BUTTONS_ID)) ensureShortcutHelpControls(ELLIPSE_EDIT_BUTTONS_ID, ELLIPSE_TOOL);
+  if (document.getElementById(RECTANGLE_EDIT_BUTTONS_ID)) ensureShortcutHelpControls(RECTANGLE_EDIT_BUTTONS_ID, RECTANGLE_TOOL);
+  if (document.getElementById(POLYLINE_EDIT_BUTTONS_ID)) ensureShortcutHelpControls(POLYLINE_EDIT_BUTTONS_ID, POLYLINE_TOOL);
+}
+
+function renderShortcutHelpControls(wrapper) {
+  const panel = wrapper.querySelector(".indy-walls-shortcut-help-panel");
+  if (!panel) return;
+  panel.innerHTML = "";
+
+  const heading = document.createElement("div");
+  heading.className = "indy-walls-shortcut-help-heading";
+  heading.textContent = game.i18n.localize(`indy-walls.Controls.${getShortcutHelpControlKey(wrapper.dataset.tool)}`);
+  heading.addEventListener("pointerdown", (event) => beginShortcutHelpDrag(event, wrapper));
+  panel.append(heading);
+
+  for (const item of getShortcutHelpItems(wrapper.dataset.tool)) {
+    const row = document.createElement("div");
+    row.className = "indy-walls-shortcut-help-row";
+
+    const key = document.createElement("kbd");
+    key.textContent = item.key;
+
+    const text = document.createElement("span");
+    text.textContent = game.i18n.localize(item.label);
+
+    row.append(key, text);
+    panel.append(row);
+  }
+}
+
+function getShortcutHelpControlKey(tool) {
+  if (tool === CUBIC_TOOL) return "CubicBezier";
+  if (tool === ELLIPSE_TOOL) return "Ellipse";
+  if (tool === RECTANGLE_TOOL) return "Rectangle";
+  if (tool === POLYLINE_TOOL) return "Polyline";
+  return "ShortcutHelp";
+}
+
+function getShortcutHelpItems(tool) {
+  const common = [
+    {key: "Enter", label: "indy-walls.Shortcuts.Save"},
+    {key: "Esc", label: "indy-walls.Shortcuts.Cancel"},
+    {key: "Ctrl+Z / Ctrl+Y", label: "indy-walls.Shortcuts.UndoRedo"},
+    {key: "Delete", label: "indy-walls.Shortcuts.DeleteShape"},
+    {key: "Wall type hotkeys", label: "indy-walls.Shortcuts.WallTypeHotkeys"},
+    {key: "Levels", label: "indy-walls.Shortcuts.Levels"}
+  ];
+  if (tool === CUBIC_TOOL) return [
+    {key: "Drag endpoints/handles", label: "indy-walls.Shortcuts.CubicDrag"},
+    {key: "Right-click curve", label: "indy-walls.Shortcuts.CubicToggleMode"},
+    {key: "Ctrl+wheel / +/-", label: "indy-walls.Shortcuts.CurveSegments"},
+    {key: "Click / Alt-click segment", label: "indy-walls.Shortcuts.SegmentShowHide"},
+    ...common
+  ];
+  if (tool === ELLIPSE_TOOL) return [
+    {key: "Drag handles/vertices", label: "indy-walls.Shortcuts.EllipseDrag"},
+    {key: "Alt while placing", label: "indy-walls.Shortcuts.EllipseCircle"},
+    {key: "Ctrl while placing", label: "indy-walls.Shortcuts.EllipseFromCenter"},
+    {key: "Ctrl+wheel / +/-", label: "indy-walls.Shortcuts.CurveSegments"},
+    {key: "Click / Alt-click segment", label: "indy-walls.Shortcuts.SegmentShowHide"},
+    ...common
+  ];
+  if (tool === RECTANGLE_TOOL) return [
+    {key: "Left-click side", label: "indy-walls.Shortcuts.RectangleAddRestore"},
+    {key: "Alt-click segment", label: "indy-walls.Shortcuts.RectangleGap"},
+    {key: "Alt-click vertex", label: "indy-walls.Shortcuts.RectangleRemoveVertex"},
+    {key: "Drag corners/vertices", label: "indy-walls.Shortcuts.RectangleDrag"},
+    ...common
+  ];
+  if (tool === POLYLINE_TOOL) return [
+    {key: "Click canvas", label: "indy-walls.Shortcuts.PolylineAddPoint"},
+    {key: "Left-click segment", label: "indy-walls.Shortcuts.PolylineAddRestore"},
+    {key: "Right-click segment", label: "indy-walls.Shortcuts.PolylineCycleCurve"},
+    {key: "Alt-click point/segment", label: "indy-walls.Shortcuts.PolylineRemoveHide"},
+    {key: "Ctrl+wheel", label: "indy-walls.Shortcuts.PolylineCurveSegments"},
+    {key: "Drag points/handles", label: "indy-walls.Shortcuts.PolylineDrag"},
+    ...common
+  ];
+  return common;
+}
+
 function renderAllShapeLevelControls() {
   for (const wrapper of document.querySelectorAll(".indy-walls-level-controls")) renderShapeLevelControls(wrapper);
 }
@@ -4180,6 +4436,7 @@ function ensureCubicEditButtons() {
     ]
   });
   ensureShapeLevelControls(CUBIC_EDIT_BUTTONS_ID, CUBIC_TOOL);
+  ensureShortcutHelpControls(CUBIC_EDIT_BUTTONS_ID, CUBIC_TOOL);
 }
 
 function positionCubicEditButtons() {
@@ -4207,6 +4464,7 @@ function ensureEllipseEditButtons() {
     ]
   });
   ensureShapeLevelControls(ELLIPSE_EDIT_BUTTONS_ID, ELLIPSE_TOOL);
+  ensureShortcutHelpControls(ELLIPSE_EDIT_BUTTONS_ID, ELLIPSE_TOOL);
 }
 
 function positionEllipseEditButtons() {
@@ -4223,7 +4481,7 @@ function setRectangleEditingState(editing) {
 
 function ensureRectangleEditButtons() {
   const existing = document.getElementById(RECTANGLE_EDIT_BUTTONS_ID);
-  if (existing && existing.querySelectorAll("button").length !== 4) existing.remove();
+  if (existing && existing.querySelectorAll(":scope > button").length !== 4) existing.remove();
 
   ensureEditButtons({
     id: RECTANGLE_EDIT_BUTTONS_ID,
@@ -4235,6 +4493,7 @@ function ensureRectangleEditButtons() {
     ]
   });
   ensureShapeLevelControls(RECTANGLE_EDIT_BUTTONS_ID, RECTANGLE_TOOL);
+  ensureShortcutHelpControls(RECTANGLE_EDIT_BUTTONS_ID, RECTANGLE_TOOL);
 }
 
 function positionRectangleEditButtons() {
@@ -4260,6 +4519,7 @@ function ensurePolylineEditButtons() {
     ]
   });
   ensureShapeLevelControls(POLYLINE_EDIT_BUTTONS_ID, POLYLINE_TOOL);
+  ensureShortcutHelpControls(POLYLINE_EDIT_BUTTONS_ID, POLYLINE_TOOL);
 }
 
 function positionPolylineEditButtons() {

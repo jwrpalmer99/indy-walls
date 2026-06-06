@@ -121,6 +121,95 @@
   color: #ffffff;
 }
 
+.indy-walls-shortcut-help {
+  align-self: flex-start;
+  position: relative;
+  width: 32px;
+}
+
+.indy-walls-shortcut-help-button {
+  box-shadow: none;
+  outline: none;
+  position: relative;
+}
+
+.indy-walls-edit-buttons .indy-walls-shortcut-help-button:focus,
+.indy-walls-edit-buttons .indy-walls-shortcut-help-button:focus-visible {
+  border-color: #ff9f00;
+  box-shadow: none;
+  color: #d9d5c9;
+  outline: none;
+}
+
+.indy-walls-edit-buttons .indy-walls-shortcut-help.open > .indy-walls-shortcut-help-button,
+.indy-walls-edit-buttons .indy-walls-shortcut-help.open > .indy-walls-shortcut-help-button:focus,
+.indy-walls-edit-buttons .indy-walls-shortcut-help.open > .indy-walls-shortcut-help-button:hover {
+  background: rgb(255 159 0 / 20%);
+  border-color: #ff6400;
+  color: #ffffff;
+}
+
+.indy-walls-shortcut-help-panel {
+  background: rgb(30 30 30 / 96%);
+  border: 1px solid #ff9f00;
+  border-radius: 5px;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 45%);
+  color: #d9d5c9;
+  display: none;
+  max-width: min(320px, calc(100vw - 16px));
+  min-width: min(260px, calc(100vw - 16px));
+  overflow-y: auto;
+  padding: 8px;
+  position: fixed;
+  z-index: 110;
+}
+
+.indy-walls-shortcut-help.open .indy-walls-shortcut-help-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.indy-walls-shortcut-help-heading {
+  color: #ffffff;
+  cursor: move;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+  margin-bottom: 2px;
+  user-select: none;
+}
+
+.indy-walls-shortcut-help-panel.dragging {
+  opacity: 0.92;
+}
+
+.indy-walls-shortcut-help-row {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(88px, auto) 1fr;
+}
+
+.indy-walls-shortcut-help-row kbd {
+  background: rgb(255 255 255 / 12%);
+  border: 1px solid rgb(255 255 255 / 20%);
+  border-radius: 4px;
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  padding: 3px 5px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.indy-walls-shortcut-help-row span {
+  font-size: 12px;
+  line-height: 1.25;
+}
+
 .indy-walls-conversion-preview-controls {
   align-items: flex-start;
   background: rgb(30 30 30 / 88%);

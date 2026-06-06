@@ -86,6 +86,8 @@ The Wall Controls include a Clean Up Walls button for GMs. It snaps nearby wall 
 Module settings include client-side controls for the editor preview wall color and width, per-type segment preview colors, regular vertex color and size, active vertex color, endpoint color and size, Bezier handle color and size, center handle color and size, outline color and width, and the active Indy shape tool button highlight color, glow, and border width.
 If lib - ColorSettings is active, Indy Walls uses its color picker UI for color settings. Without it, color settings remain plain hex text fields.
 
+The editor controls include a compact shortcut help button by default. It shows shortcuts for the current shape tool only, can be dragged by its title, remembers its last position, and can be disabled with the shortcut help module setting.
+
 ### Editing Undo/Redo
 
 While editing an Indy Walls shape, use the undo/redo buttons or Ctrl-Z/Ctrl-Y to undo and redo preview edits. These shortcuts are swallowed by the module during shape editing so they do not affect Foundry wall history or browser form undo.

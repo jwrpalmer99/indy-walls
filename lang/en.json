@@ -29,7 +29,8 @@
       "BezierConversionTolerance": "Bezier",
       "ShapeLevels": "Indy shape levels",
       "NoShapeLevels": "No levels",
-      "MixedShapeLevels": "Mixed"
+      "MixedShapeLevels": "Mixed",
+      "ShortcutHelp": "Editor shortcuts"
     },
     "Settings": {
       "ColorPickerLabel": "Color Picker",
@@ -60,6 +61,10 @@
       "ShowDoorGlyphsInEditor": {
         "Name": "Show door glyphs in Indy shape editor",
         "Hint": "When enabled, door and secret door segments show Foundry-style door glyphs while editing Indy wall shapes."
+      },
+      "ShowShortcutHelpInEditor": {
+        "Name": "Show shortcut help in Indy shape editor",
+        "Hint": "When enabled, Indy shape editor controls include a compact help button showing shortcuts for the current shape tool."
       },
       "RectangleConversionTolerance": {
         "Name": "Convert to Indy Walls rectangle tolerance",
@@ -183,6 +188,31 @@
         "Name": "Set hovered Indy wall segment to Terrain",
         "Hint": "While editing an Indy wall shape, changes the segment under the mouse to terrain. If enabled in settings, also changes hovered Foundry walls."
       }
+    },
+    "Shortcuts": {
+      "Save": "Save or create the current shape.",
+      "Cancel": "Cancel the current edit or drawing action.",
+      "UndoRedo": "Undo or redo editor changes.",
+      "DeleteShape": "Delete the active edited shape.",
+      "WallTypeHotkeys": "Set the hovered segment wall type.",
+      "Levels": "Use the level selector to set v14 wall levels.",
+      "CubicDrag": "Move endpoints or curve handles.",
+      "CubicToggleMode": "Toggle the curve between arc and Bezier.",
+      "CurveSegments": "Change generated curve segment count.",
+      "SegmentShowHide": "Show or hide the hovered segment.",
+      "EllipseDrag": "Resize, reshape, or rotate from handles and vertices.",
+      "EllipseCircle": "Place as a circle.",
+      "EllipseFromCenter": "Place outward from the center point.",
+      "RectangleAddRestore": "Add a side vertex or restore a hidden side segment.",
+      "RectangleGap": "Hide the hovered side segment.",
+      "RectangleRemoveVertex": "Remove an intermediate side vertex.",
+      "RectangleDrag": "Resize or move side vertices.",
+      "PolylineAddPoint": "Add the next polyline point.",
+      "PolylineAddRestore": "Add a point or restore a hidden segment.",
+      "PolylineCycleCurve": "Cycle a segment between line, arc, and Bezier.",
+      "PolylineRemoveHide": "Remove a point or hide a segment.",
+      "PolylineCurveSegments": "Change detail for the hovered curve segment, or global curve detail when not over one.",
+      "PolylineDrag": "Move points or curve handles."
     },
     "Tooltips": {
       "CubicBezier": "Click-drag to place the curve, then drag the red endpoints or green handles. Right-click the curve to toggle between arc and Bezier modes. Use plus/minus or Ctrl-wheel to adjust segment count, Enter to create walls, or Escape to cancel.",
