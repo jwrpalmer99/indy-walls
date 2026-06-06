@@ -6,9 +6,9 @@ const INDY_SHAPE_FLAGS = {
 };
 let cleanupSceneWallsPromise = null;
 
-export async function cleanupSceneWalls({moduleId, tolerance = 8} = {}) {
+export async function cleanupSceneWalls({moduleId, tolerance = 8, respectLevels = true} = {}) {
   if (cleanupSceneWallsPromise) return cleanupSceneWallsPromise;
-  cleanupSceneWallsPromise = cleanupSceneWallsOnce({moduleId, tolerance});
+  cleanupSceneWallsPromise = cleanupSceneWallsOnce({moduleId, tolerance, respectLevels});
   try {
     return await cleanupSceneWallsPromise;
   }
@@ -17,7 +17,7 @@ export async function cleanupSceneWalls({moduleId, tolerance = 8} = {}) {
   }
 }
 
-async function cleanupSceneWallsOnce({moduleId, tolerance = 8} = {}) {
+async function cleanupSceneWallsOnce({moduleId, tolerance = 8, respectLevels = true} = {}) {
   if (!game.user?.isGM || !canvas?.scene) return null;
 
   const wallDocuments = getWallDocuments();
@@ -27,7 +27,7 @@ async function cleanupSceneWallsOnce({moduleId, tolerance = 8} = {}) {
   }
 
   const endpoints = buildWallEndpoints(wallDocuments);
-  const snapResult = snapWallEndpoints(endpoints, Math.max(0, Number(tolerance) || 0));
+  const snapResult = snapWallEndpoints(endpoints, Math.max(0, Number(tolerance) || 0), respectLevels);
   const cleanupPlan = buildCleanupPlan(wallDocuments, snapResult.pointsByEndpoint);
   const shapeMetadataPatches = buildShapeMetadataPatches(moduleId, wallDocuments, cleanupPlan.coordinateByWallId, cleanupPlan.deleteIds);
 
@@ -71,13 +71,14 @@ function buildWallEndpoints(wallDocuments) {
   const endpoints = [];
   for (const wallDocument of wallDocuments) {
     const [x1, y1, x2, y2] = wallDocument.c;
-    endpoints.push({wallId: wallDocument.id, endpointIndex: 0, x: x1, y: y1});
-    endpoints.push({wallId: wallDocument.id, endpointIndex: 1, x: x2, y: y2});
+    const levelKey = getWallLevelsKey(wallDocument);
+    endpoints.push({wallId: wallDocument.id, endpointIndex: 0, levelKey, x: x1, y: y1});
+    endpoints.push({wallId: wallDocument.id, endpointIndex: 1, levelKey, x: x2, y: y2});
   }
   return endpoints;
 }
 
-function snapWallEndpoints(endpoints, tolerance) {
+function snapWallEndpoints(endpoints, tolerance, respectLevels=true) {
   const parent = endpoints.map((_, index) => index);
   const buckets = new Map();
   const bucketSize = Math.max(tolerance, 1);
@@ -111,6 +112,7 @@ function snapWallEndpoints(endpoints, tolerance) {
           for (const candidateIndex of bucket) {
             const candidate = endpoints[candidateIndex];
             if (candidate.wallId === endpoint.wallId) continue;
+            if (respectLevels && candidate.levelKey !== endpoint.levelKey) continue;
             if (distance(endpoint, candidate) <= tolerance) union(index, candidateIndex);
           }
         }
@@ -312,6 +314,24 @@ function getWallDataKey(wallDocument) {
   delete data._id;
   delete data.c;
   return JSON.stringify(sortObjectKeys(data));
+}
+
+function getWallLevelsKey(wallDocument) {
+  const source = wallDocument?.toObject ? wallDocument.toObject(false) : wallDocument;
+  const levels = source?.levels ?? wallDocument?.levels;
+  if (!levels) return "";
+
+  const values = levels instanceof Set
+    ? [...levels]
+    : Array.isArray(levels)
+      ? levels
+      : Object.values(levels);
+
+  return values
+    .map((level) => String(level))
+    .filter((level) => level.length)
+    .sort((a, b) => a.localeCompare(b))
+    .join("|");
 }
 
 function sortObjectKeys(value) {

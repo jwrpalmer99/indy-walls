@@ -189,6 +189,7 @@ const ELLIPSE_CONVERSION_TOLERANCE_SETTING = "ellipseConversionTolerance";
 const ARC_CONVERSION_TOLERANCE_SETTING = "arcConversionTolerance";
 const BEZIER_CONVERSION_TOLERANCE_SETTING = "bezierConversionTolerance";
 const WALL_CLEANUP_TOLERANCE_SETTING = "wallCleanupTolerance";
+const WALL_CLEANUP_RESPECT_LEVELS_SETTING = "wallCleanupRespectLevels";
 const CONVERT_TO_INDY_TOOL = "indyConvertToIndyWalls";
 const CLEANUP_WALLS_TOOL = "indyCleanupWalls";
 const shapeLoadState = {
@@ -340,6 +341,14 @@ function registerWallCleanupSettings() {
     type: Number,
     default: 8,
     range: {min: 0, max: 100, step: 1}
+  });
+  game.settings.register(MODULE_ID, WALL_CLEANUP_RESPECT_LEVELS_SETTING, {
+    name: game.i18n.localize("indy-walls.Settings.WallCleanupRespectLevels.Name"),
+    hint: game.i18n.localize("indy-walls.Settings.WallCleanupRespectLevels.Hint"),
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: true
   });
 }
 
@@ -719,7 +728,8 @@ async function updateSelectedWalls(toolName) {
 function cleanupSceneWalls() {
   cancelConversionPreview();
   const tolerance = clamp(Number(game.settings.get(MODULE_ID, WALL_CLEANUP_TOLERANCE_SETTING)) || 0, 0, 100);
-  return cleanupSceneWallsImpl({moduleId: MODULE_ID, tolerance});
+  const respectLevels = game.settings.get(MODULE_ID, WALL_CLEANUP_RESPECT_LEVELS_SETTING) !== false;
+  return cleanupSceneWallsImpl({moduleId: MODULE_ID, tolerance, respectLevels});
 }
 
 function registerWallTypeControlShortcuts() {

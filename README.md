@@ -73,11 +73,13 @@ When enabled in module settings, those same wall type hotkeys can also update a 
 
 The Wall Controls include a Convert to Indy Walls button for GMs. It scans plain Foundry walls in the current scene and previews the proposed Indy shapes before changing wall documents. Use the inline Save button to apply the conversion or Cancel to discard it. Detected axis-aligned rectangles become Indy rectangles, near-elliptical loops become Indy ellipses, and remaining connected paths become Indy polylines with arc or Bezier curve metadata where the fit is close enough.
 
+On Foundry v14, conversion only joins walls into the same Indy shape when those walls share the same `levels` list. Original wall data, including v14 level assignment, is preserved on converted segments.
+
 The inline tolerance sliders and matching stored settings control how aggressively rectangle, ellipse, arc, and Bezier fits are accepted. The default value of `1` keeps the automatic scene-size-derived tolerance; lower values are stricter, and higher values, up to `10`, allow looser fits.
 
 ### Clean Up Walls
 
-The Wall Controls include a Clean Up Walls button for GMs. It snaps nearby wall endpoints together using the wall cleanup snap tolerance module setting, deletes walls that collapse to zero length, and removes duplicate wall lines when their wall data matches. For Indy shapes, saved endpoint or vertex metadata is updated where possible so the editor reopens on the cleaned points, but curve handles are left unchanged.
+The Wall Controls include a Clean Up Walls button for GMs. It snaps nearby wall endpoints together using the wall cleanup snap tolerance module setting, deletes walls that collapse to zero length, and removes duplicate wall lines when their wall data matches. On Foundry v14, cleanup respects wall level lists by default and only snaps endpoints across matching levels; this can be disabled in module settings. For Indy shapes, saved endpoint or vertex metadata is updated where possible so the editor reopens on the cleaned points, but curve handles are left unchanged.
 
 ### Preview Styling
 

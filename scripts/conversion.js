@@ -558,6 +558,7 @@ function getWallConversionCandidate(wall) {
     b,
     aKey: conversionPointKey(a),
     bKey: conversionPointKey(b),
+    levelKey: getWallLevelsKey(wall),
     horizontal: Math.abs(dy) <= axisTolerance,
     vertical: Math.abs(dx) <= axisTolerance
   };
@@ -594,6 +595,7 @@ function getWallConversionComponents(candidates) {
       for (const key of [current.aKey, current.bKey]) {
         for (const next of byPoint.get(key) ?? []) {
           if (visited.has(next.wall.id)) continue;
+          if (next.levelKey !== current.levelKey) continue;
           visited.add(next.wall.id);
           stack.push(next);
         }
@@ -680,6 +682,7 @@ function getRectangleConversionGroupForBounds(component, {minX, minY, maxX, maxY
 
   return {
     records,
+    levelKey: component[0]?.levelKey ?? "",
     handles: [{x: minX, y: minY}, {x: maxX, y: maxY}],
     sideSegments,
     sideRatios,
@@ -858,12 +861,13 @@ function tracePolylineConversionPath(firstEdge, startKey, byPoint, used, allowCl
 
     const nextEdges = (byPoint.get(currentKey) ?? [])
       .filter((candidate) => !used.has(candidate.wall.id))
+      .filter((candidate) => candidate.levelKey === firstEdge.levelKey)
       .sort(compareConversionCandidates);
     if (nextEdges.length !== 1) break;
     edge = nextEdges[0];
   }
 
-  return {candidates, points, closed};
+  return {candidates, points, closed, levelKey: firstEdge.levelKey};
 }
 
 function compareConversionCandidates(a, b) {
@@ -903,6 +907,7 @@ function mergeCompatiblePolylineConversionGroups(groups) {
 
 function mergePolylineConversionGroups(a, b) {
   if (a.closed || b.closed || a.points.length < 2 || b.points.length < 2) return null;
+  if (a.levelKey !== b.levelKey) return null;
 
   const aStart = conversionPointKey(a.points[0]);
   const aEnd = conversionPointKey(a.points.at(-1));
@@ -913,28 +918,32 @@ function mergePolylineConversionGroups(a, b) {
     return {
       candidates: [...a.candidates, ...b.candidates],
       points: [...a.points, ...b.points.slice(1)],
-      closed: false
+      closed: false,
+      levelKey: a.levelKey
     };
   }
   if (bEnd === aStart && canMergePolylineAtEndpoint(b, "end", a, "start")) {
     return {
       candidates: [...b.candidates, ...a.candidates],
       points: [...b.points, ...a.points.slice(1)],
-      closed: false
+      closed: false,
+      levelKey: a.levelKey
     };
   }
   if (aStart === bStart && canMergePolylineAtEndpoint(a, "start", b, "start")) {
     return {
       candidates: [...reverseConversionCandidates(a.candidates), ...b.candidates],
       points: [...reverseConversionPoints(a.points), ...b.points.slice(1)],
-      closed: false
+      closed: false,
+      levelKey: a.levelKey
     };
   }
   if (aEnd === bEnd && canMergePolylineAtEndpoint(a, "end", b, "end")) {
     return {
       candidates: [...a.candidates, ...reverseConversionCandidates(b.candidates)],
       points: [...a.points, ...reverseConversionPoints(b.points).slice(1)],
-      closed: false
+      closed: false,
+      levelKey: a.levelKey
     };
   }
 
@@ -1007,7 +1016,8 @@ function getEllipseConversionGroup(group) {
   return {
     candidates: group.candidates,
     handles,
-    segments: group.candidates.length
+    segments: group.candidates.length,
+    levelKey: group.levelKey
   };
 }
 
@@ -1405,6 +1415,24 @@ function canCompressWallDataForCurve(candidates) {
 
 function getComparablePreservedWallData(wall) {
   return JSON.stringify(getPreservedWallDataFromDocument(wall, MODULE_ID) ?? {});
+}
+
+function getWallLevelsKey(wall) {
+  const source = wall?.toObject ? wall.toObject(false) : wall;
+  const levels = source?.levels ?? wall?.levels;
+  if (!levels) return "";
+
+  const values = levels instanceof Set
+    ? [...levels]
+    : Array.isArray(levels)
+      ? levels
+      : Object.values(levels);
+
+  return values
+    .map((level) => String(level))
+    .filter((level) => level.length)
+    .sort((a, b) => a.localeCompare(b))
+    .join("|");
 }
 
 function getConversionPointBounds(points) {

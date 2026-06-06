@@ -78,7 +78,11 @@
       },
       "WallCleanupTolerance": {
         "Name": "Wall cleanup snap tolerance",
-        "Hint": "Maximum pixel distance for the Clean Up Walls tool to snap plain Foundry wall endpoints together. Set to 0 to only remove exact duplicate lines."
+        "Hint": "Maximum pixel distance for the Clean Up Walls tool to snap wall endpoints together. Set to 0 to only remove exact duplicate lines."
+      },
+      "WallCleanupRespectLevels": {
+        "Name": "Clean Up Walls respects levels",
+        "Hint": "When enabled, Clean Up Walls only snaps endpoints together when the walls share the same v14 level list. Disable this to allow snapping across levels."
       },
       "PreviewWallColor": {
         "Name": "Preview wall color",
