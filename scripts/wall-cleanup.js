@@ -130,10 +130,10 @@ function snapWallEndpoints(endpoints, tolerance) {
   }
 
   const snappedPointsByRoot = new Map();
+  const grid = getGridSnapInfo();
   let snappedEndpointCount = 0;
   for (const [root, indexes] of clusters.entries()) {
-    const average = getAveragePoint(indexes.map((index) => endpoints[index]));
-    const snapped = {x: Math.round(average.x), y: Math.round(average.y)};
+    const snapped = getClusterSnapPoint(indexes.map((index) => endpoints[index]), grid);
     snappedPointsByRoot.set(root, snapped);
     if (indexes.length > 1) snappedEndpointCount += indexes.length;
   }
@@ -332,6 +332,43 @@ function getUndirectedCoordinateKey(c) {
 
 function getBucketKey(x, y) {
   return `${x},${y}`;
+}
+
+function getClusterSnapPoint(points, grid) {
+  const average = getAveragePoint(points);
+  const gridPoints = points
+    .map((point) => getGridIntersectionPoint(point, grid))
+    .filter((point) => !!point);
+
+  if (gridPoints.length) {
+    return gridPoints
+      .sort((a, b) => distance(a, average) - distance(b, average))[0];
+  }
+
+  return {x: Math.round(average.x), y: Math.round(average.y)};
+}
+
+function getGridSnapInfo() {
+  const size = Number(canvas?.grid?.size ?? canvas?.scene?.grid?.size);
+  if (!Number.isFinite(size) || size <= 0) return null;
+  return {
+    size,
+    offsetX: Number(canvas?.scene?.grid?.offsetX ?? canvas?.grid?.grid?.options?.x ?? 0) || 0,
+    offsetY: Number(canvas?.scene?.grid?.offsetY ?? canvas?.grid?.grid?.options?.y ?? 0) || 0
+  };
+}
+
+function getGridIntersectionPoint(point, grid) {
+  if (!grid) return null;
+  const x = getNearestGridCoordinate(point.x, grid.offsetX, grid.size);
+  const y = getNearestGridCoordinate(point.y, grid.offsetY, grid.size);
+  return Math.abs(point.x - x) <= 0.75 && Math.abs(point.y - y) <= 0.75
+    ? {x, y}
+    : null;
+}
+
+function getNearestGridCoordinate(value, offset, size) {
+  return Math.round((value - offset) / size) * size + offset;
 }
 
 function getAveragePoint(points) {
