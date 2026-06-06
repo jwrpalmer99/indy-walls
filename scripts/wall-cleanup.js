@@ -6,9 +6,9 @@ const INDY_SHAPE_FLAGS = {
 };
 let cleanupSceneWallsPromise = null;
 
-export async function cleanupSceneWalls({moduleId, tolerance = 8, respectLevels = true, snapStandaloneTargets = false} = {}) {
+export async function cleanupSceneWalls({moduleId, tolerance = 8, respectLevels = true, snapStandaloneTargets = false, simplifyPaths = false} = {}) {
   if (cleanupSceneWallsPromise) return cleanupSceneWallsPromise;
-  cleanupSceneWallsPromise = cleanupSceneWallsOnce({moduleId, tolerance, respectLevels, snapStandaloneTargets});
+  cleanupSceneWallsPromise = cleanupSceneWallsOnce({moduleId, tolerance, respectLevels, snapStandaloneTargets, simplifyPaths});
   try {
     return await cleanupSceneWallsPromise;
   }
@@ -17,7 +17,7 @@ export async function cleanupSceneWalls({moduleId, tolerance = 8, respectLevels 
   }
 }
 
-async function cleanupSceneWallsOnce({moduleId, tolerance = 8, respectLevels = true, snapStandaloneTargets = false} = {}) {
+async function cleanupSceneWallsOnce({moduleId, tolerance = 8, respectLevels = true, snapStandaloneTargets = false, simplifyPaths = false} = {}) {
   if (!game.user?.isGM || !canvas?.scene) return null;
 
   const wallDocuments = getWallDocuments();
@@ -31,7 +31,11 @@ async function cleanupSceneWallsOnce({moduleId, tolerance = 8, respectLevels = t
   const splitResult = splitPlainWallsAtIntersections(records, respectLevels);
   const endpoints = buildWallEndpoints(records);
   const snapResult = snapWallEndpoints(endpoints, Math.max(0, Number(tolerance) || 0), respectLevels);
-  const cleanupPlan = buildCleanupPlan(records, snapResult.pointsByEndpoint);
+  applyEndpointPointsToRecords(records, snapResult.pointsByEndpoint);
+  const simplifyResult = simplifyPaths
+    ? simplifyPlainWallPaths(records, Math.max(0, Number(tolerance) || 0), respectLevels)
+    : {simplifiedWallCount: 0};
+  const cleanupPlan = buildCleanupPlan(records);
   const shapeMetadataPatches = buildShapeMetadataPatches(moduleId, wallDocuments, cleanupPlan.coordinateByWallId, cleanupPlan.deleteIds);
 
   const deletions = Array.from(cleanupPlan.deleteIds);
@@ -53,7 +57,8 @@ async function cleanupSceneWallsOnce({moduleId, tolerance = 8, respectLevels = t
       created: created.length,
       deleted: existingDeletions.length,
       snapped: snapResult.snappedEndpointCount + smartResult.adjustedEndpointCount,
-      split: splitResult.splitWallCount
+      split: splitResult.splitWallCount,
+      simplified: simplifyResult.simplifiedWallCount
     }));
   }
   else ui.notifications?.info(game.i18n.localize("indy-walls.Notifications.WallsAlreadyClean"));
@@ -63,7 +68,8 @@ async function cleanupSceneWallsOnce({moduleId, tolerance = 8, respectLevels = t
     created: created.length,
     deleted: existingDeletions.length,
     snappedPoints: snapResult.snappedEndpointCount + smartResult.adjustedEndpointCount,
-    splitWalls: splitResult.splitWallCount
+    splitWalls: splitResult.splitWallCount,
+    simplifiedWalls: simplifyResult.simplifiedWallCount
   };
 }
 
@@ -88,6 +94,8 @@ function buildWallRecords(wallDocuments, moduleId) {
     levelKey: getWallLevelsKey(wallDocument),
     dataKey: getWallDataKey(wallDocument),
     canSplit: !hasIndyShapeFlag(moduleId, wallDocument) && !isDoorWallDocument(wallDocument),
+    canSimplify: !hasIndyShapeFlag(moduleId, wallDocument) && !isDoorWallDocument(wallDocument),
+    deleted: false,
     sort: index
   }));
 }
@@ -281,6 +289,8 @@ function splitPlainWallsAtIntersections(records, respectLevels=true) {
         levelKey: record.levelKey,
         dataKey: record.dataKey,
         canSplit: false,
+        canSimplify: record.canSimplify,
+        deleted: false,
         sort: record.sort + (index / 100)
       });
     }
@@ -376,6 +386,173 @@ function pointPairToCoordinates(a, b) {
   return [a.x, a.y, b.x, b.y];
 }
 
+function applyEndpointPointsToRecords(records, pointsByEndpoint) {
+  for (let recordIndex = 0; recordIndex < records.length; recordIndex += 1) {
+    const start = pointsByEndpoint.get(recordIndex * 2);
+    const end = pointsByEndpoint.get((recordIndex * 2) + 1);
+    if (!start || !end) continue;
+    records[recordIndex].c = pointPairToCoordinates(start, end);
+  }
+}
+
+function simplifyPlainWallPaths(records, tolerance, respectLevels=true) {
+  if (tolerance <= 0) return {simplifiedWallCount: 0};
+
+  let simplifiedWallCount = 0;
+  const groups = getSimplifiableRecordGroups(records, respectLevels);
+  for (const group of groups) {
+    const paths = getSimplifiableRecordPaths(group);
+    for (const path of paths) {
+      const changed = simplifyRecordPath(path, tolerance);
+      if (changed > 0) simplifiedWallCount += changed;
+    }
+  }
+  return {simplifiedWallCount};
+}
+
+function getSimplifiableRecordGroups(records, respectLevels=true) {
+  const groups = new Map();
+  for (const record of records) {
+    if (!record.canSimplify || record.deleted || pointsEqual(getRecordEndpoint(record, 0), getRecordEndpoint(record, 1))) continue;
+    const key = `${respectLevels ? record.levelKey : ""}::${record.dataKey}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(record);
+  }
+  return [...groups.values()].filter((group) => group.length >= 2);
+}
+
+function getSimplifiableRecordPaths(group) {
+  const byPoint = new Map();
+  for (const record of group) {
+    for (const point of [getRecordEndpoint(record, 0), getRecordEndpoint(record, 1)]) {
+      const key = pointKey(point);
+      if (!byPoint.has(key)) byPoint.set(key, []);
+      byPoint.get(key).push(record);
+    }
+  }
+
+  const visited = new Set();
+  const paths = [];
+  const junctionKeys = [...byPoint.entries()]
+    .filter(([, edges]) => edges.length !== 2)
+    .map(([key]) => key)
+    .sort();
+
+  for (const startKey of junctionKeys) {
+    for (const record of byPoint.get(startKey) ?? []) {
+      if (visited.has(recordKey(record))) continue;
+      paths.push(traceSimplifiableRecordPath(record, startKey, byPoint, visited, false));
+    }
+  }
+
+  for (const record of group.sort((a, b) => a.sort - b.sort)) {
+    if (visited.has(recordKey(record))) continue;
+    paths.push(traceSimplifiableRecordPath(record, pointKey(getRecordEndpoint(record, 0)), byPoint, visited, true));
+  }
+
+  return paths.filter((path) => path.records.length >= 2 && path.points.length >= 3);
+}
+
+function traceSimplifiableRecordPath(firstRecord, startKey, byPoint, visited, allowClosed) {
+  const records = [];
+  const points = [pointFromKey(startKey)];
+  let currentKey = startKey;
+  let record = firstRecord;
+  let closed = false;
+
+  while (record && !visited.has(recordKey(record))) {
+    visited.add(recordKey(record));
+    records.push(record);
+    const aKey = pointKey(getRecordEndpoint(record, 0));
+    const bKey = pointKey(getRecordEndpoint(record, 1));
+    const nextKey = aKey === currentKey ? bKey : aKey;
+    if (nextKey === startKey && allowClosed) {
+      closed = true;
+      break;
+    }
+    points.push(pointFromKey(nextKey));
+    currentKey = nextKey;
+
+    const nextRecords = (byPoint.get(currentKey) ?? [])
+      .filter((candidate) => !visited.has(recordKey(candidate)))
+      .sort((a, b) => a.sort - b.sort);
+    if (nextRecords.length !== 1) break;
+    record = nextRecords[0];
+  }
+
+  return {records, points, closed};
+}
+
+function simplifyRecordPath(path, tolerance) {
+  if (path.closed) return 0;
+  const keepIndexes = simplifyPointIndexes(path.points, tolerance);
+  if (keepIndexes.length >= path.points.length) return 0;
+  if (keepIndexes.length < 2) return 0;
+
+  let keptRecordIndex = 0;
+  for (let index = 0; index < keepIndexes.length - 1; index += 1) {
+    const record = path.records[keptRecordIndex++];
+    record.c = pointPairToCoordinates(path.points[keepIndexes[index]], path.points[keepIndexes[index + 1]]);
+  }
+
+  let removed = 0;
+  for (let index = keptRecordIndex; index < path.records.length; index += 1) {
+    path.records[index].deleted = true;
+    removed += 1;
+  }
+  return removed;
+}
+
+function simplifyPointIndexes(points, tolerance) {
+  const keep = new Set([0, points.length - 1]);
+  simplifyPointIndexesBetween(points, 0, points.length - 1, tolerance, keep);
+  return [...keep].sort((a, b) => a - b);
+}
+
+function simplifyPointIndexesBetween(points, startIndex, endIndex, tolerance, keep) {
+  if (endIndex <= startIndex + 1) return;
+  const start = points[startIndex];
+  const end = points[endIndex];
+  let maxDistance = -1;
+  let maxIndex = -1;
+  for (let index = startIndex + 1; index < endIndex; index += 1) {
+    const pointDistance = getPointSegmentDistance(points[index], start, end);
+    if (pointDistance > maxDistance) {
+      maxDistance = pointDistance;
+      maxIndex = index;
+    }
+  }
+  if (maxDistance <= tolerance || maxIndex < 0) return;
+  keep.add(maxIndex);
+  simplifyPointIndexesBetween(points, startIndex, maxIndex, tolerance, keep);
+  simplifyPointIndexesBetween(points, maxIndex, endIndex, tolerance, keep);
+}
+
+function getPointSegmentDistance(point, start, end) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = (dx * dx) + (dy * dy);
+  if (lengthSquared <= 0.0001) return distance(point, start);
+  const t = Math.min(Math.max((((point.x - start.x) * dx) + ((point.y - start.y) * dy)) / lengthSquared, 0), 1);
+  return distance(point, {
+    x: start.x + (dx * t),
+    y: start.y + (dy * t)
+  });
+}
+
+function recordKey(record) {
+  return record.id ?? `new:${record.sort}:${record.c.join(",")}`;
+}
+
+function pointKey(point) {
+  return `${point.x},${point.y}`;
+}
+
+function pointFromKey(key) {
+  const [x, y] = String(key).split(",").map((value) => Number(value) || 0);
+  return {x, y};
+}
+
 function roundPoint(point) {
   return {x: Math.round(point.x), y: Math.round(point.y)};
 }
@@ -433,7 +610,7 @@ function getSceneBounds() {
   return {minX: x, minY: y, maxX: x + width, maxY: y + height};
 }
 
-function buildCleanupPlan(records, pointsByEndpoint) {
+function buildCleanupPlan(records) {
   const updates = [];
   const creates = [];
   const deleteIds = new Set();
@@ -445,12 +622,10 @@ function buildCleanupPlan(records, pointsByEndpoint) {
     .sort((a, b) => Number(!a.record.id) - Number(!b.record.id) || a.record.sort - b.record.sort);
 
   for (const {record, recordIndex} of recordEntries) {
-    const start = pointsByEndpoint.get(recordIndex * 2);
-    const end = pointsByEndpoint.get((recordIndex * 2) + 1);
-    const c = [start.x, start.y, end.x, end.y];
+    const c = [...record.c];
     if (record.id) coordinateByWallId.set(record.id, c);
 
-    if (pointsEqual(start, end)) {
+    if (record.deleted || pointsEqual(getRecordEndpoint(record, 0), getRecordEndpoint(record, 1))) {
       if (record.id) deleteIds.add(record.id);
       continue;
     }

@@ -193,6 +193,7 @@ const BEZIER_CONVERSION_TOLERANCE_SETTING = "bezierConversionTolerance";
 const WALL_CLEANUP_TOLERANCE_SETTING = "wallCleanupTolerance";
 const WALL_CLEANUP_RESPECT_LEVELS_SETTING = "wallCleanupRespectLevels";
 const WALL_CLEANUP_SNAP_STANDALONE_TARGETS_SETTING = "wallCleanupSnapStandaloneTargets";
+const WALL_CLEANUP_SIMPLIFY_PATHS_SETTING = "wallCleanupSimplifyPaths";
 const CONVERT_TO_INDY_TOOL = "indyConvertToIndyWalls";
 const CLEANUP_WALLS_TOOL = "indyCleanupWalls";
 const shapeLoadState = {
@@ -372,6 +373,14 @@ function registerWallCleanupSettings() {
   game.settings.register(MODULE_ID, WALL_CLEANUP_SNAP_STANDALONE_TARGETS_SETTING, {
     name: game.i18n.localize("indy-walls.Settings.WallCleanupSnapStandaloneTargets.Name"),
     hint: game.i18n.localize("indy-walls.Settings.WallCleanupSnapStandaloneTargets.Hint"),
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: false
+  });
+  game.settings.register(MODULE_ID, WALL_CLEANUP_SIMPLIFY_PATHS_SETTING, {
+    name: game.i18n.localize("indy-walls.Settings.WallCleanupSimplifyPaths.Name"),
+    hint: game.i18n.localize("indy-walls.Settings.WallCleanupSimplifyPaths.Hint"),
     scope: "world",
     config: true,
     type: Boolean,
@@ -758,7 +767,8 @@ function cleanupSceneWalls() {
   const tolerance = clamp(Number(game.settings.get(MODULE_ID, WALL_CLEANUP_TOLERANCE_SETTING)) || 0, 0, 100);
   const respectLevels = game.settings.get(MODULE_ID, WALL_CLEANUP_RESPECT_LEVELS_SETTING) !== false;
   const snapStandaloneTargets = game.settings.get(MODULE_ID, WALL_CLEANUP_SNAP_STANDALONE_TARGETS_SETTING) === true;
-  return cleanupSceneWallsImpl({moduleId: MODULE_ID, tolerance, respectLevels, snapStandaloneTargets});
+  const simplifyPaths = game.settings.get(MODULE_ID, WALL_CLEANUP_SIMPLIFY_PATHS_SETTING) === true;
+  return cleanupSceneWallsImpl({moduleId: MODULE_ID, tolerance, respectLevels, snapStandaloneTargets, simplifyPaths});
 }
 
 function registerWallTypeControlShortcuts() {
