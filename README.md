@@ -79,7 +79,7 @@ The inline tolerance sliders and matching stored settings control how aggressive
 
 ### Clean Up Walls
 
-The Wall Controls include a Clean Up Walls button for GMs. It snaps nearby wall endpoints together using the wall cleanup snap tolerance module setting, deletes walls that collapse to zero length, and removes duplicate wall lines when their wall data matches. On Foundry v14, cleanup respects wall level lists by default and only snaps endpoints across matching levels; this can be disabled in module settings. For Indy shapes, saved endpoint or vertex metadata is updated where possible so the editor reopens on the cleaned points, but curve handles are left unchanged.
+The Wall Controls include a Clean Up Walls button for GMs. It snaps nearby wall endpoints together using the wall cleanup snap tolerance module setting, smart-extends or trims endpoints to nearby wall segments, grid lines, or map edges, splits non-door plain Foundry walls at true intersections, deletes walls that collapse to zero length, and removes duplicate wall lines when their wall data matches. On Foundry v14, cleanup respects wall level lists by default and only snaps or joins endpoints across matching levels; this can be disabled in module settings. For Indy shapes, saved endpoint or vertex metadata is updated where possible so the editor reopens on the cleaned points, but curve handles are left unchanged; intersection splitting is limited to non-door plain walls so Indy shape metadata and door state are not invalidated.
 
 ### Preview Styling
 

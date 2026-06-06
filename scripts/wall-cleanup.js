@@ -26,9 +26,12 @@ async function cleanupSceneWallsOnce({moduleId, tolerance = 8, respectLevels = t
     return {updated: 0, deleted: 0, snappedPoints: 0};
   }
 
-  const endpoints = buildWallEndpoints(wallDocuments);
+  const records = buildWallRecords(wallDocuments, moduleId);
+  const smartResult = smartAdjustWallEndpoints(records, Math.max(0, Number(tolerance) || 0), respectLevels);
+  const splitResult = splitPlainWallsAtIntersections(records, respectLevels);
+  const endpoints = buildWallEndpoints(records);
   const snapResult = snapWallEndpoints(endpoints, Math.max(0, Number(tolerance) || 0), respectLevels);
-  const cleanupPlan = buildCleanupPlan(wallDocuments, snapResult.pointsByEndpoint);
+  const cleanupPlan = buildCleanupPlan(records, snapResult.pointsByEndpoint);
   const shapeMetadataPatches = buildShapeMetadataPatches(moduleId, wallDocuments, cleanupPlan.coordinateByWallId, cleanupPlan.deleteIds);
 
   const deletions = Array.from(cleanupPlan.deleteIds);
@@ -38,22 +41,29 @@ async function cleanupSceneWallsOnce({moduleId, tolerance = 8, respectLevels = t
   );
 
   if (updates.length) await canvas.scene.updateEmbeddedDocuments("Wall", updates);
+  const created = cleanupPlan.creates.length
+    ? await canvas.scene.createEmbeddedDocuments("Wall", cleanupPlan.creates)
+    : [];
   const existingDeletions = deletions.filter((id) => !!canvas.scene.walls?.get?.(id));
   if (existingDeletions.length) await canvas.scene.deleteEmbeddedDocuments("Wall", existingDeletions);
 
-  if (updates.length || existingDeletions.length) {
+  if (updates.length || cleanupPlan.creates.length || existingDeletions.length) {
     ui.notifications?.info(formatNotification("indy-walls.Notifications.WallsCleaned", {
       updated: updates.length,
+      created: created.length,
       deleted: existingDeletions.length,
-      snapped: snapResult.snappedEndpointCount
+      snapped: snapResult.snappedEndpointCount + smartResult.adjustedEndpointCount,
+      split: splitResult.splitWallCount
     }));
   }
   else ui.notifications?.info(game.i18n.localize("indy-walls.Notifications.WallsAlreadyClean"));
 
   return {
     updated: updates.length,
+    created: created.length,
     deleted: existingDeletions.length,
-    snappedPoints: snapResult.snappedEndpointCount
+    snappedPoints: snapResult.snappedEndpointCount + smartResult.adjustedEndpointCount,
+    splitWalls: splitResult.splitWallCount
   };
 }
 
@@ -67,13 +77,40 @@ function getWallDocuments() {
   });
 }
 
-function buildWallEndpoints(wallDocuments) {
+function buildWallRecords(wallDocuments, moduleId) {
+  return wallDocuments.map((wallDocument, index) => ({
+    id: wallDocument.id,
+    originalId: wallDocument.id,
+    wallDocument,
+    baseData: null,
+    c: [...wallDocument.c],
+    originalC: [...wallDocument.c],
+    levelKey: getWallLevelsKey(wallDocument),
+    dataKey: getWallDataKey(wallDocument),
+    canSplit: !hasIndyShapeFlag(moduleId, wallDocument) && !isDoorWallDocument(wallDocument),
+    sort: index
+  }));
+}
+
+function hasIndyShapeFlag(moduleId, wallDocument) {
+  if (!moduleId) return false;
+  return !!(wallDocument.getFlag?.(moduleId, INDY_SHAPE_FLAGS.cubic)
+    || wallDocument.getFlag?.(moduleId, INDY_SHAPE_FLAGS.ellipse)
+    || wallDocument.getFlag?.(moduleId, INDY_SHAPE_FLAGS.rectangle)
+    || wallDocument.getFlag?.(moduleId, INDY_SHAPE_FLAGS.polyline));
+}
+
+function isDoorWallDocument(wallDocument) {
+  const source = wallDocument?.toObject ? wallDocument.toObject(false) : wallDocument;
+  return Number(source?.door ?? wallDocument?.door ?? 0) !== 0;
+}
+
+function buildWallEndpoints(records) {
   const endpoints = [];
-  for (const wallDocument of wallDocuments) {
-    const [x1, y1, x2, y2] = wallDocument.c;
-    const levelKey = getWallLevelsKey(wallDocument);
-    endpoints.push({wallId: wallDocument.id, endpointIndex: 0, levelKey, x: x1, y: y1});
-    endpoints.push({wallId: wallDocument.id, endpointIndex: 1, levelKey, x: x2, y: y2});
+  for (const record of records) {
+    const [x1, y1, x2, y2] = record.c;
+    endpoints.push({record, wallId: record.id, endpointIndex: 0, levelKey: record.levelKey, x: x1, y: y1});
+    endpoints.push({record, wallId: record.id, endpointIndex: 1, levelKey: record.levelKey, x: x2, y: y2});
   }
   return endpoints;
 }
@@ -111,7 +148,7 @@ function snapWallEndpoints(endpoints, tolerance, respectLevels=true) {
           if (!bucket) continue;
           for (const candidateIndex of bucket) {
             const candidate = endpoints[candidateIndex];
-            if (candidate.wallId === endpoint.wallId) continue;
+            if (candidate.record === endpoint.record) continue;
             if (respectLevels && candidate.levelKey !== endpoint.levelKey) continue;
             if (distance(endpoint, candidate) <= tolerance) union(index, candidateIndex);
           }
@@ -148,37 +185,290 @@ function snapWallEndpoints(endpoints, tolerance, respectLevels=true) {
   return {pointsByEndpoint, snappedEndpointCount};
 }
 
-function buildCleanupPlan(wallDocuments, pointsByEndpoint) {
+function smartAdjustWallEndpoints(records, tolerance, respectLevels=true) {
+  if (tolerance <= 0) return {adjustedEndpointCount: 0};
+
+  const grid = getGridSnapInfo();
+  const sceneBounds = getSceneBounds();
+  let adjustedEndpointCount = 0;
+
+  for (const record of records) {
+    for (const endpointIndex of [0, 1]) {
+      const endpoint = getRecordEndpoint(record, endpointIndex);
+      const opposite = getRecordEndpoint(record, endpointIndex ? 0 : 1);
+      const candidates = [];
+
+      for (const target of records) {
+        if (target === record) continue;
+        if (!areRecordsCompatible(record, target, respectLevels)) continue;
+        const projection = getPointProjectionOnSegment(endpoint, getRecordEndpoint(target, 0), getRecordEndpoint(target, 1));
+        if (!projection || projection.t < 0 || projection.t > 1) continue;
+        const distanceToSegment = distance(endpoint, projection.point);
+        if (distanceToSegment <= tolerance) {
+          candidates.push({point: projection.point, distance: distanceToSegment, priority: 1});
+        }
+      }
+
+      const gridPoint = getEndpointGridLineSnapPoint(endpoint, opposite, grid, tolerance);
+      if (gridPoint) candidates.push({point: gridPoint, distance: distance(endpoint, gridPoint), priority: 2});
+
+      const edgePoint = getEndpointMapEdgeSnapPoint(endpoint, opposite, sceneBounds, tolerance);
+      if (edgePoint) candidates.push({point: edgePoint, distance: distance(endpoint, edgePoint), priority: 3});
+
+      const best = candidates
+        .filter((candidate) => !pointsAlmostEqual(candidate.point, opposite))
+        .sort((a, b) => a.distance - b.distance || a.priority - b.priority)[0];
+      if (!best || pointsAlmostEqual(endpoint, best.point)) continue;
+
+      setRecordEndpoint(record, endpointIndex, best.point);
+      adjustedEndpointCount += 1;
+    }
+  }
+
+  return {adjustedEndpointCount};
+}
+
+function splitPlainWallsAtIntersections(records, respectLevels=true) {
+  const splitParamsByRecord = new Map();
+
+  for (let i = 0; i < records.length; i += 1) {
+    const a = records[i];
+    if (!a.canSplit) continue;
+    for (let j = i + 1; j < records.length; j += 1) {
+      const b = records[j];
+      if (!b.canSplit) continue;
+      if (!areRecordsCompatible(a, b, respectLevels)) continue;
+      const intersection = getSegmentIntersection(
+        getRecordEndpoint(a, 0),
+        getRecordEndpoint(a, 1),
+        getRecordEndpoint(b, 0),
+        getRecordEndpoint(b, 1)
+      );
+      if (!intersection) continue;
+      if (intersection.tA <= 0.0001 || intersection.tA >= 0.9999) continue;
+      if (intersection.tB <= 0.0001 || intersection.tB >= 0.9999) continue;
+      addSplitParam(splitParamsByRecord, a, intersection.tA);
+      addSplitParam(splitParamsByRecord, b, intersection.tB);
+    }
+  }
+
+  let splitWallCount = 0;
+  for (const [record, params] of splitParamsByRecord.entries()) {
+    const sorted = [...new Set(params.map((param) => Number(param.toFixed(6))))]
+      .filter((param) => param > 0.0001 && param < 0.9999)
+      .sort((a, b) => a - b);
+    if (!sorted.length) continue;
+
+    const points = [
+      getRecordEndpoint(record, 0),
+      ...sorted.map((param) => pointOnRecord(record, param)),
+      getRecordEndpoint(record, 1)
+    ].map(roundPoint);
+    const baseData = getBaseWallCreateData(record);
+    record.c = pointPairToCoordinates(points[0], points[1]);
+    splitWallCount += 1;
+
+    for (let index = 1; index < points.length - 1; index += 1) {
+      records.push({
+        id: null,
+        originalId: record.originalId,
+        wallDocument: record.wallDocument,
+        baseData,
+        c: pointPairToCoordinates(points[index], points[index + 1]),
+        originalC: null,
+        levelKey: record.levelKey,
+        dataKey: record.dataKey,
+        canSplit: false,
+        sort: record.sort + (index / 100)
+      });
+    }
+  }
+
+  records.sort((a, b) => a.sort - b.sort);
+  return {splitWallCount};
+}
+
+function addSplitParam(splitParamsByRecord, record, param) {
+  if (!splitParamsByRecord.has(record)) splitParamsByRecord.set(record, []);
+  splitParamsByRecord.get(record).push(param);
+}
+
+function areRecordsCompatible(a, b, respectLevels=true) {
+  return !respectLevels || a.levelKey === b.levelKey;
+}
+
+function getRecordEndpoint(record, endpointIndex) {
+  return endpointIndex
+    ? {x: record.c[2], y: record.c[3]}
+    : {x: record.c[0], y: record.c[1]};
+}
+
+function setRecordEndpoint(record, endpointIndex, point) {
+  const rounded = roundPoint(point);
+  if (endpointIndex) {
+    record.c[2] = rounded.x;
+    record.c[3] = rounded.y;
+  } else {
+    record.c[0] = rounded.x;
+    record.c[1] = rounded.y;
+  }
+}
+
+function getPointProjectionOnSegment(point, start, end) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = (dx * dx) + (dy * dy);
+  if (lengthSquared <= 0.0001) return null;
+  const t = (((point.x - start.x) * dx) + ((point.y - start.y) * dy)) / lengthSquared;
+  return {
+    t,
+    point: {
+      x: start.x + (dx * t),
+      y: start.y + (dy * t)
+    }
+  };
+}
+
+function getSegmentIntersection(a, b, c, d) {
+  const r = {x: b.x - a.x, y: b.y - a.y};
+  const s = {x: d.x - c.x, y: d.y - c.y};
+  const denominator = cross(r, s);
+  if (Math.abs(denominator) <= 0.0001) return null;
+
+  const cMinusA = {x: c.x - a.x, y: c.y - a.y};
+  const tA = cross(cMinusA, s) / denominator;
+  const tB = cross(cMinusA, r) / denominator;
+  if (tA < -0.0001 || tA > 1.0001 || tB < -0.0001 || tB > 1.0001) return null;
+
+  return {
+    tA,
+    tB,
+    point: {
+      x: a.x + (r.x * tA),
+      y: a.y + (r.y * tA)
+    }
+  };
+}
+
+function cross(a, b) {
+  return (a.x * b.y) - (a.y * b.x);
+}
+
+function pointOnRecord(record, t) {
+  const a = getRecordEndpoint(record, 0);
+  const b = getRecordEndpoint(record, 1);
+  return {
+    x: a.x + ((b.x - a.x) * t),
+    y: a.y + ((b.y - a.y) * t)
+  };
+}
+
+function getBaseWallCreateData(record) {
+  const data = record.wallDocument.toObject(false);
+  delete data._id;
+  delete data.c;
+  return foundry.utils.deepClone(data);
+}
+
+function pointPairToCoordinates(a, b) {
+  return [a.x, a.y, b.x, b.y];
+}
+
+function roundPoint(point) {
+  return {x: Math.round(point.x), y: Math.round(point.y)};
+}
+
+function pointsAlmostEqual(a, b, epsilon=0.75) {
+  return Math.hypot(a.x - b.x, a.y - b.y) <= epsilon;
+}
+
+function getEndpointGridLineSnapPoint(endpoint, opposite, grid, tolerance) {
+  if (!grid) return null;
+  const candidates = [];
+  const x = getNearestGridCoordinate(endpoint.x, grid.offsetX, grid.size);
+  const y = getNearestGridCoordinate(endpoint.y, grid.offsetY, grid.size);
+  if (Math.abs(endpoint.x - x) <= tolerance) candidates.push({x, y: endpoint.y});
+  if (Math.abs(endpoint.y - y) <= tolerance) candidates.push({x: endpoint.x, y});
+  return candidates
+    .filter((point) => !pointsAlmostEqual(point, opposite))
+    .sort((a, b) => distance(a, endpoint) - distance(b, endpoint))[0] ?? null;
+}
+
+function getEndpointMapEdgeSnapPoint(endpoint, opposite, sceneBounds, tolerance) {
+  if (!sceneBounds) return null;
+  const dx = endpoint.x - opposite.x;
+  const dy = endpoint.y - opposite.y;
+  if (Math.hypot(dx, dy) <= 0.0001) return null;
+
+  const candidates = [];
+  for (const x of [sceneBounds.minX, sceneBounds.maxX]) {
+    if (Math.abs(dx) <= 0.0001) continue;
+    const t = (x - opposite.x) / dx;
+    if (t < 1) continue;
+    const y = opposite.y + (dy * t);
+    if (y >= sceneBounds.minY - 0.001 && y <= sceneBounds.maxY + 0.001) candidates.push({x, y, distance: distance(endpoint, {x, y})});
+  }
+  for (const y of [sceneBounds.minY, sceneBounds.maxY]) {
+    if (Math.abs(dy) <= 0.0001) continue;
+    const t = (y - opposite.y) / dy;
+    if (t < 1) continue;
+    const x = opposite.x + (dx * t);
+    if (x >= sceneBounds.minX - 0.001 && x <= sceneBounds.maxX + 0.001) candidates.push({x, y, distance: distance(endpoint, {x, y})});
+  }
+
+  const best = candidates
+    .filter((candidate) => candidate.distance <= tolerance)
+    .sort((a, b) => a.distance - b.distance)[0];
+  return best ? {x: best.x, y: best.y} : null;
+}
+
+function getSceneBounds() {
+  const width = Number(canvas?.scene?.dimensions?.sceneWidth ?? canvas?.scene?.width);
+  const height = Number(canvas?.scene?.dimensions?.sceneHeight ?? canvas?.scene?.height);
+  const x = Number(canvas?.scene?.dimensions?.sceneX ?? 0) || 0;
+  const y = Number(canvas?.scene?.dimensions?.sceneY ?? 0) || 0;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+  return {minX: x, minY: y, maxX: x + width, maxY: y + height};
+}
+
+function buildCleanupPlan(records, pointsByEndpoint) {
   const updates = [];
+  const creates = [];
   const deleteIds = new Set();
   const seenSegments = new Map();
   const coordinateByWallId = new Map();
 
-  for (let wallIndex = 0; wallIndex < wallDocuments.length; wallIndex += 1) {
-    const wallDocument = wallDocuments[wallIndex];
-    const start = pointsByEndpoint.get(wallIndex * 2);
-    const end = pointsByEndpoint.get((wallIndex * 2) + 1);
+  const recordEntries = records
+    .map((record, recordIndex) => ({record, recordIndex}))
+    .sort((a, b) => Number(!a.record.id) - Number(!b.record.id) || a.record.sort - b.record.sort);
+
+  for (const {record, recordIndex} of recordEntries) {
+    const start = pointsByEndpoint.get(recordIndex * 2);
+    const end = pointsByEndpoint.get((recordIndex * 2) + 1);
     const c = [start.x, start.y, end.x, end.y];
-    coordinateByWallId.set(wallDocument.id, c);
+    if (record.id) coordinateByWallId.set(record.id, c);
 
     if (pointsEqual(start, end)) {
-      deleteIds.add(wallDocument.id);
+      if (record.id) deleteIds.add(record.id);
       continue;
     }
 
-    const dataKey = getWallDataKey(wallDocument);
-    const segmentKey = `${getUndirectedCoordinateKey(c)}::${dataKey}`;
+    const segmentKey = `${getUndirectedCoordinateKey(c)}::${record.dataKey}`;
     const existingWallId = seenSegments.get(segmentKey);
     if (existingWallId) {
-      deleteIds.add(wallDocument.id);
+      if (record.id) deleteIds.add(record.id);
       continue;
     }
-    seenSegments.set(segmentKey, wallDocument.id);
+    seenSegments.set(segmentKey, record.id ?? `new:${recordIndex}`);
 
-    if (!coordinatesEqual(wallDocument.c, c)) updates.push({_id: wallDocument.id, c});
+    if (record.id) {
+      if (!coordinatesEqual(record.originalC, c)) updates.push({_id: record.id, c});
+    } else {
+      creates.push({...foundry.utils.deepClone(record.baseData), c});
+    }
   }
 
-  return {updates, deleteIds, coordinateByWallId};
+  return {updates, creates, deleteIds, coordinateByWallId};
 }
 
 function buildShapeMetadataPatches(moduleId, wallDocuments, coordinateByWallId, deleteIds) {
