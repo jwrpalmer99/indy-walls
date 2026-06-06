@@ -164,6 +164,7 @@ import {
 
 const MODULE_ID = "indy-walls";
 const QUICK_WALL_TYPE_SETTING = "quickWallTypeChange";
+const HOVERED_WALL_HOTKEY_TYPE_SETTING = "hoveredWallHotkeyTypeChange";
 const DEBUG_SETTING = "debugShapeSelection";
 const ACTIVE_TOOL_HIGHLIGHT_COLOR_SETTING = "activeShapeToolHighlightColor";
 const ACTIVE_TOOL_HIGHLIGHT_GLOW_SETTING = "activeShapeToolHighlightGlow";
@@ -209,6 +210,9 @@ const controlShapeSelectState = {
 const lastCanvasPointerState = {
   point: null
 };
+const lastHoveredWallState = {
+  id: null
+};
 let copiedEditorShape = null;
 let activePreviewRedrawFrame = null;
 let wallsLayerWrappersRegistered = false;
@@ -228,6 +232,14 @@ Hooks.once("init", () => {
     config: true,
     type: Boolean,
     default: true
+  });
+  game.settings.register(MODULE_ID, HOVERED_WALL_HOTKEY_TYPE_SETTING, {
+    name: game.i18n.localize("indy-walls.Settings.HoveredWallHotkeyTypeChange.Name"),
+    hint: game.i18n.localize("indy-walls.Settings.HoveredWallHotkeyTypeChange.Hint"),
+    scope: "client",
+    config: true,
+    type: Boolean,
+    default: false
   });
   game.settings.register(MODULE_ID, DEBUG_SETTING, {
     name: game.i18n.localize("indy-walls.Settings.DebugShapeSelection.Name"),
@@ -286,16 +298,24 @@ Hooks.on("controlWall", (wall, controlled) => {
   if (!controlled || !game.user.isGM) return;
   if (!isWallControlsActive()) return;
   const controlKeyDown = isControlKeyDown();
-  debugShapeSelection("controlWall", {
-    wallId: wall?.document?.id ?? wall?.id,
-    controlled,
-    allowControlWallLoad: shapeLoadState.allowControlWallLoad,
-    controlKeyDown
-  });
+  if (shapeLoadState.allowControlWallLoad || controlKeyDown) {
+    debugShapeSelection("controlWall", {
+      wallId: wall?.document?.id ?? wall?.id,
+      controlled,
+      allowControlWallLoad: shapeLoadState.allowControlWallLoad,
+      controlKeyDown
+    });
+  }
   if (shapeLoadState.allowControlWallLoad || controlKeyDown) loadShapeFromExistingWall(wall);
 });
 
+Hooks.on("hoverWall", (wall, hovered) => {
+  if (hovered) lastHoveredWallState.id = wall?.document?.id ?? wall?.id ?? null;
+  else if (lastHoveredWallState.id === (wall?.document?.id ?? wall?.id)) lastHoveredWallState.id = null;
+});
+
 Hooks.on("deleteWall", (wallDocument) => {
+  if (lastHoveredWallState.id === wallDocument.id) lastHoveredWallState.id = null;
   cancelCubicEditingForDeletedWall(wallDocument);
   cancelEllipseEditingForDeletedWall(wallDocument);
   cancelRectangleEditingForDeletedWall(wallDocument);
@@ -607,15 +627,14 @@ function patchWallsLayer() {
   if (!WallsLayer.prototype?._onDragLeftStart) return;
 
   libWrapper.register(MODULE_ID, "CONFIG.Canvas.layers.walls.layerClass.prototype._onDragLeftStart", function(wrapped, event) {
-    debugShapeSelection("walls layer drag left start", {
-      ctrl: isControlInteraction(event),
-      activeTool: game.activeTool,
-      editorActive: isAnyEditorToolActive()
-    });
-
     if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive() && !isPolylineToolActive()) {
       return wrapped(event);
     }
+    debugShapeSelection("walls layer drag left start", {
+      ctrl: isControlInteraction(event),
+      activeTool: game.activeTool,
+      editorActive: true
+    });
     if (isPolylineToolActive()) {
       consumeCanvasInteraction(event);
       resetEditorCursor(event);
@@ -809,9 +828,12 @@ function patchWallsLayer() {
   }, libWrapper.MIXED);
 
   libWrapper.register(MODULE_ID, "CONFIG.Canvas.layers.walls.layerClass.prototype._onDragLeftDrop", function(wrapped, event) {
+    if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive() && !isPolylineToolActive()) {
+      return wrapped(event);
+    }
     debugShapeSelection("walls layer drag left drop", {
       activeTool: game.activeTool,
-      editorActive: isAnyEditorToolActive(),
+      editorActive: true,
       cubicDraggingHandle: cubicState.draggingHandle,
       ellipseDraggingHandle: ellipseState.draggingHandle,
       ellipseDraggingVertex: ellipseState.draggingVertex,
@@ -820,9 +842,6 @@ function patchWallsLayer() {
       polylineDraggingVertex: polylineState.draggingVertex,
       polylineDraggingCurveHandle: polylineState.draggingCurveHandle
     });
-    if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive() && !isPolylineToolActive()) {
-      return wrapped(event);
-    }
     if (isPolylineToolActive()) {
       event.interactionData.clearPreviewContainer = false;
       resetEditorCursor(event);
@@ -862,9 +881,12 @@ function patchWallsLayer() {
   }, libWrapper.MIXED);
 
   libWrapper.register(MODULE_ID, "CONFIG.Canvas.layers.walls.layerClass.prototype._onDragLeftCancel", function(wrapped, event) {
+    if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive() && !isPolylineToolActive()) {
+      return wrapped(event);
+    }
     debugShapeSelection("walls layer drag left cancel", {
       activeTool: game.activeTool,
-      editorActive: isAnyEditorToolActive(),
+      editorActive: true,
       cubicDraggingHandle: cubicState.draggingHandle,
       ellipseDraggingHandle: ellipseState.draggingHandle,
       ellipseDraggingVertex: ellipseState.draggingVertex,
@@ -872,9 +894,6 @@ function patchWallsLayer() {
       rectangleDraggingVertex: rectangleState.draggingVertex,
       polylineDraggingVertex: polylineState.draggingVertex
     });
-    if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive() && !isPolylineToolActive()) {
-      return wrapped(event);
-    }
     if (isPolylineToolActive()) {
       event.interactionData.clearPreviewContainer = false;
       resetEditorCursor(event);
@@ -936,11 +955,6 @@ function isLibWrapperReady() {
 
 function patchAvailableWallObjectInteractions() {
   const WallClass = CONFIG.Wall?.objectClass ?? canvas?.walls?.placeables?.[0]?.constructor;
-  debugShapeSelection("patchAvailableWallObjectInteractions", {
-    hasWallClass: !!WallClass,
-    wallClassName: WallClass?.name,
-    placeables: canvas?.walls?.placeables?.length ?? 0
-  });
   patchWallObjectInteractions(WallClass);
 }
 
@@ -952,22 +966,26 @@ function patchWallObjectInteractions(WallClass) {
   if (!isLibWrapperReady()) return;
   if (!CONFIG.Wall?.objectClass?.prototype) return;
 
+  let registeredAny = false;
   for (const method of ["_onDragLeftStart", "_onClickLeft"]) {
     if (!CONFIG.Wall.objectClass.prototype[method]) continue;
     const target = `CONFIG.Wall.objectClass.prototype.${method}`;
     if (wallObjectWrapperTargets.has(target)) continue;
     libWrapper.register(MODULE_ID, target, function(wrapped, event) {
       const editorActive = isAnyEditorToolActive();
-      debugShapeSelection("wall object event", {
-        method,
-        wallId: this.document?.id ?? this.id,
-        ctrl: isControlInteraction(event),
-        hasIndyShapeFlag: hasIndyShapeFlag(this.document),
-        hasOriginal: !!wrapped,
-        editorActive
-      });
+      const controlInteraction = isControlInteraction(event);
+      if (editorActive || controlInteraction) {
+        debugShapeSelection("wall object event", {
+          method,
+          wallId: this.document?.id ?? this.id,
+          ctrl: controlInteraction,
+          hasIndyShapeFlag: hasIndyShapeFlag(this.document),
+          hasOriginal: !!wrapped,
+          editorActive
+        });
+      }
 
-      if (method === "_onClickLeft" && game.user.isGM && isControlInteraction(event) && isWallControlsActive()) {
+      if (method === "_onClickLeft" && game.user.isGM && controlInteraction && isWallControlsActive()) {
         consumeCanvasInteraction(event);
         resetEditorCursor(event);
         return;
@@ -983,9 +1001,10 @@ function patchWallObjectInteractions(WallClass) {
       return wrapped(event);
     }, libWrapper.MIXED);
     wallObjectWrapperTargets.add(target);
+    registeredAny = true;
   }
 
-  debugShapeSelection("patchWallObjectInteractions patched", {
+  if (registeredAny) debugShapeSelection("patchWallObjectInteractions patched", {
     wallClassName: WallClass.name
   });
 }
@@ -1087,12 +1106,6 @@ function handleCanvasSegmentEditPointerMove(event) {
     if (distance > 8) canvasSegmentEditState.cancelledByMove = true;
   }
 
-  debugShapeSelection(`${canvasSegmentEditState.tool} canvas segment pointermove blocked`, {
-    clientX: event.clientX,
-    clientY: event.clientY,
-    cancelledByMove: canvasSegmentEditState.cancelledByMove,
-    edit: canvasSegmentEditState.edit
-  });
   consumeCanvasInteraction(event);
   resetCanvasCursor(event);
 }
@@ -1640,25 +1653,15 @@ function registerEditorDomDragHandler() {
 
 function handleEditorDomPointerDown(event) {
   if (!isWallControlsActive()) return;
-  debugShapeSelection("editor DOM pointerdown", {
-    target: event.target?.tagName,
-    button: event.button,
-    activeTool: game.activeTool,
-    cubic: isCubicToolActive(),
-    ellipse: isEllipseToolActive(),
-    rectangle: isRectangleToolActive(),
-    polyline: isPolylineToolActive(),
-    placed: getActiveEditorState()?.placed ?? null
-  });
   if (!isCanvasDomEvent(event) || event.button !== 0) return;
   const controlInteraction = isControlInteraction(event);
   const hit = getEditorDomDragHit(event);
   if (!hit) {
-    debugShapeSelection("editor DOM pointerdown no hit", {
-      activeTool: game.activeTool,
-      candidates: getCanvasClickPointCandidates(event)
-    });
     if (isAnyEditorToolActive()) {
+      debugShapeSelection("editor DOM pointerdown no hit", {
+        activeTool: game.activeTool,
+        candidates: getCanvasClickPointCandidates(event)
+      });
       consumeCanvasInteraction(event);
       scheduleEditorInteractionReset(event);
     }
@@ -1760,19 +1763,6 @@ function handleEditorDomPointerMove(event) {
 
   const point = getSnappedDomEditorPoint(event);
   if (!point) return;
-
-  debugShapeSelection("editor DOM drag move", {
-    tool: editorDomDragState.tool,
-    handle: editorDomDragState.handle,
-    vertex: editorDomDragState.vertex,
-    move: editorDomDragState.move,
-    coordinateLabel: editorDomDragState.coordinateLabel,
-    pointerCoordinateLabel: editorDomDragState.pointerCoordinateLabel,
-    pointerOffset: editorDomDragState.pointerOffset,
-    startPointerPoint: editorDomDragState.startPointerPoint,
-    startEditorPoint: editorDomDragState.startEditorPoint,
-    point
-  });
 
   if (editorDomDragState.move) {
     moveEditorShapeToCenter(editorDomDragState.tool, point);
@@ -2779,35 +2769,108 @@ function changeActiveSegments(delta) {
   if (snapshot) pushEditorUndoSnapshot(state, snapshot);
 }
 
-function changeHoveredSegmentWallType(toolName) {
+async function changeHoveredSegmentWallType(toolName) {
   if (!WALL_TYPE_DATA[toolName] || isEditableTarget(document.activeElement)) return false;
 
   const state = getActiveEditorState();
-  if (!state?.placed) return false;
-
   const point = getLastCanvasPointerPoint();
-  if (!point) return false;
 
-  const segment = getHoveredEditorSegment(point);
-  if (!segment) return false;
+  if (state?.placed && point) {
+    const segment = getHoveredEditorSegment(point);
+    if (segment) {
+      const key = getSegmentKey(segment);
+      if (state.wallTypeBySegment?.[key] === toolName) return true;
 
-  const key = getSegmentKey(segment);
-  if (state.wallTypeBySegment?.[key] === toolName) return true;
+      const snapshot = getEditorSnapshot(state);
+      state.wallTypeBySegment = {
+        ...state.wallTypeBySegment,
+        [key]: toolName
+      };
+      pushEditorUndoSnapshot(state, snapshot);
+      drawEditorPreview(getActiveEditorTool());
+      debugShapeSelection("changed hovered segment wall type", {
+        toolName,
+        segment,
+        key,
+        point
+      });
+      return true;
+    }
+  }
 
-  const snapshot = getEditorSnapshot(state);
-  state.wallTypeBySegment = {
-    ...state.wallTypeBySegment,
-    [key]: toolName
-  };
-  pushEditorUndoSnapshot(state, snapshot);
-  drawEditorPreview(getActiveEditorTool());
-  debugShapeSelection("changed hovered segment wall type", {
+  return changeHoveredFoundryWallType(toolName, point);
+}
+
+async function changeHoveredFoundryWallType(toolName, point=null) {
+  if (!game.user.isGM) return false;
+  if (!isWallControlsActive()) {
+    debugShapeSelection("hovered Foundry wall type skipped: wall controls inactive", {
+      toolName,
+      activeControl: getActiveControlName()
+    });
+    return false;
+  }
+  if (!game.settings.get(MODULE_ID, HOVERED_WALL_HOTKEY_TYPE_SETTING)) {
+    debugShapeSelection("hovered Foundry wall type skipped: setting disabled", {toolName});
+    return false;
+  }
+
+  const wall = getHoveredFoundryWall(point);
+  if (!wall?.document) {
+    debugShapeSelection("hovered Foundry wall type skipped: no hovered wall", {
+      toolName,
+      point,
+      layerHoverId: canvas?.walls?.hover?.document?.id ?? canvas?.walls?.hover?.id,
+      hookHoverId: lastHoveredWallState.id
+    });
+    return false;
+  }
+  if (getWallTypeToolFromDocument(wall.document) === toolName) return true;
+
+  const wallData = WALL_TYPE_DATA[toolName]?.();
+  if (!wallData) return false;
+
+  await canvas.scene.updateEmbeddedDocuments("Wall", [{
+    _id: wall.document.id,
+    ...wallData
+  }]);
+  debugShapeSelection("changed hovered Foundry wall type", {
     toolName,
-    segment,
-    key,
+    wallId: wall.document.id,
     point
   });
   return true;
+}
+
+function getHoveredFoundryWall(point=null) {
+  const hovered = canvas?.walls?.hover;
+  if (hovered?.document) return hovered;
+
+  const hookHovered = getWallPlaceable(lastHoveredWallState.id);
+  if (hookHovered?.document && hookHovered.hover) return hookHovered;
+
+  const flaggedHovered = canvas?.walls?.placeables?.find((wall) => wall?.hover);
+  if (flaggedHovered?.document) return flaggedHovered;
+
+  if (!point) return null;
+
+  const tolerance = getScaledRadius(Math.max(getPreviewStyle().wallWidth + 8, 12));
+  let best = null;
+  let bestDistance = Infinity;
+  for (const wall of canvas?.walls?.placeables ?? []) {
+    if (!wall?.document) continue;
+    const coords = wall.document.c;
+    if (!Array.isArray(coords) || coords.length < 4) continue;
+    const start = {x: Number(coords[0]) || 0, y: Number(coords[1]) || 0};
+    const end = {x: Number(coords[2]) || 0, y: Number(coords[3]) || 0};
+    if (!isPointNearSegmentBounds(point, start, end, tolerance)) continue;
+    const distance = getPointSegmentDistance(point, start, end);
+    if (distance <= tolerance && distance < bestDistance) {
+      best = wall;
+      bestDistance = distance;
+    }
+  }
+  return best;
 }
 
 function getHoveredEditorSegment(point) {

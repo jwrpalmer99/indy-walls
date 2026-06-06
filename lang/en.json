@@ -24,6 +24,10 @@
         "Name": "Ctrl-click wall type buttons to update selected walls",
         "Hint": "When enabled, Ctrl-clicking Normal, Terrain, Invisible, Ethereal, Window, Door, or Secret Door in the Wall Controls changes the selected walls to that type."
       },
+      "HoveredWallHotkeyTypeChange": {
+        "Name": "Wall type hotkeys update hovered Foundry walls",
+        "Hint": "When enabled, wall type hotkeys can change the Foundry wall under the mouse while Wall Controls are active. Indy shape segment hotkeys still work while editing shapes."
+      },
       "DebugShapeSelection": {
         "Name": "Debug Indy shape selection",
         "Hint": "When enabled, Ctrl-click shape selection diagnostics are written to the browser console."
@@ -112,27 +116,27 @@
     "Keybindings": {
       "SetHoveredSegmentNormal": {
         "Name": "Set hovered Indy wall segment to Normal",
-        "Hint": "While editing an Indy wall shape, changes the segment under the mouse to a normal wall."
+        "Hint": "While editing an Indy wall shape, changes the segment under the mouse to a normal wall. If enabled in settings, also changes hovered Foundry walls."
       },
       "SetHoveredSegmentDoor": {
         "Name": "Set hovered Indy wall segment to Door",
-        "Hint": "While editing an Indy wall shape, changes the segment under the mouse to a door."
+        "Hint": "While editing an Indy wall shape, changes the segment under the mouse to a door. If enabled in settings, also changes hovered Foundry walls."
       },
       "SetHoveredSegmentWindow": {
         "Name": "Set hovered Indy wall segment to Window",
-        "Hint": "While editing an Indy wall shape, changes the segment under the mouse to a window."
+        "Hint": "While editing an Indy wall shape, changes the segment under the mouse to a window. If enabled in settings, also changes hovered Foundry walls."
       },
       "SetHoveredSegmentInvisible": {
         "Name": "Set hovered Indy wall segment to Invisible",
-        "Hint": "While editing an Indy wall shape, changes the segment under the mouse to an invisible wall."
+        "Hint": "While editing an Indy wall shape, changes the segment under the mouse to an invisible wall. If enabled in settings, also changes hovered Foundry walls."
       },
       "SetHoveredSegmentSecret": {
         "Name": "Set hovered Indy wall segment to Secret Door",
-        "Hint": "While editing an Indy wall shape, changes the segment under the mouse to a secret door."
+        "Hint": "While editing an Indy wall shape, changes the segment under the mouse to a secret door. If enabled in settings, also changes hovered Foundry walls."
       },
       "SetHoveredSegmentTerrain": {
         "Name": "Set hovered Indy wall segment to Terrain",
-        "Hint": "While editing an Indy wall shape, changes the segment under the mouse to terrain."
+        "Hint": "While editing an Indy wall shape, changes the segment under the mouse to terrain. If enabled in settings, also changes hovered Foundry walls."
       }
     },
     "Tooltips": {

@@ -34,16 +34,12 @@ export function resetEditorCursor(event=null) {
 }
 
 export function scheduleEditorInteractionReset(event=null) {
-  debugInteractionManagers("schedule editor interaction reset start", event);
   resetEditorCursor(event);
-  debugInteractionManagers("after immediate editor interaction reset", event);
   globalThis.queueMicrotask?.(() => {
     resetEditorCursor(event);
-    debugInteractionManagers("after microtask editor interaction reset", event);
   });
   setTimeout(() => {
     resetEditorCursor(event);
-    debugInteractionManagers("after timeout 0 editor interaction reset", event);
   }, 0);
 }
 
