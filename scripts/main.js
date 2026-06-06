@@ -179,12 +179,14 @@ const ACTIVE_TOOL_HIGHLIGHT_COLOR_SETTING = "activeShapeToolHighlightColor";
 const ACTIVE_TOOL_HIGHLIGHT_GLOW_SETTING = "activeShapeToolHighlightGlow";
 const ACTIVE_TOOL_HIGHLIGHT_BORDER_WIDTH_SETTING = "activeShapeToolHighlightBorderWidth";
 const SHOW_DOOR_GLYPHS_SETTING = "showDoorGlyphsInEditor";
+const CONVERT_TO_INDY_TOOL = "indyConvertToIndyWalls";
 const shapeLoadState = {
   allowControlWallLoad: false
 };
 const controlKeyState = {
   down: false
 };
+let convertingToIndyWalls = false;
 const editorDomDragState = {
   active: false,
   tool: null,
@@ -534,6 +536,24 @@ Hooks.on("getSceneControlButtons", (controls) => {
       ]
     }
   };
+
+  wallTools[CONVERT_TO_INDY_TOOL] = {
+    name: CONVERT_TO_INDY_TOOL,
+    order: 17,
+    title: "indy-walls.Controls.ConvertToIndyWalls",
+    icon: "fa-solid fa-wand-magic-sparkles",
+    button: true,
+    onClick: () => convertSceneWallsToIndyWalls(),
+    onChange: (_event, active) => {
+      if (active) convertSceneWallsToIndyWalls();
+    },
+    toolclip: {
+      heading: "indy-walls.Controls.ConvertToIndyWalls",
+      items: [
+        {paragraph: "indy-walls.Tooltips.ConvertToIndyWalls"}
+      ]
+    }
+  };
 });
 
 Hooks.on("renderSceneControls", () => {
@@ -603,6 +623,500 @@ async function updateSelectedWalls(toolName) {
   });
 
   await canvas.scene.updateEmbeddedDocuments("Wall", updates);
+}
+
+async function convertSceneWallsToIndyWalls() {
+  if (!game.user.isGM || !canvas?.scene) return;
+  if (convertingToIndyWalls) return;
+  convertingToIndyWalls = true;
+
+  try {
+    const candidates = getPlainWallConversionCandidates();
+    if (!candidates.length) {
+      ui.notifications?.info(game.i18n.localize("indy-walls.Notifications.NoWallsToConvert"));
+      return;
+    }
+
+    const rectangleGroups = detectRectangleConversionGroups(candidates);
+    const usedIds = new Set(rectangleGroups.flatMap((group) => group.records.map((record) => record.wall.id)));
+    const remaining = candidates.filter((candidate) => !usedIds.has(candidate.wall.id));
+    const polylineGroups = detectPolylineConversionGroups(remaining);
+    const updates = [
+      ...rectangleGroups.flatMap((group) => buildRectangleConversionUpdates(group)),
+      ...polylineGroups.flatMap((group) => buildPolylineConversionUpdates(group))
+    ];
+
+    if (!updates.length) {
+      ui.notifications?.info(game.i18n.localize("indy-walls.Notifications.NoWallsToConvert"));
+      return;
+    }
+
+    await canvas.scene.updateEmbeddedDocuments("Wall", updates);
+    ui.notifications?.info(game.i18n.format("indy-walls.Notifications.WallsConvertedToIndy", {
+      count: updates.length,
+      rectangles: rectangleGroups.length,
+      polylines: polylineGroups.length
+    }));
+  } finally {
+    convertingToIndyWalls = false;
+  }
+}
+
+function getPlainWallConversionCandidates() {
+  return getSceneWallDocuments()
+    .filter((wall) => !hasIndyShapeFlag(wall))
+    .map(getWallConversionCandidate)
+    .filter((candidate) => candidate !== null);
+}
+
+function getSceneWallDocuments() {
+  const walls = canvas?.scene?.walls;
+  if (!walls) return [];
+  if (Array.isArray(walls.contents)) return walls.contents;
+  return Array.from(walls);
+}
+
+function getWallConversionCandidate(wall) {
+  const c = wall?.c;
+  if (!Array.isArray(c) || c.length < 4) return null;
+
+  const a = {x: Math.round(Number(c[0]) || 0), y: Math.round(Number(c[1]) || 0)};
+  const b = {x: Math.round(Number(c[2]) || 0), y: Math.round(Number(c[3]) || 0)};
+  if (a.x === b.x && a.y === b.y) return null;
+
+  return {
+    wall,
+    a,
+    b,
+    aKey: conversionPointKey(a),
+    bKey: conversionPointKey(b),
+    horizontal: a.y === b.y,
+    vertical: a.x === b.x
+  };
+}
+
+function detectRectangleConversionGroups(candidates) {
+  const groups = [];
+  for (const component of getWallConversionComponents(candidates.filter((candidate) => candidate.horizontal || candidate.vertical))) {
+    groups.push(...getRectangleConversionGroupsFromComponent(component));
+  }
+  return groups;
+}
+
+function getWallConversionComponents(candidates) {
+  const byPoint = new Map();
+  for (const candidate of candidates) {
+    for (const key of [candidate.aKey, candidate.bKey]) {
+      if (!byPoint.has(key)) byPoint.set(key, []);
+      byPoint.get(key).push(candidate);
+    }
+  }
+
+  const visited = new Set();
+  const components = [];
+  for (const candidate of candidates) {
+    if (visited.has(candidate.wall.id)) continue;
+
+    const component = [];
+    const stack = [candidate];
+    visited.add(candidate.wall.id);
+    while (stack.length) {
+      const current = stack.pop();
+      component.push(current);
+      for (const key of [current.aKey, current.bKey]) {
+        for (const next of byPoint.get(key) ?? []) {
+          if (visited.has(next.wall.id)) continue;
+          visited.add(next.wall.id);
+          stack.push(next);
+        }
+      }
+    }
+    components.push(component);
+  }
+  return components;
+}
+
+function getRectangleConversionGroupsFromComponent(component) {
+  if (component.length < 4 || component.some((candidate) => !(candidate.horizontal || candidate.vertical))) return [];
+
+  const points = component.flatMap((candidate) => [candidate.a, candidate.b]);
+  const xs = [...new Set(points.map((point) => point.x))].sort((a, b) => a - b);
+  const ys = [...new Set(points.map((point) => point.y))].sort((a, b) => a - b);
+  const candidates = [];
+  for (let xi = 0; xi < xs.length - 1; xi++) {
+    for (let xj = xi + 1; xj < xs.length; xj++) {
+      for (let yi = 0; yi < ys.length - 1; yi++) {
+        for (let yj = yi + 1; yj < ys.length; yj++) {
+          const group = getRectangleConversionGroupForBounds(component, {
+            minX: xs[xi],
+            maxX: xs[xj],
+            minY: ys[yi],
+            maxY: ys[yj]
+          });
+          if (group) candidates.push({
+            group,
+            area: (xs[xj] - xs[xi]) * (ys[yj] - ys[yi])
+          });
+        }
+      }
+    }
+  }
+
+  const used = new Set();
+  const groups = [];
+  for (const {group} of candidates.sort((a, b) => b.area - a.area)) {
+    if (group.records.some((record) => used.has(record.wall.id))) continue;
+    group.records.forEach((record) => used.add(record.wall.id));
+    groups.push(group);
+  }
+  return groups;
+}
+
+function getRectangleConversionGroupForBounds(component, {minX, minY, maxX, maxY}) {
+  if (minX === maxX || minY === maxY) return null;
+  const sideItems = {top: [], right: [], bottom: [], left: []};
+  for (const candidate of component) {
+    const item = getRectangleSideConversionItem(candidate, {minX, minY, maxX, maxY});
+    if (item) sideItems[item.side].push(item);
+  }
+
+  if (!rectangleSideFullyCovered(sideItems.top, minX, maxX)
+    || !rectangleSideFullyCovered(sideItems.right, minY, maxY)
+    || !rectangleSideFullyCovered(sideItems.bottom, minX, maxX)
+    || !rectangleSideFullyCovered(sideItems.left, minY, maxY)) return null;
+
+  const ordered = {
+    top: sideItems.top.sort((a, b) => a.start - b.start),
+    right: sideItems.right.sort((a, b) => a.start - b.start),
+    bottom: sideItems.bottom.sort((a, b) => b.end - a.end),
+    left: sideItems.left.sort((a, b) => b.end - a.end)
+  };
+  const sideSegments = {
+    top: ordered.top.length,
+    right: ordered.right.length,
+    bottom: ordered.bottom.length,
+    left: ordered.left.length
+  };
+  const sideRatios = {
+    top: rectangleSideRatios(ordered.top, minX, maxX, "forward"),
+    right: rectangleSideRatios(ordered.right, minY, maxY, "forward"),
+    bottom: rectangleSideRatios(ordered.bottom, minX, maxX, "reverse"),
+    left: rectangleSideRatios(ordered.left, minY, maxY, "reverse")
+  };
+  const sideGaps = {top: [], right: [], bottom: [], left: []};
+  const records = [];
+  for (const side of ["top", "right", "bottom", "left"]) {
+    ordered[side].forEach((item, index) => records.push({wall: item.candidate.wall, side, index}));
+  }
+
+  return {
+    records,
+    handles: [{x: minX, y: minY}, {x: maxX, y: maxY}],
+    sideSegments,
+    sideRatios,
+    sideEnabled: {top: true, right: true, bottom: true, left: true},
+    sideGaps
+  };
+}
+
+function getRectangleSideConversionItem(candidate, bounds) {
+  const {minX, minY, maxX, maxY} = bounds;
+  const lowX = Math.min(candidate.a.x, candidate.b.x);
+  const highX = Math.max(candidate.a.x, candidate.b.x);
+  const lowY = Math.min(candidate.a.y, candidate.b.y);
+  const highY = Math.max(candidate.a.y, candidate.b.y);
+
+  if (candidate.horizontal && candidate.a.y === minY && lowX >= minX && highX <= maxX) {
+    return {candidate, side: "top", start: lowX, end: highX};
+  }
+  if (candidate.horizontal && candidate.a.y === maxY && lowX >= minX && highX <= maxX) {
+    return {candidate, side: "bottom", start: lowX, end: highX};
+  }
+  if (candidate.vertical && candidate.a.x === maxX && lowY >= minY && highY <= maxY) {
+    return {candidate, side: "right", start: lowY, end: highY};
+  }
+  if (candidate.vertical && candidate.a.x === minX && lowY >= minY && highY <= maxY) {
+    return {candidate, side: "left", start: lowY, end: highY};
+  }
+  return null;
+}
+
+function rectangleSideFullyCovered(items, min, max) {
+  if (!items.length) return false;
+  const ordered = [...items].sort((a, b) => a.start - b.start);
+  let cursor = min;
+  for (const item of ordered) {
+    if (item.start > cursor) return false;
+    cursor = Math.max(cursor, item.end);
+  }
+  return cursor >= max;
+}
+
+function rectangleSideRatios(items, min, max, direction) {
+  const length = max - min;
+  if (length <= 0 || items.length <= 1) return [];
+  return items.slice(0, -1)
+    .map((item) => direction === "reverse" ? (max - item.start) / length : (item.end - min) / length)
+    .filter((ratio) => ratio > 0 && ratio < 1);
+}
+
+function buildRectangleConversionUpdates(group) {
+  const rectangleId = foundry.utils.randomID();
+  const wallIds = group.records.map((record) => record.wall.id);
+  const wallTypeBySegment = {};
+  const wallDataBySegment = {};
+  for (const record of group.records) {
+    const key = getRectangleSegmentKey(record);
+    const tool = getWallTypeToolFromDocument(record.wall);
+    if (tool) wallTypeBySegment[key] = tool;
+    const preserved = getPreservedWallDataFromDocument(record.wall, MODULE_ID);
+    if (preserved) wallDataBySegment[key] = preserved;
+  }
+  const wallTypeTool = getMostCommonWallTypeTool(Object.values(wallTypeBySegment));
+
+  return group.records.map((record, index) => ({
+    _id: record.wall.id,
+    [`flags.${MODULE_ID}.${RECTANGLE_FLAG}`]: {
+      rectangleId,
+      index,
+      side: record.side,
+      segmentIndex: record.index,
+      wallIds,
+      handles: clonePoints(group.handles),
+      sideSegments: {...group.sideSegments},
+      sideRatios: cloneRectangleSideRatios(group.sideRatios),
+      sideEnabled: cloneRectangleSideEnabled(group.sideEnabled),
+      sideGaps: cloneRectangleSideGaps(group.sideGaps),
+      wallTypeBySegment: cloneWallTypeBySegment(wallTypeBySegment),
+      wallDataBySegment: cloneWallDataBySegment(wallDataBySegment),
+      wallTypeTool
+    }
+  }));
+}
+
+function detectPolylineConversionGroups(candidates) {
+  const groups = [];
+  for (const component of getWallConversionComponents(candidates)) {
+    groups.push(...getPolylineConversionGroups(component));
+  }
+  return mergeCompatiblePolylineConversionGroups(groups);
+}
+
+function getPolylineConversionGroups(component) {
+  if (!component.length) return [];
+  const byPoint = new Map();
+  for (const candidate of component) {
+    for (const key of [candidate.aKey, candidate.bKey]) {
+      if (!byPoint.has(key)) byPoint.set(key, []);
+      byPoint.get(key).push(candidate);
+    }
+  }
+
+  const used = new Set();
+  const groups = [];
+  const junctionKeys = [...byPoint.entries()]
+    .filter(([, edges]) => edges.length !== 2)
+    .map(([key]) => key)
+    .sort();
+
+  for (const startKey of junctionKeys) {
+    const edges = [...(byPoint.get(startKey) ?? [])].sort(compareConversionCandidates);
+    for (const edge of edges) {
+      if (used.has(edge.wall.id)) continue;
+      groups.push(tracePolylineConversionPath(edge, startKey, byPoint, used, false));
+    }
+  }
+
+  for (const candidate of component.sort(compareConversionCandidates)) {
+    if (used.has(candidate.wall.id)) continue;
+    groups.push(tracePolylineConversionPath(candidate, candidate.aKey, byPoint, used, true));
+  }
+
+  return groups.filter((group) => group.candidates.length && group.points.length >= 2);
+}
+
+function tracePolylineConversionPath(firstEdge, startKey, byPoint, used, allowClosed) {
+  const candidates = [];
+  const points = [conversionPointFromKey(startKey)];
+  let currentKey = startKey;
+  let edge = firstEdge;
+  let closed = false;
+
+  while (edge && !used.has(edge.wall.id)) {
+    used.add(edge.wall.id);
+    candidates.push(edge);
+    const nextKey = edge.aKey === currentKey ? edge.bKey : edge.aKey;
+    if (nextKey === startKey && allowClosed) {
+      closed = true;
+      break;
+    }
+    points.push(conversionPointFromKey(nextKey));
+    currentKey = nextKey;
+
+    const nextEdges = (byPoint.get(currentKey) ?? [])
+      .filter((candidate) => !used.has(candidate.wall.id))
+      .sort(compareConversionCandidates);
+    if (nextEdges.length !== 1) break;
+    edge = nextEdges[0];
+  }
+
+  return {candidates, points, closed};
+}
+
+function compareConversionCandidates(a, b) {
+  return String(a.wall.id).localeCompare(String(b.wall.id));
+}
+
+function mergeCompatiblePolylineConversionGroups(groups) {
+  let result = groups;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const next = [];
+    const used = new Set();
+
+    for (let i = 0; i < result.length; i++) {
+      if (used.has(i)) continue;
+
+      let group = result[i];
+      for (let j = i + 1; j < result.length; j++) {
+        if (used.has(j)) continue;
+        const merged = mergePolylineConversionGroups(group, result[j]);
+        if (!merged) continue;
+
+        group = merged;
+        used.add(j);
+        changed = true;
+      }
+
+      used.add(i);
+      next.push(group);
+    }
+
+    result = next;
+  }
+  return result;
+}
+
+function mergePolylineConversionGroups(a, b) {
+  if (a.closed || b.closed || a.points.length < 2 || b.points.length < 2) return null;
+
+  const aStart = conversionPointKey(a.points[0]);
+  const aEnd = conversionPointKey(a.points.at(-1));
+  const bStart = conversionPointKey(b.points[0]);
+  const bEnd = conversionPointKey(b.points.at(-1));
+
+  if (aEnd === bStart && canMergePolylineAtEndpoint(a, "end", b, "start")) {
+    return {
+      candidates: [...a.candidates, ...b.candidates],
+      points: [...a.points, ...b.points.slice(1)],
+      closed: false
+    };
+  }
+  if (bEnd === aStart && canMergePolylineAtEndpoint(b, "end", a, "start")) {
+    return {
+      candidates: [...b.candidates, ...a.candidates],
+      points: [...b.points, ...a.points.slice(1)],
+      closed: false
+    };
+  }
+  if (aStart === bStart && canMergePolylineAtEndpoint(a, "start", b, "start")) {
+    return {
+      candidates: [...reverseConversionCandidates(a.candidates), ...b.candidates],
+      points: [...reverseConversionPoints(a.points), ...b.points.slice(1)],
+      closed: false
+    };
+  }
+  if (aEnd === bEnd && canMergePolylineAtEndpoint(a, "end", b, "end")) {
+    return {
+      candidates: [...a.candidates, ...reverseConversionCandidates(b.candidates)],
+      points: [...a.points, ...reverseConversionPoints(b.points).slice(1)],
+      closed: false
+    };
+  }
+
+  return null;
+}
+
+function canMergePolylineAtEndpoint(a, aSide, b, bSide) {
+  const aVector = getPolylineTerminalVector(a.points, aSide);
+  const bVector = getPolylineTerminalVector(b.points, bSide);
+  if (!aVector || !bVector) return false;
+
+  const cross = (aVector.x * bVector.y) - (aVector.y * bVector.x);
+  const dot = (aVector.x * bVector.x) + (aVector.y * bVector.y);
+  return Math.abs(cross) < 0.0001 && dot < 0;
+}
+
+function getPolylineTerminalVector(points, side) {
+  if (points.length < 2) return null;
+  const endpoint = side === "start" ? points[0] : points.at(-1);
+  const next = side === "start" ? points[1] : points.at(-2);
+  const dx = next.x - endpoint.x;
+  const dy = next.y - endpoint.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 0.1) return null;
+  return {x: dx / length, y: dy / length};
+}
+
+function reverseConversionPoints(points) {
+  return [...points].reverse().map((point) => ({x: point.x, y: point.y}));
+}
+
+function reverseConversionCandidates(candidates) {
+  return [...candidates].reverse();
+}
+
+function buildPolylineConversionUpdates(group) {
+  const polylineId = foundry.utils.randomID();
+  const wallIds = group.candidates.map((candidate) => candidate.wall.id);
+  const wallTypeBySegment = {};
+  const wallDataBySegment = {};
+  for (let index = 0; index < group.candidates.length; index++) {
+    const candidate = group.candidates[index];
+    const key = String(index);
+    const tool = getWallTypeToolFromDocument(candidate.wall);
+    if (tool) wallTypeBySegment[key] = tool;
+    const preserved = getPreservedWallDataFromDocument(candidate.wall, MODULE_ID);
+    if (preserved) wallDataBySegment[key] = preserved;
+  }
+  const wallTypeTool = getMostCommonWallTypeTool(Object.values(wallTypeBySegment));
+
+  return group.candidates.map((candidate, index) => ({
+    _id: candidate.wall.id,
+    [`flags.${MODULE_ID}.${POLYLINE_FLAG}`]: {
+      polylineId,
+      index,
+      wallIds,
+      points: clonePoints(group.points),
+      closed: group.closed,
+      segmentGaps: [],
+      segmentCurves: {},
+      curveSegments: DEFAULT_POLYLINE_CURVE_SEGMENTS,
+      curveSegmentsBySegment: {},
+      wallTypeBySegment: cloneWallTypeBySegment(wallTypeBySegment),
+      wallDataBySegment: cloneWallDataBySegment(wallDataBySegment),
+      wallTypeTool
+    }
+  }));
+}
+
+function getMostCommonWallTypeTool(tools) {
+  const counts = new Map();
+  for (const tool of tools) {
+    if (!tool) continue;
+    counts.set(tool, (counts.get(tool) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "walls";
+}
+
+function conversionPointKey(point) {
+  return `${Math.round(point.x)},${Math.round(point.y)}`;
+}
+
+function conversionPointFromKey(key) {
+  const [x, y] = String(key).split(",").map((value) => Number(value) || 0);
+  return {x, y};
 }
 
 function registerWallTypeControlShortcuts() {
