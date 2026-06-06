@@ -29,6 +29,7 @@ export const cubicState = {
   wallTypeBySegment: {},
   curveMode: CUBIC_CURVE_BEZIER,
   lastSavedCurveMode: CUBIC_CURVE_BEZIER,
+  curveModeMemory: {},
   segments: DEFAULT_CUBIC_SEGMENTS,
   segmentGaps: [],
   graphics: null,
@@ -242,13 +243,35 @@ export function toggleCubicCurveModeWithUndo(deps) {
 
 function toggleCubicCurveMode(deps) {
   if (!cubicState.placed) return false;
+  rememberCurrentCubicCurveModeState();
   if (cubicState.curveMode === CUBIC_CURVE_BEZIER) {
-    convertCubicBezierToArc();
+    restoreCubicCurveModeState(CUBIC_CURVE_ARC) || convertCubicBezierToArc();
   } else {
-    convertCubicArcToBezier();
+    restoreCubicCurveModeState(CUBIC_CURVE_BEZIER) || convertCubicArcToBezier();
   }
   cubicState.segmentGaps = reconcileCubicSegmentGaps(cubicState.segmentGaps, cubicState.segments);
   deps.drawCubicPreview();
+  return true;
+}
+
+function rememberCurrentCubicCurveModeState() {
+  cubicState.curveModeMemory = {
+    ...(cubicState.curveModeMemory ?? {}),
+    [normalizeCubicCurveMode(cubicState.curveMode)]: {
+      handles: cloneCubicHandles(),
+      segments: cubicState.segments,
+      segmentGaps: [...cubicState.segmentGaps]
+    }
+  };
+}
+
+function restoreCubicCurveModeState(mode) {
+  const memory = cubicState.curveModeMemory?.[normalizeCubicCurveMode(mode)];
+  if (!memory) return false;
+  cubicState.curveMode = normalizeCubicCurveMode(mode);
+  cubicState.handles = cloneCubicHandles(memory.handles);
+  cubicState.segments = Number(memory.segments) || DEFAULT_CUBIC_SEGMENTS;
+  cubicState.segmentGaps = reconcileCubicSegmentGaps(memory.segmentGaps, cubicState.segments);
   return true;
 }
 
@@ -297,6 +320,16 @@ export function getCubicEditableHandleIndexes() {
 
 export function normalizeCubicCurveMode(mode) {
   return mode === CUBIC_CURVE_ARC ? CUBIC_CURVE_ARC : CUBIC_CURVE_BEZIER;
+}
+
+export function translateCubicCurveModeMemory(dx=0, dy=0) {
+  cubicState.curveModeMemory = cloneCubicCurveModeMemory(cubicState.curveModeMemory);
+  for (const value of Object.values(cubicState.curveModeMemory)) {
+    value.handles = cloneCubicHandles(value.handles).map((handle) => ({
+      x: handle.x + dx,
+      y: handle.y + dy
+    }));
+  }
 }
 
 export async function applyCubicWalls(deps) {
@@ -367,6 +400,7 @@ export function clearCubicPreview(deps) {
   cubicState.wallIds = [];
   cubicState.wallTypeBySegment = {};
   cubicState.curveMode = getCubicInitialCurveMode();
+  cubicState.curveModeMemory = {};
   cubicState.segmentGaps = [];
   destroyPreviewGraphics(cubicState);
   cubicState.graphics = null;
@@ -402,6 +436,7 @@ export function loadCubicCurveFromWall(wall, deps) {
   cubicState.wallIds = Array.isArray(cubicData.wallIds) ? [...cubicData.wallIds] : [wall.document.id];
   cubicState.wallTypeTool = deps.getWallTypeToolFromDocument(wall.document) ?? cubicData.wallTypeTool ?? "walls";
   cubicState.curveMode = normalizeCubicCurveMode(cubicData.curveMode);
+  cubicState.curveModeMemory = {};
   cubicState.segments = deps.clamp(Number(cubicData.segments) || DEFAULT_CUBIC_SEGMENTS, 2, 64);
   cubicState.segmentGaps = reconcileCubicSegmentGaps(cubicData.segmentGaps, cubicState.segments);
   cubicState.handles = cubicData.handles.map((handle) => ({
@@ -420,6 +455,27 @@ export function loadCubicCurveFromWall(wall, deps) {
 
 function cloneHandles(deps) {
   return deps.clonePoints(cubicState.handles);
+}
+
+export function cloneCubicCurveModeMemory(source={}) {
+  const result = {};
+  for (const [mode, value] of Object.entries(source ?? {})) {
+    const normalizedMode = normalizeCubicCurveMode(mode);
+    result[normalizedMode] = {
+      handles: cloneCubicHandles(value?.handles),
+      segments: Number(value?.segments) || DEFAULT_CUBIC_SEGMENTS,
+      segmentGaps: reconcileCubicSegmentGaps(value?.segmentGaps, Number(value?.segments) || DEFAULT_CUBIC_SEGMENTS)
+    };
+  }
+  return result;
+}
+
+function cloneCubicHandles(source=cubicState.handles) {
+  const handles = Array.isArray(source) ? source : cubicState.handles;
+  return handles.map((handle) => ({
+    x: Number(handle?.x) || 0,
+    y: Number(handle?.y) || 0
+  }));
 }
 
 export function getExistingCurveWallIds() {

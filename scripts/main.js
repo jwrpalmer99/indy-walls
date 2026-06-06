@@ -61,9 +61,11 @@ import {
   getExistingCurveWallIds as getExistingCurveWallIdsImpl,
   initializeCubicControls,
   loadCubicCurveFromWall as loadCubicCurveFromWallImpl,
+  cloneCubicCurveModeMemory,
   normalizeCubicCurveMode,
   reconcileCubicSegmentGaps,
   setHandle,
+  translateCubicCurveModeMemory,
   toggleCubicCurveModeWithUndo as toggleCubicCurveModeWithUndoImpl
 } from "./shapes/cubic.js";
 import {
@@ -140,6 +142,7 @@ import {
   getPolylineSegmentAt as getPolylineSegmentAtImpl,
   getPolylineSegmentEditFromEvent as getPolylineSegmentEditFromEventImpl,
   clonePolylineCurveSegmentsBySegment,
+  clonePolylineSegmentModeMemory,
   clonePolylineSegmentCurves,
   getPolylineCurveHandleAt as getPolylineCurveHandleAtImpl,
   getPolylineVertexAt as getPolylineVertexAtImpl,
@@ -758,6 +761,7 @@ function patchWallsLayer() {
       cubicState.wallIds = [];
       cubicState.wallTypeBySegment = {};
       cubicState.curveMode = getCubicInitialCurveMode();
+      cubicState.curveModeMemory = {};
       cubicState.segmentGaps = [];
       setHandle(0, point);
       setHandle(1, point);
@@ -2142,6 +2146,7 @@ function initializeCubicDomPlacement(point) {
   cubicState.wallIds = [];
   cubicState.wallTypeBySegment = {};
   cubicState.curveMode = getCubicInitialCurveMode();
+  cubicState.curveModeMemory = {};
   cubicState.segmentGaps = [];
   setHandle(0, point);
   setHandle(1, point);
@@ -3003,6 +3008,7 @@ function getEditorSnapshot(state) {
       placed: cubicState.placed,
       handles: clonePoints(cubicState.handles),
       curveMode: cubicState.curveMode,
+      curveModeMemory: cloneCubicCurveModeMemory(cubicState.curveModeMemory),
       segments: cubicState.segments,
       segmentGaps: [...cubicState.segmentGaps],
       wallTypeBySegment: cloneWallTypeBySegment(cubicState.wallTypeBySegment),
@@ -3032,6 +3038,7 @@ function getEditorSnapshot(state) {
       segmentCurves: clonePolylineSegmentCurves(polylineState.segmentCurves),
       curveSegments: polylineState.curveSegments,
       curveSegmentsBySegment: clonePolylineCurveSegmentsBySegment(polylineState.curveSegmentsBySegment),
+      segmentModeMemory: clonePolylineSegmentModeMemory(polylineState.segmentModeMemory),
       wallTypeBySegment: cloneWallTypeBySegment(polylineState.wallTypeBySegment),
       wallTypeTool: polylineState.wallTypeTool
     };
@@ -3054,6 +3061,7 @@ function restoreEditorSnapshot(state, snapshot) {
     cubicState.placed = snapshot.placed;
     cubicState.handles = clonePoints(snapshot.handles);
     cubicState.curveMode = normalizeCubicCurveMode(snapshot.curveMode);
+    cubicState.curveModeMemory = cloneCubicCurveModeMemory(snapshot.curveModeMemory);
     cubicState.segments = snapshot.segments;
     cubicState.segmentGaps = reconcileCubicSegmentGaps(snapshot.segmentGaps, cubicState.segments);
     cubicState.wallTypeBySegment = cloneWallTypeBySegment(snapshot.wallTypeBySegment);
@@ -3089,6 +3097,7 @@ function restoreEditorSnapshot(state, snapshot) {
     polylineState.segmentCurves = reconcilePolylineSegmentCurves(snapshot.segmentCurves, getPolylineSegmentCount());
     polylineState.curveSegments = clamp(Number(snapshot.curveSegments) || DEFAULT_POLYLINE_CURVE_SEGMENTS, 2, 64);
     polylineState.curveSegmentsBySegment = clonePolylineCurveSegmentsBySegment(snapshot.curveSegmentsBySegment);
+    polylineState.segmentModeMemory = clonePolylineSegmentModeMemory(snapshot.segmentModeMemory);
     polylineState.wallTypeBySegment = cloneWallTypeBySegment(snapshot.wallTypeBySegment);
     polylineState.wallTypeTool = snapshot.wallTypeTool;
     polylineState.draggingVertex = null;
@@ -3530,7 +3539,10 @@ function moveEditorShapeToCenter(tool, point) {
 
 function translateEditorShape(tool, dx, dy) {
   if (!Number.isFinite(dx) || !Number.isFinite(dy) || (!dx && !dy)) return;
-  if (tool === CUBIC_TOOL) cubicState.handles = translatePoints(cubicState.handles, dx, dy);
+  if (tool === CUBIC_TOOL) {
+    cubicState.handles = translatePoints(cubicState.handles, dx, dy);
+    translateCubicCurveModeMemory(dx, dy);
+  }
   else if (tool === ELLIPSE_TOOL) ellipseState.handles = translatePoints(ellipseState.handles, dx, dy);
   else if (tool === RECTANGLE_TOOL) rectangleState.handles = translatePoints(rectangleState.handles, dx, dy);
   else if (tool === POLYLINE_TOOL) {
