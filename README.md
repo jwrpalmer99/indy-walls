@@ -40,7 +40,7 @@ Supported type buttons:
 - Doors
 - Secret doors
 
-This setting is client-side and is enabled by default.
+This setting is client-side and is enabled by default. You can also change by hotkeys (see below), which is disabled by default.
 
 ### Indy Shape Editing
 
