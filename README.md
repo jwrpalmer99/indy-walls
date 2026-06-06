@@ -76,7 +76,7 @@ The inline tolerance sliders and matching stored settings control how aggressive
 
 ### Preview Styling
 
-Module settings include client-side controls for the editor preview wall color and width, per-type segment preview colors, regular vertex color and size, active vertex color, endpoint color and size, Bezier handle color and size, outline color and width, and the active Indy shape tool button highlight color, glow, and border width.
+Module settings include client-side controls for the editor preview wall color and width, per-type segment preview colors, regular vertex color and size, active vertex color, endpoint color and size, Bezier handle color and size, center handle color and size, outline color and width, and the active Indy shape tool button highlight color, glow, and border width.
 If lib - ColorSettings is active, Indy Walls uses its color picker UI for color settings. Without it, color settings remain plain hex text fields.
 
 ### Editing Undo/Redo

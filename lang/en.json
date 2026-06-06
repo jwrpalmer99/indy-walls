@@ -129,6 +129,14 @@
         "Name": "Preview Bezier handle size",
         "Hint": "Size for cubic Bezier control handles."
       },
+      "PreviewMoveHandleColor": {
+        "Name": "Preview center handle color",
+        "Hint": "Hex color for the center handle used to move the active Indy shape preview."
+      },
+      "PreviewMoveHandleSize": {
+        "Name": "Preview center handle size",
+        "Hint": "Size for the center handle used to move the active Indy shape preview."
+      },
       "PreviewOutlineColor": {
         "Name": "Preview outline color",
         "Hint": "Hex color for handle and vertex outlines."

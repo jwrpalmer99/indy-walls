@@ -352,7 +352,7 @@ function createConversionToleranceControl(kind, controls) {
 
   const slider = document.createElement("input");
   slider.type = "range";
-  slider.min = "0.25";
+  slider.min = "0";
   slider.max = "10";
   slider.step = "0.05";
   slider.value = String(getConversionToleranceMultiplier(kind));
@@ -390,7 +390,7 @@ function adjustConversionTolerance(kind, delta) {
 async function setConversionTolerance(kind, value) {
   const setting = CONVERSION_TOLERANCE_CONFIG[kind]?.setting;
   if (!setting) return;
-  const next = clamp(Number(value) || 1, 0.25, 10);
+  const next = clamp(Number.isFinite(Number(value)) ? Number(value) : 1, 0, 10);
   await game.settings?.set?.(MODULE_ID, setting, next);
   const controls = conversionPreviewSession?.controls?._indyWallsToleranceControls?.[kind];
   if (controls) {
@@ -404,7 +404,8 @@ function getConversionToleranceMultiplier(kind) {
   const setting = CONVERSION_TOLERANCE_CONFIG[kind]?.setting;
   const value = setting ? getSettingNumber(setting, null) : null;
   const fallback = getSettingNumber(LEGACY_CONVERSION_TOLERANCE_SETTING, 1);
-  return clamp(Number(value ?? fallback) || 1, 0.25, 10);
+  const number = Number(value ?? fallback);
+  return clamp(Number.isFinite(number) ? number : 1, 0, 10);
 }
 
 function getSettingNumber(setting, fallback) {
@@ -999,7 +1000,7 @@ function getCubicBezierFit(points) {
     if (!best || fit.error < best.error) best = fit;
   }
   if (!best) return null;
-  if (getMaxPointSegmentDistance(points, points[0], points.at(-1)) <= getConversionFitTolerance(points, "bezier")) return null;
+  if (getMaxPointSegmentDistance(points, points[0], points.at(-1)) <= getConversionBaseFitTolerance(points)) return null;
   if (best.error > getConversionFitTolerance(points, "bezier") * 1.2) return null;
 
   return best;
@@ -1168,6 +1169,7 @@ function getArcFit(points) {
   }
   if (maxError > tolerance) return null;
   if (!hasBalancedArcSegments(points)) return null;
+  if (!hasSmoothArcTurns(points)) return null;
 
   const startAngle = Math.atan2(points[0].y - circle.y, points[0].x - circle.x);
   const endAngle = Math.atan2(points.at(-1).y - circle.y, points.at(-1).x - circle.x);
@@ -1199,6 +1201,39 @@ function hasBalancedArcSegments(points) {
 
   const maxLength = Math.max(...lengths);
   return maxLength <= median * 2.4;
+}
+
+function hasSmoothArcTurns(points) {
+  const turns = getPolylineTurnAngles(points).map((turn) => Math.abs(turn));
+  if (turns.length < 2) return false;
+
+  const totalTurn = turns.reduce((sum, turn) => sum + turn, 0);
+  if (totalTurn < Math.PI / 8) return false;
+  if (Math.max(...turns) > Math.PI * 0.38) return false;
+
+  const meaningfulTurns = turns.filter((turn) => turn > Math.PI / 72);
+  if (meaningfulTurns.length < Math.max(2, Math.ceil(turns.length * 0.5))) return false;
+
+  const median = getMedianNumber(meaningfulTurns);
+  if (median <= 0) return false;
+  return Math.max(...meaningfulTurns) <= median * 3.5;
+}
+
+function getPolylineTurnAngles(points) {
+  const turns = [];
+  for (let index = 1; index < points.length - 1; index++) {
+    const ax = points[index].x - points[index - 1].x;
+    const ay = points[index].y - points[index - 1].y;
+    const bx = points[index + 1].x - points[index].x;
+    const by = points[index + 1].y - points[index].y;
+    const aLength = Math.hypot(ax, ay);
+    const bLength = Math.hypot(bx, by);
+    if (aLength < 0.1 || bLength < 0.1) continue;
+    const cross = (ax * by) - (ay * bx);
+    const dot = (ax * bx) + (ay * by);
+    turns.push(Math.atan2(cross, dot));
+  }
+  return turns;
 }
 
 function hasBalancedArcAngles(points, circle, startAngle, sweep) {
@@ -1289,9 +1324,13 @@ function getConversionPointBounds(points) {
 }
 
 function getConversionFitTolerance(points, kind) {
+  return getConversionBaseFitTolerance(points) * getConversionToleranceMultiplier(kind);
+}
+
+function getConversionBaseFitTolerance(points) {
   const bounds = getConversionPointBounds(points);
   const diagonal = Math.hypot(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
-  return clamp(diagonal * 0.025, 3, 18) * getConversionToleranceMultiplier(kind);
+  return clamp(diagonal * 0.025, 3, 18);
 }
 
 function getRectangleAxisTolerance(a, b) {

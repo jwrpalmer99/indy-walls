@@ -323,7 +323,7 @@ function registerConversionToleranceSetting(setting, label) {
     config: false,
     type: Number,
     default: 1,
-    range: {min: 0.25, max: 10, step: 0.05}
+    range: {min: 0, max: 10, step: 0.05}
   });
 }
 
@@ -3421,7 +3421,7 @@ function getEditorMoveHandleAt(tool, point) {
   const center = getEditorShapeCenter(tool);
   if (!center) return null;
   const style = getPreviewStyle();
-  const radius = getScaledRadius(Math.max(style.handleSize * 0.75, style.splitVertexSize) + (style.outlineWidth / 2));
+  const radius = getScaledRadius(style.moveHandleSize + (style.outlineWidth / 2));
   return Math.hypot(center.x - point.x, center.y - point.y) <= radius ? center : null;
 }
 

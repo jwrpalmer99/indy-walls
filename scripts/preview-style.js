@@ -20,6 +20,8 @@ export const STYLE_SETTINGS = {
   endpointSize: "previewEndpointSize",
   handleColor: "previewHandleColor",
   handleSize: "previewHandleSize",
+  moveHandleColor: "previewMoveHandleColor",
+  moveHandleSize: "previewMoveHandleSize",
   outlineColor: "previewOutlineColor",
   outlineWidth: "previewOutlineWidth"
 };
@@ -44,6 +46,7 @@ export function registerStyleSettings() {
     vertexActiveColor: ["PreviewVertexActiveColor", String, "#aaff44"],
     endpointColor: ["PreviewEndpointColor", String, "#ff4444"],
     handleColor: ["PreviewHandleColor", String, "#aaff44"],
+    moveHandleColor: ["PreviewMoveHandleColor", String, "#44c7ff"],
     outlineColor: ["PreviewOutlineColor", String, "#111111"]
   })) {
     registerColorStyleSetting(key, data);
@@ -53,7 +56,8 @@ export function registerStyleSettings() {
     wallWidth: ["PreviewWallWidth", Number, 2, {min: 1, max: 12, step: 1}],
     vertexSize: ["PreviewVertexSize", Number, 3, {min: 2, max: 20, step: 1}],
     endpointSize: ["PreviewEndpointSize", Number, 8, {min: 4, max: 32, step: 1}],
-    handleSize: ["PreviewHandleSize", Number, 12, {min: 4, max: 32, step: 1}],
+    handleSize: ["PreviewHandleSize", Number, 6, {min: 4, max: 32, step: 1}],
+    moveHandleSize: ["PreviewMoveHandleSize", Number, 8, {min: 4, max: 32, step: 1}],
     outlineWidth: ["PreviewOutlineWidth", Number, 2, {min: 0, max: 8, step: 0.5}]
   })) {
     const [label, type, defaultValue, range] = data;
@@ -123,6 +127,8 @@ export function getPreviewStyle() {
     endpointSize: getStyleNumber(STYLE_SETTINGS.endpointSize, 8, 4, 32),
     handleColor: getStyleColor(STYLE_SETTINGS.handleColor, 0xaaff44),
     handleSize: getStyleNumber(STYLE_SETTINGS.handleSize, 12, 4, 32),
+    moveHandleColor: getStyleColor(STYLE_SETTINGS.moveHandleColor, 0x44c7ff),
+    moveHandleSize: getStyleNumber(STYLE_SETTINGS.moveHandleSize, 12, 4, 32),
     outlineColor,
     outlineWidth
   };
@@ -170,8 +176,8 @@ export function drawBezierHandle(graphics, point, style=getPreviewStyle()) {
 }
 
 export function drawMoveHandle(graphics, point, style=getPreviewStyle()) {
-  drawHandle(graphics, point, style.vertexActiveColor, {
-    radius: Math.max(style.handleSize * 0.75, style.splitVertexSize),
+  drawHandle(graphics, point, style.moveHandleColor, {
+    radius: style.moveHandleSize,
     outlineColor: style.outlineColor,
     outlineWidth: style.outlineWidth
   });
