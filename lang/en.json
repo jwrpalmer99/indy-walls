@@ -26,7 +26,9 @@
       "RectangleConversionTolerance": "Rect",
       "EllipseConversionTolerance": "Ellipse",
       "ArcConversionTolerance": "Arc",
-      "BezierConversionTolerance": "Bezier"
+      "BezierConversionTolerance": "Bezier",
+      "ShapeLevels": "Indy shape levels",
+      "NoShapeLevels": "No levels"
     },
     "Settings": {
       "ColorPickerLabel": "Color Picker",

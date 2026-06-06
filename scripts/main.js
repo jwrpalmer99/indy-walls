@@ -164,7 +164,7 @@ import {
   translatePolylineSegmentCurves
 } from "./shapes/polyline.js";
 import {
-  getSegmentWallData,
+  getSegmentWallData as getSegmentWallDataImpl,
   getDoorStates,
   getWallTypePatch,
   getWallTypeToolFromDocument,
@@ -504,6 +504,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
       cubicState.active = active;
       if (active) {
         cancelConversionPreview();
+        syncShapeLevelIdsFromPalette(cubicState, {force: !cubicState.placed});
         ellipseState.active = false;
         rectangleState.active = false;
         polylineState.active = false;
@@ -532,6 +533,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
       ellipseState.active = active;
       if (active) {
         cancelConversionPreview();
+        syncShapeLevelIdsFromPalette(ellipseState, {force: !ellipseState.placed});
         cubicState.active = false;
         rectangleState.active = false;
         polylineState.active = false;
@@ -560,6 +562,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
       rectangleState.active = active;
       if (active) {
         cancelConversionPreview();
+        syncShapeLevelIdsFromPalette(rectangleState, {force: !rectangleState.placed});
         cubicState.active = false;
         ellipseState.active = false;
         polylineState.active = false;
@@ -588,6 +591,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
       polylineState.active = active;
       if (active) {
         cancelConversionPreview();
+        syncShapeLevelIdsFromPalette(polylineState, {force: !polylineState.placed});
         cubicState.active = false;
         ellipseState.active = false;
         rectangleState.active = false;
@@ -2272,6 +2276,7 @@ function getEditorDomInitialPlacementHit(event) {
 }
 
 function initializeCubicDomPlacement(point) {
+  syncShapeLevelIdsFromPalette(cubicState, {force: true});
   cubicState.placed = false;
   cubicState.initializing = true;
   cubicState.draggingHandle = 3;
@@ -2290,6 +2295,7 @@ function initializeCubicDomPlacement(point) {
 }
 
 function initializeEllipseDomPlacement(point) {
+  syncShapeLevelIdsFromPalette(ellipseState, {force: true});
   ellipseState.placed = false;
   ellipseState.initializing = true;
   ellipseState.initialOrigin = point;
@@ -2307,6 +2313,7 @@ function initializeEllipseDomPlacement(point) {
 }
 
 function initializeRectangleDomPlacement(point) {
+  syncShapeLevelIdsFromPalette(rectangleState, {force: true});
   rectangleState.placed = false;
   rectangleState.initializing = true;
   rectangleState.draggingHandle = 1;
@@ -3671,6 +3678,168 @@ function getSegmentKey(segment) {
   return segment.side ? getRectangleSegmentKey(segment) : String(segment.index);
 }
 
+function getSegmentWallData(state, key) {
+  const paletteData = getWallPaletteWallData();
+  const segmentData = getSegmentWallDataImpl(state, key);
+  const data = foundry.utils.mergeObject(paletteData, segmentData, {inplace: false});
+  const levelIds = getShapeLevelIds(state);
+  if (levelIds) data.levels = levelIds;
+  return data;
+}
+
+function getWallPaletteWallData() {
+  const WallPalette = foundry.applications?.sheets?.WallPalette
+    ?? foundry.applications?.sheets?.palette?.WallPalette;
+  let data = WallPalette?.createData
+    ?? getCoreWallPaletteSetting()
+    ?? {};
+  data = foundry.utils.deepClone(data);
+
+  if (!Array.isArray(data.levels) && !(data.levels instanceof Set) && canvas?.level?.id) {
+    data.levels = [canvas.level.id];
+  }
+  delete data._id;
+  delete data.c;
+  return data;
+}
+
+function getWallPaletteLevelIds() {
+  const levels = normalizeLevelIds(getWallPaletteWallData().levels);
+  if (levels?.length) return levels;
+  return canvas?.level?.id ? [canvas.level.id] : levels;
+}
+
+function getShapeLevelIds(state=getActiveEditorState()) {
+  return normalizeLevelIds(state?.levelIds) ?? getWallPaletteLevelIds();
+}
+
+function setShapeLevelIds(state, levels) {
+  if (!state) return;
+  state.levelIds = normalizeLevelIds(levels) ?? [];
+  renderAllShapeLevelControls();
+}
+
+function syncShapeLevelIdsFromPalette(state, {force=false}={}) {
+  if (!state || (!force && Array.isArray(state.levelIds))) return;
+  state.levelIds = getWallPaletteLevelIds();
+  renderAllShapeLevelControls();
+}
+
+function syncShapeLevelIdsFromWall(state, wallDocument) {
+  if (!state) return;
+  state.levelIds = normalizeLevelIds(wallDocument?._source?.levels ?? wallDocument?.levels) ?? getWallPaletteLevelIds();
+}
+
+function normalizeLevelIds(levels) {
+  if (levels instanceof Set) levels = [...levels];
+  if (!Array.isArray(levels)) return null;
+  const validIds = getSceneLevels().map((level) => level.id);
+  return [...new Set(levels.map((id) => String(id)).filter((id) => validIds.includes(id)))];
+}
+
+function getCoreWallPaletteSetting() {
+  try {
+    return game.settings.get("core", "wallPalette");
+  } catch (_error) {
+    return null;
+  }
+}
+
+function getSceneLevels() {
+  const levels = canvas?.scene?.levels?.contents ?? Array.from(canvas?.scene?.levels ?? []);
+  return levels
+    .filter((level) => level?.id)
+    .sort((a, b) => (b.sort ?? 0) - (a.sort ?? 0));
+}
+
+function ensureShapeLevelControls(id, tool) {
+  const controls = document.getElementById(id);
+  if (!controls || controls.querySelector(".indy-walls-level-controls")) return;
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "indy-walls-level-controls";
+  wrapper.dataset.tool = tool;
+
+  const summary = document.createElement("button");
+  summary.type = "button";
+  summary.className = "indy-walls-level-summary";
+  summary.title = game.i18n.localize("indy-walls.Controls.ShapeLevels");
+  summary.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    wrapper.classList.toggle("open");
+  });
+  wrapper.append(summary);
+
+  const dropdown = document.createElement("div");
+  dropdown.className = "indy-walls-level-dropdown";
+  wrapper.append(dropdown);
+
+  controls.append(wrapper);
+  renderShapeLevelControls(wrapper);
+}
+
+function renderAllShapeLevelControls() {
+  for (const wrapper of document.querySelectorAll(".indy-walls-level-controls")) renderShapeLevelControls(wrapper);
+}
+
+function renderShapeLevelControls(wrapper) {
+  const levels = getSceneLevels();
+  const state = getEditorStateForTool(wrapper.dataset.tool);
+  const selected = new Set(getShapeLevelIds(state) ?? []);
+  wrapper.hidden = levels.length <= 1;
+
+  const summary = wrapper.querySelector(".indy-walls-level-summary");
+  const dropdown = wrapper.querySelector(".indy-walls-level-dropdown");
+  summary.innerHTML = "";
+  dropdown.innerHTML = "";
+
+  const icon = document.createElement("i");
+  icon.className = "fa-solid fa-layer-group";
+  summary.append(icon);
+
+  const chips = document.createElement("span");
+  chips.className = "indy-walls-level-chips";
+  const selectedLevels = levels.filter((level) => selected.has(level.id));
+  for (const level of selectedLevels.slice(0, 3)) {
+    const chip = document.createElement("span");
+    chip.className = "indy-walls-level-chip";
+    chip.textContent = level.name;
+    chips.append(chip);
+  }
+  if (selectedLevels.length > 3) {
+    const more = document.createElement("span");
+    more.className = "indy-walls-level-chip";
+    more.textContent = `+${selectedLevels.length - 3}`;
+    chips.append(more);
+  }
+  if (!selectedLevels.length) {
+    const chip = document.createElement("span");
+    chip.className = "indy-walls-level-chip";
+    chip.textContent = game.i18n.localize("indy-walls.Controls.NoShapeLevels");
+    chips.append(chip);
+  }
+  summary.append(chips);
+
+  for (const level of levels) {
+    const label = document.createElement("label");
+    label.className = "indy-walls-level-option";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = level.id;
+    checkbox.checked = selected.has(level.id);
+    checkbox.addEventListener("change", (event) => {
+      event.stopPropagation();
+      const next = new Set(getShapeLevelIds(state) ?? []);
+      if (checkbox.checked) next.add(level.id);
+      else next.delete(level.id);
+      setShapeLevelIds(state, [...next]);
+    });
+    label.append(checkbox, document.createTextNode(level.name));
+    dropdown.append(label);
+  }
+}
+
 function getPolylineDeps() {
   return {
     MODULE_ID,
@@ -3833,6 +4002,7 @@ function getRectangleDeps() {
 }
 
 function handlePolylineCanvasClick(event) {
+  if (!polylineState.placed) syncShapeLevelIdsFromPalette(polylineState, {force: true});
   return handlePolylineCanvasClickImpl(event, getPolylineDeps());
 }
 
@@ -3936,6 +4106,7 @@ function ensureCubicEditButtons() {
       ["indy-walls.Controls.CancelCubic", "fa-solid fa-xmark", () => clearCubicPreview()]
     ]
   });
+  ensureShapeLevelControls(CUBIC_EDIT_BUTTONS_ID, CUBIC_TOOL);
 }
 
 function positionCubicEditButtons() {
@@ -3962,6 +4133,7 @@ function ensureEllipseEditButtons() {
       ["indy-walls.Controls.CancelEllipse", "fa-solid fa-xmark", () => clearEllipsePreview()]
     ]
   });
+  ensureShapeLevelControls(ELLIPSE_EDIT_BUTTONS_ID, ELLIPSE_TOOL);
 }
 
 function positionEllipseEditButtons() {
@@ -3989,6 +4161,7 @@ function ensureRectangleEditButtons() {
       ["indy-walls.Controls.CancelRectangle", "fa-solid fa-xmark", () => clearRectanglePreview()]
     ]
   });
+  ensureShapeLevelControls(RECTANGLE_EDIT_BUTTONS_ID, RECTANGLE_TOOL);
 }
 
 function positionRectangleEditButtons() {
@@ -4013,6 +4186,7 @@ function ensurePolylineEditButtons() {
       ["indy-walls.Controls.CancelPolyline", "fa-solid fa-xmark", () => clearPolylinePreview()]
     ]
   });
+  ensureShapeLevelControls(POLYLINE_EDIT_BUTTONS_ID, POLYLINE_TOOL);
 }
 
 function positionPolylineEditButtons() {
@@ -4036,18 +4210,22 @@ function cancelPolylineEditingForDeletedWall(wallDocument) {
 }
 
 function loadCubicCurveFromWall(wall) {
+  syncShapeLevelIdsFromWall(cubicState, wall?.document);
   return loadCubicCurveFromWallImpl(wall, getCubicDeps());
 }
 
 function loadEllipseFromWall(wall) {
+  syncShapeLevelIdsFromWall(ellipseState, wall?.document);
   return loadEllipseFromWallImpl(wall, getEllipseDeps());
 }
 
 function loadRectangleFromWall(wall) {
+  syncShapeLevelIdsFromWall(rectangleState, wall?.document);
   return loadRectangleFromWallImpl(wall, getRectangleDeps());
 }
 
 function loadPolylineFromWall(wall) {
+  syncShapeLevelIdsFromWall(polylineState, wall?.document);
   return loadPolylineFromWallImpl(wall, getPolylineDeps());
 }
 

@@ -49,6 +49,7 @@ Indy Walls adds shape-based wall tools to Foundry's Wall Controls. Generated wal
 Common editing controls:
 
 - Ctrl-left-click any generated Indy wall segment to reopen its shape editor.
+- On Foundry v14 multi-level scenes, new Indy walls use the current core Wall Palette level selection, and the editor controls include a level selector for changing which levels the shape will apply to.
 - Use the undo/redo editor buttons or Ctrl-Z/Ctrl-Y while editing.
 - Use Ctrl-C to copy the active shape preview.
 - Use Ctrl-V to paste the copied shape centered on the mouse position.
