@@ -1,7 +1,7 @@
 
 # Indy Walls
 
-Indy Walls is a Foundry VTT module with wall-editing improvements, including curves/circular/rectangular wall drawing, borrowing ideas from DragonFlagon Curvy Walls .
+Indy Walls is a Foundry VTT module with wall-editing improvements, including curves/circular/rectangular wall drawing, borrowing ideas from DragonFlagon Curvy Walls. It also has wall cleanup function that runs on a scene with 1 click and a function to convert regular foundry walls to Indy Walls for further editing.
 
 Compatibility:
 
