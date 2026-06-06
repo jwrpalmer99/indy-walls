@@ -4050,7 +4050,7 @@ function renderShortcutHelpControls(wrapper) {
     key.textContent = item.key;
 
     const text = document.createElement("span");
-    text.textContent = game.i18n.localize(item.label);
+    text.textContent = item.text ?? game.i18n.localize(item.label);
 
     row.append(key, text);
     panel.append(row);
@@ -4071,13 +4071,12 @@ function getShortcutHelpItems(tool) {
     {key: "Esc", label: "indy-walls.Shortcuts.Cancel"},
     {key: "Ctrl+Z / Ctrl+Y", label: "indy-walls.Shortcuts.UndoRedo"},
     {key: "Delete", label: "indy-walls.Shortcuts.DeleteShape"},
-    {key: "Wall type hotkeys", label: "indy-walls.Shortcuts.WallTypeHotkeys"},
-    {key: "Levels", label: "indy-walls.Shortcuts.Levels"}
+    ...getWallTypeShortcutHelpItems()
   ];
   if (tool === CUBIC_TOOL) return [
     {key: "Drag endpoints/handles", label: "indy-walls.Shortcuts.CubicDrag"},
     {key: "Right-click curve", label: "indy-walls.Shortcuts.CubicToggleMode"},
-    {key: "Ctrl+wheel / +/-", label: "indy-walls.Shortcuts.CurveSegments"},
+    {key: "Ctrl+wheel", label: "indy-walls.Shortcuts.CurveSegments"},
     {key: "Click / Alt-click segment", label: "indy-walls.Shortcuts.SegmentShowHide"},
     ...common
   ];
@@ -4085,7 +4084,7 @@ function getShortcutHelpItems(tool) {
     {key: "Drag handles/vertices", label: "indy-walls.Shortcuts.EllipseDrag"},
     {key: "Alt while placing", label: "indy-walls.Shortcuts.EllipseCircle"},
     {key: "Ctrl while placing", label: "indy-walls.Shortcuts.EllipseFromCenter"},
-    {key: "Ctrl+wheel / +/-", label: "indy-walls.Shortcuts.CurveSegments"},
+    {key: "Ctrl+wheel", label: "indy-walls.Shortcuts.CurveSegments"},
     {key: "Click / Alt-click segment", label: "indy-walls.Shortcuts.SegmentShowHide"},
     ...common
   ];
@@ -4106,6 +4105,60 @@ function getShortcutHelpItems(tool) {
     ...common
   ];
   return common;
+}
+
+function getWallTypeShortcutHelpItems() {
+  return Object.values(SEGMENT_WALL_TYPE_KEYBINDINGS).map((binding) => ({
+    key: getCurrentSegmentWallTypeShortcutText(binding),
+    text: game.i18n.format("indy-walls.Shortcuts.SetWallType", {type: binding.label})
+  }));
+}
+
+function getCurrentSegmentWallTypeShortcutText(binding) {
+  const entries = getCurrentKeybindingEntries(MODULE_ID, `setHoveredSegment${binding.label}`);
+  const keys = entries.map(formatKeybindingEntry).filter(Boolean);
+  if (keys.length) return keys.join(" / ");
+  return formatKeyCode(binding.key) || game.i18n.localize("indy-walls.Shortcuts.Unassigned");
+}
+
+function getCurrentKeybindingEntries(namespace, action) {
+  try {
+    const current = game.keybindings?.get?.(namespace, action);
+    if (Array.isArray(current)) return current;
+    if (Array.isArray(current?.bindings)) return current.bindings;
+    if (Array.isArray(current?.editable)) return current.editable;
+    if (current?.key) return [current];
+  } catch (_error) {
+    // Fall back to defaults below when the Foundry keybinding API shape differs.
+  }
+  return [];
+}
+
+function formatKeybindingEntry(entry) {
+  if (!entry) return "";
+  const key = typeof entry === "string" ? entry : entry.key;
+  if (!key) return "";
+  const modifiers = Array.isArray(entry.modifiers) ? entry.modifiers.map(formatKeyModifier).filter(Boolean) : [];
+  return [...modifiers, formatKeyCode(key)].filter(Boolean).join("+");
+}
+
+function formatKeyModifier(modifier) {
+  const value = String(modifier);
+  const normalized = value.toLowerCase();
+  if (normalized.includes("control") || normalized === "ctrl") return "Ctrl";
+  if (normalized.includes("shift")) return "Shift";
+  if (normalized.includes("alt")) return "Alt";
+  if (normalized.includes("meta") || normalized.includes("command")) return "Meta";
+  return value;
+}
+
+function formatKeyCode(code) {
+  const value = String(code ?? "");
+  if (value.startsWith("Key")) return value.slice(3);
+  if (value.startsWith("Digit")) return value.slice(5);
+  if (value.startsWith("Numpad")) return `Num ${value.slice(6)}`;
+  if (value.startsWith("Arrow")) return value.slice(5);
+  return value;
 }
 
 function renderAllShapeLevelControls() {
