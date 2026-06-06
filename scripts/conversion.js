@@ -4,13 +4,8 @@ import {
   getCubicBezierPoint,
   getScaledRadius
 } from "./curve-common.js";
-import {
-  drawBezierHandle,
-  drawEndpoint,
-  drawMoveHandle,
-  drawPreviewVertex,
-  getPreviewStyle
-} from "./preview-style.js";
+import {getPreviewStyle} from "./preview-style.js";
+import {getClientInteractionPoint} from "./interaction.js";
 import {cloneWallTypeBySegment} from "./editor-session.js";
 import {ELLIPSE_FLAG} from "./shapes/ellipse.js";
 import {
@@ -138,12 +133,16 @@ function getSceneWallConversionPlan() {
 
 function showConversionPreview(plan) {
   clearConversionPreview();
-  conversionPreviewSession = {plan, graphics: null, controls: null};
+  conversionPreviewSession = {plan, graphics: null, controls: null, hoveredGroupId: null};
   drawConversionPreview(plan);
   renderConversionPreviewControls();
+  window.addEventListener("pointermove", handleConversionPreviewPointerMove, {capture: true});
+  window.addEventListener("pointerleave", handleConversionPreviewPointerLeave, {capture: true});
 }
 
 function clearConversionPreview() {
+  window.removeEventListener("pointermove", handleConversionPreviewPointerMove, {capture: true});
+  window.removeEventListener("pointerleave", handleConversionPreviewPointerLeave, {capture: true});
   clearConversionPreviewGraphics();
   conversionPreviewSession?.controls?.remove?.();
   conversionPreviewSession = null;
@@ -164,9 +163,9 @@ function drawConversionPreview(plan) {
 
   graphics.clear();
   const style = getPreviewStyle();
-  for (const group of plan.rectangleGroups) drawRectangleConversionPreview(graphics, group, style);
-  for (const group of plan.ellipseGroups) drawEllipseConversionPreview(graphics, group, style);
-  for (const group of plan.polylineGroups) drawPolylineConversionPreview(graphics, group, style);
+  plan.rectangleGroups.forEach((group, index) => drawRectangleConversionPreview(graphics, group, style, getConversionPreviewGroupAlpha(`rectangle:${index}`)));
+  plan.ellipseGroups.forEach((group, index) => drawEllipseConversionPreview(graphics, group, style, getConversionPreviewGroupAlpha(`ellipse:${index}`)));
+  plan.polylineGroups.forEach((group, index) => drawPolylineConversionPreview(graphics, group, style, getConversionPreviewGroupAlpha(`polyline:${index}`)));
 }
 
 function getConversionPreviewGraphics() {
@@ -181,9 +180,14 @@ function getConversionPreviewGraphics() {
   return conversionPreviewSession.graphics;
 }
 
-function drawRectangleConversionPreview(graphics, group, style) {
+function getConversionPreviewGroupAlpha(groupId) {
+  const hovered = conversionPreviewSession?.hoveredGroupId;
+  return hovered && hovered !== groupId ? 0.22 : 0.88;
+}
+
+function drawRectangleConversionPreview(graphics, group, style, alpha=0.88) {
   const coordinates = getConvertedRectangleWallCoordinates(group);
-  for (const record of group.records) drawWallCoordinatePreview(graphics, coordinates[getRectangleSegmentKey(record)] ?? record.wall.c, style);
+  for (const record of group.records) drawWallCoordinatePreview(graphics, coordinates[getRectangleSegmentKey(record)] ?? record.wall.c, style, alpha);
   const [a, b] = group.handles;
   const corners = [
     {x: a.x, y: a.y},
@@ -191,66 +195,89 @@ function drawRectangleConversionPreview(graphics, group, style) {
     {x: b.x, y: b.y},
     {x: a.x, y: b.y}
   ];
-  for (const corner of corners) drawEndpoint(graphics, corner, style);
-  drawMoveHandle(graphics, getConversionPointsCenter(corners), style);
+  for (const corner of corners) drawConversionEndpoint(graphics, corner, style, alpha);
+  drawConversionMoveHandle(graphics, getConversionPointsCenter(corners), style, alpha);
 }
 
-function drawEllipseConversionPreview(graphics, group, style) {
-  for (const coords of getConvertedEllipseWallCoordinates(group)) drawWallCoordinatePreview(graphics, coords, style);
+function drawEllipseConversionPreview(graphics, group, style, alpha=0.88) {
+  for (const coords of getConvertedEllipseWallCoordinates(group)) drawWallCoordinatePreview(graphics, coords, style, alpha);
   const [a, b] = group.handles;
-  drawEndpoint(graphics, a, style);
-  drawEndpoint(graphics, b, style);
-  drawMoveHandle(graphics, getConversionPointsCenter([a, b]), style);
+  drawConversionEndpoint(graphics, a, style, alpha);
+  drawConversionEndpoint(graphics, b, style, alpha);
+  drawConversionMoveHandle(graphics, getConversionPointsCenter([a, b]), style, alpha);
   const points = getConvertedEllipsePoints(group);
-  for (let index = 0; index < points.length - 1; index++) drawPreviewVertex(graphics, points[index], style);
+  for (let index = 0; index < points.length - 1; index++) drawConversionVertex(graphics, points[index], style, alpha);
 }
 
-function drawPolylineConversionPreview(graphics, group, style) {
+function drawPolylineConversionPreview(graphics, group, style, alpha=0.88) {
   const segmentCount = group.closed ? group.points.length : Math.max(group.points.length - 1, 0);
   for (let index = 0; index < segmentCount; index++) {
     const a = group.points[index];
     const b = group.points[index + 1] ?? group.points[0];
     const curve = group.segmentCurves?.[String(index)];
     const points = getConvertedPolylineSegmentPoints(a, b, curve, group.curveSegmentsBySegment?.[String(index)]);
-    graphics.lineStyle(getScaledRadius(style.wallWidth), style.wallColor, 0.88);
+    graphics.lineStyle(getScaledRadius(style.wallWidth), style.wallColor, alpha);
     graphics.moveTo(points[0].x, points[0].y);
     for (const point of points.slice(1)) graphics.lineTo(point.x, point.y);
-    for (const point of points.slice(1, -1)) drawSmallConversionVertex(graphics, point, style);
+    for (const point of points.slice(1, -1)) drawSmallConversionVertex(graphics, point, style, alpha);
 
     if (curve?.mode === POLYLINE_SEGMENT_ARC && curve.handles?.[0]) {
-      graphics.lineStyle(getScaledRadius(style.guideWidth), style.wallColor, 0.45);
+      graphics.lineStyle(getScaledRadius(style.guideWidth), style.wallColor, alpha * 0.52);
       graphics.moveTo(a.x, a.y);
       graphics.lineTo(curve.handles[0].x, curve.handles[0].y);
       graphics.lineTo(b.x, b.y);
-      drawBezierHandle(graphics, curve.handles[0], style);
+      drawConversionBezierHandle(graphics, curve.handles[0], style, alpha);
     } else if (curve?.mode === POLYLINE_SEGMENT_BEZIER && curve.handles?.length >= 2) {
-      graphics.lineStyle(getScaledRadius(style.guideWidth), style.wallColor, 0.45);
+      graphics.lineStyle(getScaledRadius(style.guideWidth), style.wallColor, alpha * 0.52);
       graphics.moveTo(a.x, a.y);
       graphics.lineTo(curve.handles[0].x, curve.handles[0].y);
       graphics.moveTo(b.x, b.y);
       graphics.lineTo(curve.handles[1].x, curve.handles[1].y);
-      drawBezierHandle(graphics, curve.handles[0], style);
-      drawBezierHandle(graphics, curve.handles[1], style);
+      drawConversionBezierHandle(graphics, curve.handles[0], style, alpha);
+      drawConversionBezierHandle(graphics, curve.handles[1], style, alpha);
     }
   }
 
-  for (const point of group.points) drawPreviewVertex(graphics, point, style);
-  if (group.points.length > 1) drawMoveHandle(graphics, getConversionPointsCenter(group.points), style);
+  for (const point of group.points) drawConversionVertex(graphics, point, style, alpha);
+  if (group.points.length > 1) drawConversionMoveHandle(graphics, getConversionPointsCenter(group.points), style, alpha);
 }
 
-function drawWallCoordinatePreview(graphics, coords, style) {
+function drawWallCoordinatePreview(graphics, coords, style, alpha=0.88) {
   if (!Array.isArray(coords) || coords.length < 4) return;
-  graphics.lineStyle(getScaledRadius(style.wallWidth), style.wallColor, 0.88);
+  graphics.lineStyle(getScaledRadius(style.wallWidth), style.wallColor, alpha);
   graphics.moveTo(coords[0], coords[1]);
   graphics.lineTo(coords[2], coords[3]);
 }
 
-function drawSmallConversionVertex(graphics, point, style) {
+function drawSmallConversionVertex(graphics, point, style, alpha=0.88) {
   const radius = getScaledRadius(Math.max(style.vertexSize * 0.55, 2));
   const outlineWidth = getScaledRadius(Math.max(style.outlineWidth * 0.6, 0.75));
-  graphics.beginFill(style.vertexColor, 0.78);
-  graphics.lineStyle(outlineWidth, style.wallColor, 0.65);
+  graphics.beginFill(style.vertexColor, alpha * 0.88);
+  graphics.lineStyle(outlineWidth, style.wallColor, alpha * 0.74);
   graphics.drawCircle(point.x, point.y, radius);
+  graphics.endFill();
+}
+
+function drawConversionVertex(graphics, point, style, alpha=0.88) {
+  drawConversionCircle(graphics, point, style.vertexColor, style.vertexSize, style.outlineColor, style.outlineWidth, alpha);
+}
+
+function drawConversionEndpoint(graphics, point, style, alpha=0.88) {
+  drawConversionCircle(graphics, point, style.endpointColor, style.endpointSize, style.outlineColor, style.outlineWidth, alpha);
+}
+
+function drawConversionBezierHandle(graphics, point, style, alpha=0.88) {
+  drawConversionCircle(graphics, point, style.handleColor, style.handleSize, style.outlineColor, style.outlineWidth, alpha);
+}
+
+function drawConversionMoveHandle(graphics, point, style, alpha=0.88) {
+  drawConversionCircle(graphics, point, style.moveHandleColor, style.moveHandleSize, style.outlineColor, style.outlineWidth, alpha);
+}
+
+function drawConversionCircle(graphics, point, color, radius, outlineColor, outlineWidth, alpha=0.88) {
+  graphics.beginFill(color, alpha * 0.95);
+  graphics.lineStyle(getScaledRadius(outlineWidth), outlineColor, alpha * 0.9);
+  graphics.drawCircle(point.x, point.y, getScaledRadius(radius));
   graphics.endFill();
 }
 
@@ -419,6 +446,77 @@ function getSettingNumber(setting, fallback) {
 
 function getConversionToolSelectorValue() {
   return globalThis.CSS?.escape?.("indyConvertToIndyWalls") ?? "indyConvertToIndyWalls";
+}
+
+function handleConversionPreviewPointerMove(event) {
+  if (!conversionPreviewSession) return;
+  if (event.target instanceof Element && event.target.closest(".indy-walls-conversion-preview-controls")) return;
+
+  const point = getClientInteractionPoint(event);
+  const hoveredGroupId = point ? getConversionPreviewHoveredGroupId(point, conversionPreviewSession.plan) : null;
+  if (hoveredGroupId === conversionPreviewSession.hoveredGroupId) return;
+
+  conversionPreviewSession.hoveredGroupId = hoveredGroupId;
+  drawConversionPreview(conversionPreviewSession.plan);
+}
+
+function handleConversionPreviewPointerLeave() {
+  if (!conversionPreviewSession?.hoveredGroupId) return;
+  conversionPreviewSession.hoveredGroupId = null;
+  drawConversionPreview(conversionPreviewSession.plan);
+}
+
+function getConversionPreviewHoveredGroupId(point, plan) {
+  const style = getPreviewStyle();
+  const tolerance = getScaledRadius(Math.max(style.wallWidth + 8, 12));
+  let best = null;
+  let bestDistance = Infinity;
+
+  const considerGroup = (groupId, segments) => {
+    for (const [a, b] of segments) {
+      if (!isPointNearConversionSegmentBounds(point, a, b, tolerance)) continue;
+      const distance = getPointSegmentDistance(point, a, b);
+      if (distance <= tolerance && distance < bestDistance) {
+        best = groupId;
+        bestDistance = distance;
+      }
+    }
+  };
+
+  plan.rectangleGroups.forEach((group, index) => considerGroup(`rectangle:${index}`, getRectangleConversionPreviewSegments(group)));
+  plan.ellipseGroups.forEach((group, index) => considerGroup(`ellipse:${index}`, getCoordinateConversionPreviewSegments(getConvertedEllipseWallCoordinates(group))));
+  plan.polylineGroups.forEach((group, index) => considerGroup(`polyline:${index}`, getPolylineConversionPreviewSegments(group)));
+  return best;
+}
+
+function getRectangleConversionPreviewSegments(group) {
+  return getCoordinateConversionPreviewSegments(Object.values(getConvertedRectangleWallCoordinates(group)));
+}
+
+function getCoordinateConversionPreviewSegments(coordinates) {
+  return coordinates
+    .filter((coords) => Array.isArray(coords) && coords.length >= 4)
+    .map((coords) => [{x: coords[0], y: coords[1]}, {x: coords[2], y: coords[3]}]);
+}
+
+function getPolylineConversionPreviewSegments(group) {
+  const segments = [];
+  const segmentCount = group.closed ? group.points.length : Math.max(group.points.length - 1, 0);
+  for (let index = 0; index < segmentCount; index++) {
+    const a = group.points[index];
+    const b = group.points[index + 1] ?? group.points[0];
+    const curve = group.segmentCurves?.[String(index)];
+    const points = getConvertedPolylineSegmentPoints(a, b, curve, group.curveSegmentsBySegment?.[String(index)]);
+    for (let i = 0; i < points.length - 1; i++) segments.push([points[i], points[i + 1]]);
+  }
+  return segments;
+}
+
+function isPointNearConversionSegmentBounds(point, a, b, tolerance) {
+  return point.x >= Math.min(a.x, b.x) - tolerance
+    && point.x <= Math.max(a.x, b.x) + tolerance
+    && point.y >= Math.min(a.y, b.y) - tolerance
+    && point.y <= Math.max(a.y, b.y) + tolerance;
 }
 
 
