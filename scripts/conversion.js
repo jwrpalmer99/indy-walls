@@ -182,7 +182,8 @@ function getConversionPreviewGraphics() {
 }
 
 function drawRectangleConversionPreview(graphics, group, style) {
-  for (const record of group.records) drawWallCoordinatePreview(graphics, record.wall.c, style);
+  const coordinates = getConvertedRectangleWallCoordinates(group);
+  for (const record of group.records) drawWallCoordinatePreview(graphics, coordinates[getRectangleSegmentKey(record)] ?? record.wall.c, style);
   const [a, b] = group.handles;
   const corners = [
     {x: a.x, y: a.y},
@@ -632,6 +633,7 @@ function rectangleSideRatios(items, min, max, direction) {
 function buildRectangleConversionUpdates(group) {
   const rectangleId = foundry.utils.randomID();
   const wallIds = group.records.map((record) => record.wall.id);
+  const coordinates = getConvertedRectangleWallCoordinates(group);
   const wallTypeBySegment = {};
   const wallDataBySegment = {};
   for (const record of group.records) {
@@ -645,6 +647,7 @@ function buildRectangleConversionUpdates(group) {
 
   return group.records.map((record, index) => ({
     _id: record.wall.id,
+    c: coordinates[getRectangleSegmentKey(record)] ?? record.wall.c,
     [`flags.${MODULE_ID}.${RECTANGLE_FLAG}`]: {
       rectangleId,
       index,
@@ -661,6 +664,38 @@ function buildRectangleConversionUpdates(group) {
       wallTypeTool
     }
   }));
+}
+
+function getConvertedRectangleWallCoordinates(group) {
+  const [a, b] = group.handles;
+  const bounds = {
+    minX: Math.min(a.x, b.x),
+    minY: Math.min(a.y, b.y),
+    maxX: Math.max(a.x, b.x),
+    maxY: Math.max(a.y, b.y)
+  };
+  const sides = {
+    top: [{x: bounds.minX, y: bounds.minY}, {x: bounds.maxX, y: bounds.minY}],
+    right: [{x: bounds.maxX, y: bounds.minY}, {x: bounds.maxX, y: bounds.maxY}],
+    bottom: [{x: bounds.maxX, y: bounds.maxY}, {x: bounds.minX, y: bounds.maxY}],
+    left: [{x: bounds.minX, y: bounds.maxY}, {x: bounds.minX, y: bounds.minY}]
+  };
+  const coordinates = {};
+  for (const [side, [start, end]] of Object.entries(sides)) {
+    const ratios = [...(group.sideRatios?.[side] ?? [])].sort((x, y) => x - y);
+    const points = [
+      start,
+      ...ratios.map((ratio) => ({
+        x: start.x + ((end.x - start.x) * ratio),
+        y: start.y + ((end.y - start.y) * ratio)
+      })),
+      end
+    ];
+    for (let index = 0; index < points.length - 1; index++) {
+      coordinates[`${side}:${index}`] = getRoundedWallCoordinates(points[index], points[index + 1]);
+    }
+  }
+  return coordinates;
 }
 
 function detectPolylineConversionGroups(candidates) {

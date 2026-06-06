@@ -234,6 +234,7 @@ const lastHoveredWallState = {
 let copiedEditorShape = null;
 let activePreviewRedrawFrame = null;
 let wallsLayerWrappersRegistered = false;
+let conversionPreviewCancelHandlersRegistered = false;
 
 const hiddenEditWalls = new Map();
 const rectangleCanvasClickViews = new WeakSet();
@@ -288,6 +289,7 @@ Hooks.once("init", () => {
   registerWallTypeControlShortcuts();
   registerCurveEditorShortcuts();
   registerControlKeyTracking();
+  registerConversionPreviewCancelHandlers();
   registerEditorDragFallback();
 });
 
@@ -386,6 +388,23 @@ function registerSegmentWallTypeKeybindings() {
   }
 }
 
+function registerConversionPreviewCancelHandlers() {
+  if (conversionPreviewCancelHandlersRegistered) return;
+  conversionPreviewCancelHandlersRegistered = true;
+
+  window.addEventListener("pointerdown", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest(".indy-walls-conversion-preview-controls")) return;
+
+    const control = target.closest("[data-control], [data-tool]");
+    if (!control) return;
+    if (control.dataset?.tool === CONVERT_TO_INDY_TOOL || control.dataset?.control === CONVERT_TO_INDY_TOOL) return;
+
+    cancelConversionPreview();
+  }, {capture: true});
+}
+
 function registerActiveToolHighlightSettings() {
   registerActiveToolHighlightColorSetting();
   game.settings.register(MODULE_ID, ACTIVE_TOOL_HIGHLIGHT_GLOW_SETTING, {
@@ -444,15 +463,16 @@ Hooks.on("getSceneControlButtons", (controls) => {
   if (!wallTools) return;
 
   for (const toolId of Object.keys(wallTools)) {
-    const toolName = getWallTypeToolName(toolId);
-    if (!toolName) continue;
     const tool = wallTools[toolId];
     if (!tool || tool._indyWallsWrapped) continue;
+    const toolName = getWallTypeToolName(toolId);
 
     const originalOnChange = tool.onChange;
     tool.onChange = async (event, active) => {
       originalOnChange?.(event, active);
       if (!active) return;
+      cancelConversionPreview();
+      if (!toolName) return;
       setAllShapeWallTypeTools(toolName);
       if (isControlInteraction(event)) await updateSelectedWalls(toolName);
     };
@@ -467,6 +487,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
     onChange: (event, active) => {
       cubicState.active = active;
       if (active) {
+        cancelConversionPreview();
         ellipseState.active = false;
         rectangleState.active = false;
         polylineState.active = false;
@@ -494,6 +515,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
     onChange: (event, active) => {
       ellipseState.active = active;
       if (active) {
+        cancelConversionPreview();
         cubicState.active = false;
         rectangleState.active = false;
         polylineState.active = false;
@@ -521,6 +543,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
     onChange: (event, active) => {
       rectangleState.active = active;
       if (active) {
+        cancelConversionPreview();
         cubicState.active = false;
         ellipseState.active = false;
         polylineState.active = false;
@@ -548,6 +571,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
     onChange: (event, active) => {
       polylineState.active = active;
       if (active) {
+        cancelConversionPreview();
         cubicState.active = false;
         ellipseState.active = false;
         rectangleState.active = false;
@@ -587,6 +611,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
 });
 
 Hooks.on("renderSceneControls", () => {
+  if (!isWallControlsActive()) cancelConversionPreview();
   updateIndyToolButtonHighlights();
   positionCubicEditButtons();
   positionEllipseEditButtons();
