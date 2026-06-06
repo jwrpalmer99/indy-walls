@@ -159,6 +159,7 @@ import {
 } from "./shapes/polyline.js";
 import {
   getSegmentWallData,
+  getDoorStates,
   getWallTypePatch,
   getWallTypeToolFromDocument,
   getWallTypeToolName,
@@ -3163,6 +3164,7 @@ function getSegmentPreviewColor(state, segment, style=getPreviewStyle()) {
 
 function drawSegmentDoorIcon(graphics, state, segment, style=getPreviewStyle()) {
   if (!game.settings.get(MODULE_ID, SHOW_DOOR_GLYPHS_SETTING)) return;
+  const key = getSegmentKey(segment);
   const tool = getSegmentWallType(state, segment);
   if (tool !== "doors" && tool !== "secret") return;
   if (!Number.isFinite(segment?.a?.x) || !Number.isFinite(segment?.a?.y)
@@ -3183,8 +3185,93 @@ function drawSegmentDoorIcon(graphics, state, segment, style=getPreviewStyle()) 
   };
   const size = Math.max(style.endpointSize * 3.8, 40);
   const width = Math.max(style.outlineWidth, 2);
-  if (tool === "secret") drawFoundrySecretDoorIcon(graphics, center, ux, uy, nx, ny, size, width, style.outlineColor);
+  const wallData = getSegmentWallData(state, key);
+  const doorStates = getDoorStates();
+  if (wallData?.ds === doorStates.LOCKED) drawFoundryLockedDoorIcon(graphics, center, ux, uy, nx, ny, size, width, style.outlineColor);
+  else if (wallData?.ds === doorStates.OPEN) drawFoundryOpenDoorIcon(graphics, center, ux, uy, nx, ny, size, width, style.outlineColor);
+  else if (tool === "secret") drawFoundrySecretDoorIcon(graphics, center, ux, uy, nx, ny, size, width, style.outlineColor);
   else drawFoundryDoorIcon(graphics, center, ux, uy, nx, ny, size, width, style.outlineColor);
+}
+
+function drawFoundryLockedDoorIcon(graphics, center, ux, uy, nx, ny, size, width, outlineColor) {
+  size *= 1.1;
+  ux = 1;
+  uy = 0;
+  nx = 0;
+  ny = 1;
+
+  const fillColor = 0xd8d8d4;
+  const lineColor = 0xf0f0ec;
+  const shadowColor = outlineColor;
+  const halfAlong = size * 0.36;
+  const bodyCenter = offsetPoint(center, ux, uy, nx, ny, 0, size * 0.16);
+  const bodyHalfAlong = halfAlong * 0.92;
+  const bodyHalfAcross = size * 0.23;
+  const shackleCenter = offsetPoint(center, ux, uy, nx, ny, 0, -size * 0.06);
+  const shackleRadiusAlong = halfAlong * 0.78;
+  const shackleRadiusAcross = size * 0.28;
+  const lineWidth = Math.max(width * 2.2, 3);
+
+  drawOrientedArc(graphics, shackleCenter, ux, uy, nx, ny, shackleRadiusAlong, shackleRadiusAcross, Math.PI, Math.PI * 2, {
+    line: shadowColor,
+    lineAlpha: 0.55,
+    lineWidth: lineWidth + Math.max(width, 2)
+  });
+  drawOrientedArc(graphics, shackleCenter, ux, uy, nx, ny, shackleRadiusAlong, shackleRadiusAcross, Math.PI, Math.PI * 2, {
+    line: lineColor,
+    lineAlpha: 0.85,
+    lineWidth
+  });
+
+  drawOrientedRect(graphics, bodyCenter, ux, uy, nx, ny, bodyHalfAlong, bodyHalfAcross, {
+    fill: fillColor,
+    fillAlpha: 0.9,
+    line: shadowColor,
+    lineAlpha: 0.45,
+    lineWidth: Math.max(width, 1.5)
+  });
+
+  const keyholeTop = offsetPoint(bodyCenter, ux, uy, nx, ny, 0, -bodyHalfAcross * 0.18);
+  const keyholeBottom = offsetPoint(bodyCenter, ux, uy, nx, ny, 0, bodyHalfAcross * 0.55);
+  graphics.beginFill(0x56595b, 0.85);
+  graphics.drawCircle(keyholeTop.x, keyholeTop.y, Math.max(width * 1.8, size * 0.055));
+  graphics.endFill();
+  graphics.lineStyle(Math.max(width * 1.25, 2), 0x56595b, 0.85);
+  graphics.moveTo(keyholeTop.x, keyholeTop.y);
+  graphics.lineTo(keyholeBottom.x, keyholeBottom.y);
+}
+
+function drawFoundryOpenDoorIcon(graphics, center, ux, uy, nx, ny, size, width, outlineColor) {
+  const fillColor = 0xd8d8d4;
+  const lineColor = 0xf0f0ec;
+  const hardwareFill = 0x65696c;
+  const frameCenter = offsetPoint(center, ux, uy, nx, ny, -size * 0.03, 0);
+  const leafCenter = offsetPoint(center, ux, uy, nx, ny, size * 0.25, -size * 0.04);
+  const leafHalfAlong = size * 0.15;
+  const leafHalfAcross = size * 0.63;
+
+  drawOrientedRect(graphics, frameCenter, ux, uy, nx, ny, size * 0.36, size * 0.5, {
+    fill: null,
+    line: lineColor,
+    lineAlpha: 0.58,
+    lineWidth: Math.max(width, 1.5)
+  });
+  drawOrientedRect(graphics, leafCenter, ux, uy, nx, ny, leafHalfAlong, leafHalfAcross, {
+    fill: fillColor,
+    fillAlpha: 0.86,
+    line: outlineColor,
+    lineAlpha: 0.52,
+    lineWidth: Math.max(width, 1.5)
+  });
+
+  const arrowStart = offsetPoint(center, ux, uy, nx, ny, -size * 0.5, 0);
+  const arrowEnd = offsetPoint(center, ux, uy, nx, ny, size * 0.12, 0);
+  drawArrow(graphics, arrowStart, arrowEnd, Math.max(width * 2.2, 3), lineColor, 0.88, size * 0.15);
+
+  const knob = offsetPoint(leafCenter, ux, uy, nx, ny, -leafHalfAlong * 0.58, leafHalfAcross * 0.06);
+  graphics.beginFill(hardwareFill, 0.8);
+  graphics.drawCircle(knob.x, knob.y, Math.max(width * 1.4, size * 0.04));
+  graphics.endFill();
 }
 
 function drawFoundryDoorIcon(graphics, center, ux, uy, nx, ny, size, width, outlineColor) {
@@ -3360,6 +3447,59 @@ function drawOrientedPolygon(graphics, points, {
   if (fill !== null) graphics.beginFill(fill, fillAlpha);
   drawPolylinePath(graphics, points, true);
   if (fill !== null) graphics.endFill();
+}
+
+function drawOrientedArc(graphics, center, ux, uy, nx, ny, radiusAlong, radiusAcross, startAngle, endAngle, {
+  line,
+  lineAlpha=1,
+  lineWidth=1,
+  steps=18
+}) {
+  graphics.lineStyle(lineWidth, line, lineAlpha);
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const angle = startAngle + (endAngle - startAngle) * t;
+    const point = offsetPoint(
+      center,
+      ux,
+      uy,
+      nx,
+      ny,
+      Math.cos(angle) * radiusAlong,
+      Math.sin(angle) * radiusAcross
+    );
+    if (i === 0) graphics.moveTo(point.x, point.y);
+    else graphics.lineTo(point.x, point.y);
+  }
+}
+
+function drawArrow(graphics, start, end, width, color, alpha, headSize) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 0.1) return;
+
+  const ux = dx / length;
+  const uy = dy / length;
+  const nx = -uy;
+  const ny = ux;
+  const headBase = {
+    x: end.x - ux * headSize,
+    y: end.y - uy * headSize
+  };
+  const headHalf = headSize * 0.62;
+  const headPoints = [
+    end,
+    {x: headBase.x + nx * headHalf, y: headBase.y + ny * headHalf},
+    {x: headBase.x - nx * headHalf, y: headBase.y - ny * headHalf}
+  ];
+
+  graphics.lineStyle(width, color, alpha);
+  graphics.moveTo(start.x, start.y);
+  graphics.lineTo(headBase.x, headBase.y);
+  graphics.beginFill(color, alpha);
+  drawPolylinePath(graphics, headPoints, true);
+  graphics.endFill();
 }
 
 function drawDashedPolyline(graphics, points, color, width, dashLength, gapLength, closed=false) {
