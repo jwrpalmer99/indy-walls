@@ -154,7 +154,7 @@
       "RectangleWallsCreated": "Indy Walls | Created {count} rectangle wall segment(s).",
       "PolylineWallsCreated": "Indy Walls | Created {count} polyline wall segment(s).",
       "NoWallsToConvert": "Indy Walls | No plain walls found to convert.",
-      "WallsConvertedToIndy": "Indy Walls | Converted {count} wall(s) into {rectangles} rectangle(s) and {polylines} polyline(s)."
+      "WallsConvertedToIndy": "Indy Walls | Converted {count} wall(s) into {rectangles} rectangle(s), {ellipses} ellipse(s), and {polylines} polyline(s)."
     }
   }
 }
