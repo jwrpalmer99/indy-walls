@@ -17,7 +17,10 @@ import {
   commitEditorOperation as commitSessionEditorOperation,
   pushEditorUndoSnapshot as pushSessionEditorUndoSnapshot
 } from "./editor-session.js";
-import {convertSceneWallsToIndyWalls as convertSceneWallsToIndyWallsImpl} from "./conversion.js";
+import {
+  cancelConversionPreview,
+  convertSceneWallsToIndyWalls as convertSceneWallsToIndyWallsImpl
+} from "./conversion.js";
 import {drawDoorGlyphForSegment} from "./door-glyphs.js";
 import {
   configureInteractionHelpers,
@@ -180,6 +183,10 @@ const ACTIVE_TOOL_HIGHLIGHT_COLOR_SETTING = "activeShapeToolHighlightColor";
 const ACTIVE_TOOL_HIGHLIGHT_GLOW_SETTING = "activeShapeToolHighlightGlow";
 const ACTIVE_TOOL_HIGHLIGHT_BORDER_WIDTH_SETTING = "activeShapeToolHighlightBorderWidth";
 const SHOW_DOOR_GLYPHS_SETTING = "showDoorGlyphsInEditor";
+const RECTANGLE_CONVERSION_TOLERANCE_SETTING = "rectangleConversionTolerance";
+const ELLIPSE_CONVERSION_TOLERANCE_SETTING = "ellipseConversionTolerance";
+const ARC_CONVERSION_TOLERANCE_SETTING = "arcConversionTolerance";
+const BEZIER_CONVERSION_TOLERANCE_SETTING = "bezierConversionTolerance";
 const CONVERT_TO_INDY_TOOL = "indyConvertToIndyWalls";
 const shapeLoadState = {
   allowControlWallLoad: false
@@ -269,6 +276,10 @@ Hooks.once("init", () => {
     default: true,
     onChange: redrawActivePreview
   });
+  registerConversionToleranceSetting(RECTANGLE_CONVERSION_TOLERANCE_SETTING, "RectangleConversionTolerance");
+  registerConversionToleranceSetting(ELLIPSE_CONVERSION_TOLERANCE_SETTING, "EllipseConversionTolerance");
+  registerConversionToleranceSetting(ARC_CONVERSION_TOLERANCE_SETTING, "ArcConversionTolerance");
+  registerConversionToleranceSetting(BEZIER_CONVERSION_TOLERANCE_SETTING, "BezierConversionTolerance");
   registerActiveToolHighlightSettings();
   registerStyleSettings();
   registerSegmentWallTypeKeybindings();
@@ -298,10 +309,24 @@ Hooks.on("canvasPan", () => {
 });
 
 Hooks.on("canvasTearDown", () => {
+  cancelConversionPreview();
   clearEditorStateForCanvasChange("canvasTearDown");
 });
 
+function registerConversionToleranceSetting(setting, label) {
+  game.settings.register(MODULE_ID, setting, {
+    name: game.i18n.localize(`indy-walls.Settings.${label}.Name`),
+    hint: game.i18n.localize(`indy-walls.Settings.${label}.Hint`),
+    scope: "world",
+    config: false,
+    type: Number,
+    default: 1,
+    range: {min: 0.25, max: 10, step: 0.05}
+  });
+}
+
 Hooks.on("canvasInit", () => {
+  cancelConversionPreview();
   clearEditorStateForCanvasChange("canvasInit");
 });
 
@@ -309,15 +334,20 @@ Hooks.on("controlWall", (wall, controlled) => {
   if (!controlled || !game.user.isGM) return;
   if (!isWallControlsActive()) return;
   const controlKeyDown = isControlKeyDown();
+  const shiftKeyDown = isShiftKeyDown();
+  const shouldLoadShape = shapeLoadState.allowControlWallLoad || (controlKeyDown && !shiftKeyDown && hasIndyShapeFlag(wall?.document));
   if (shapeLoadState.allowControlWallLoad || controlKeyDown) {
     debugShapeSelection("controlWall", {
       wallId: wall?.document?.id ?? wall?.id,
       controlled,
       allowControlWallLoad: shapeLoadState.allowControlWallLoad,
-      controlKeyDown
+      controlKeyDown,
+      shiftKeyDown,
+      hasIndyShapeFlag: hasIndyShapeFlag(wall?.document),
+      shouldLoadShape
     });
   }
-  if (shapeLoadState.allowControlWallLoad || controlKeyDown) loadShapeFromExistingWall(wall);
+  if (shouldLoadShape) loadShapeFromExistingWall(wall);
 });
 
 Hooks.on("hoverWall", (wall, hovered) => {
@@ -1017,19 +1047,19 @@ function patchWallObjectInteractions(WallClass) {
     if (wallObjectWrapperTargets.has(target)) continue;
     libWrapper.register(MODULE_ID, target, function(wrapped, event) {
       const editorActive = isAnyEditorToolActive();
-      const controlInteraction = isControlInteraction(event);
-      if (editorActive || controlInteraction) {
+      const shapeLoadInteraction = isShapeLoadInteraction(event);
+      if (editorActive || shapeLoadInteraction) {
         debugShapeSelection("wall object event", {
           method,
           wallId: this.document?.id ?? this.id,
-          ctrl: controlInteraction,
+          shapeLoadInteraction,
           hasIndyShapeFlag: hasIndyShapeFlag(this.document),
           hasOriginal: !!wrapped,
           editorActive
         });
       }
 
-      if (method === "_onClickLeft" && game.user.isGM && controlInteraction && isWallControlsActive()) {
+      if (method === "_onClickLeft" && game.user.isGM && shapeLoadInteraction && isWallControlsActive() && hasIndyShapeFlag(this.document)) {
         consumeCanvasInteraction(event);
         resetEditorCursor(event);
         return;
@@ -1110,7 +1140,7 @@ function updateLastCanvasPointerPoint(event) {
 function handleCanvasSegmentEditPointerDown(event) {
   if (!isWallControlsActive()) return;
   if (Number.isFinite(event.button) && event.button !== 0) return;
-  if (isControlInteraction(event)) {
+  if (isShapeLoadInteraction(event)) {
     startControlShapeSelect(event);
     return;
   }
@@ -2414,11 +2444,29 @@ function isControlKeyDown() {
     || downKeys?.has?.("ControlRight"));
 }
 
+function isShiftKeyDown() {
+  const downKeys = game?.keyboard?.downKeys;
+  return !!(downKeys?.has?.("Shift")
+    || downKeys?.has?.("ShiftLeft")
+    || downKeys?.has?.("ShiftRight"));
+}
+
 function isControlInteraction(event) {
   return !!(event?.ctrlKey
     || event.data?.originalEvent?.ctrlKey
     || event.originalEvent?.ctrlKey
     || isControlKeyDown());
+}
+
+function isShapeLoadInteraction(event) {
+  return isControlInteraction(event) && !isShiftInteraction(event);
+}
+
+function isShiftInteraction(event) {
+  return !!(event?.shiftKey
+    || event.data?.originalEvent?.shiftKey
+    || event.originalEvent?.shiftKey
+    || isShiftKeyDown());
 }
 
 function isWallControlsActive() {
@@ -2577,6 +2625,7 @@ function loadShapeFromExistingWall(wall) {
   } finally {
     shapeLoadState.allowControlWallLoad = false;
   }
+  scheduleActivePreviewRedraw(2);
   return true;
 }
 
@@ -3328,12 +3377,19 @@ function redrawActivePreview() {
   if (polylineState.placed) drawPolylinePreview();
 }
 
-function scheduleActivePreviewRedraw() {
+function scheduleActivePreviewRedraw(frames=1) {
   if (activePreviewRedrawFrame !== null) return;
-  activePreviewRedrawFrame = requestAnimationFrame(() => {
+  let remainingFrames = Math.max(Number(frames) || 1, 1);
+  const tick = () => {
+    remainingFrames -= 1;
+    if (remainingFrames > 0) {
+      activePreviewRedrawFrame = requestAnimationFrame(tick);
+      return;
+    }
     activePreviewRedrawFrame = null;
     redrawActivePreview();
-  });
+  };
+  activePreviewRedrawFrame = requestAnimationFrame(tick);
 }
 
 function getEditorMoveHandleAt(tool, point) {

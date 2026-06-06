@@ -68,6 +68,12 @@ Generated segments use the last selected wall type from Foundry's wall type butt
 
 When enabled in module settings, those same wall type hotkeys can also update a hovered Foundry wall while Wall Controls are active. This setting is disabled by default.
 
+### Convert to Indy Walls
+
+The Wall Controls include a Convert to Indy Walls button for GMs. It scans plain Foundry walls in the current scene and previews the proposed Indy shapes before changing wall documents. Use the inline Save button to apply the conversion or Cancel to discard it. Detected axis-aligned rectangles become Indy rectangles, near-elliptical loops become Indy ellipses, and remaining connected paths become Indy polylines with arc or Bezier curve metadata where the fit is close enough.
+
+The inline tolerance sliders and matching stored settings control how aggressively rectangle, ellipse, arc, and Bezier fits are accepted. The default value of `1` keeps the automatic scene-size-derived tolerance; lower values are stricter, and higher values, up to `10`, allow looser fits.
+
 ### Preview Styling
 
 Module settings include client-side controls for the editor preview wall color and width, per-type segment preview colors, regular vertex color and size, active vertex color, endpoint color and size, Bezier handle color and size, outline color and width, and the active Indy shape tool button highlight color, glow, and border width.

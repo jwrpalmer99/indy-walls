@@ -40,6 +40,79 @@
   color: rgb(217 213 201 / 42%);
 }
 
+.indy-walls-conversion-preview-controls {
+  align-items: flex-start;
+  background: rgb(30 30 30 / 88%);
+  border: 1px solid #ff9f00;
+  border-radius: 5px;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 45%);
+  display: flex;
+  gap: 8px;
+  max-width: calc(100vw - 96px);
+  overflow: visible;
+  padding: 6px;
+  pointer-events: auto;
+}
+
+.indy-walls-conversion-preview-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.indy-walls-conversion-preview-tolerances {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.indy-walls-conversion-preview-tolerance-row {
+  align-items: center;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 4.7em 32px 130px 32px 2.8em;
+}
+
+.indy-walls-conversion-preview-tolerance-name {
+  color: #d9d5c9;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  text-align: right;
+}
+
+.indy-walls-conversion-preview-button {
+  align-items: center;
+  background: rgb(30 30 30 / 88%);
+  border: 1px solid #ff9f00;
+  border-radius: 5px;
+  color: #d9d5c9;
+  display: flex;
+  font-size: 14px;
+  height: 32px;
+  justify-content: center;
+  line-height: 1;
+  min-height: 0;
+  padding: 0;
+  width: 32px;
+}
+
+.indy-walls-conversion-preview-button:hover,
+.indy-walls-conversion-preview-button:focus {
+  border-color: #ff6400;
+  color: #ffffff;
+}
+
+.indy-walls-conversion-preview-controls input[type="range"] {
+  width: 130px;
+}
+
+.indy-walls-conversion-preview-tolerance {
+  color: #ffffff;
+  font-weight: 600;
+  min-width: 2.6em;
+  text-align: right;
+}
+
 [data-tool].indy-walls-shape-tool-active {
   --indy-walls-active-tool-color: #ffb000;
   --indy-walls-active-tool-glow: 1;

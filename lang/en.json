@@ -17,7 +17,15 @@
       "ApplyRectangle": "Create Rectangle Walls",
       "CancelRectangle": "Cancel Rectangle Wall",
       "ApplyPolyline": "Create Polyline Walls",
-      "CancelPolyline": "Cancel Polyline Wall"
+      "CancelPolyline": "Cancel Polyline Wall",
+      "SaveConversionPreview": "Save conversion preview",
+      "CancelConversionPreview": "Cancel conversion preview",
+      "DecreaseConversionTolerance": "Decrease conversion tolerance",
+      "IncreaseConversionTolerance": "Increase conversion tolerance",
+      "RectangleConversionTolerance": "Rect",
+      "EllipseConversionTolerance": "Ellipse",
+      "ArcConversionTolerance": "Arc",
+      "BezierConversionTolerance": "Bezier"
     },
     "Settings": {
       "ColorPickerLabel": "Color Picker",
@@ -48,6 +56,22 @@
       "ShowDoorGlyphsInEditor": {
         "Name": "Show door glyphs in Indy shape editor",
         "Hint": "When enabled, door and secret door segments show Foundry-style door glyphs while editing Indy wall shapes."
+      },
+      "RectangleConversionTolerance": {
+        "Name": "Convert to Indy Walls rectangle tolerance",
+        "Hint": "Multiplier for how loosely plain walls may fit detected rectangles during conversion. Lower values are stricter; higher values convert more aggressively."
+      },
+      "EllipseConversionTolerance": {
+        "Name": "Convert to Indy Walls ellipse tolerance",
+        "Hint": "Multiplier for how loosely plain walls may fit detected ellipses during conversion. Lower values are stricter; higher values convert more aggressively."
+      },
+      "ArcConversionTolerance": {
+        "Name": "Convert to Indy Walls arc tolerance",
+        "Hint": "Multiplier for how loosely plain walls may fit detected arcs during conversion. Lower values are stricter; higher values convert more aggressively."
+      },
+      "BezierConversionTolerance": {
+        "Name": "Convert to Indy Walls Bezier tolerance",
+        "Hint": "Multiplier for how loosely plain walls may fit detected Bezier curves during conversion. Lower values are stricter; higher values convert more aggressively."
       },
       "PreviewWallColor": {
         "Name": "Preview wall color",
@@ -145,7 +169,7 @@
       "Ellipse": "Click-drag to place the ellipse, hold Alt for a circle, or hold Ctrl to grow from the center. Use plus/minus or Ctrl-wheel to adjust segment count, Enter to create walls, or Escape to cancel.",
       "Rectangle": "Click-drag to place the rectangle. Left-click a side to add a vertex, restore a gapped segment, or restore a removed side. Alt-click a segment to create a gap, Alt-click a vertex to remove it, drag vertices to reposition them, Enter creates walls, and Escape cancels.",
       "Polyline": "Click to place each vertex. Left-click a segment to add a point or restore a hidden segment, right-click a segment to cycle line/arc/Bezier modes, drag curve handles to shape arcs and Beziers, Ctrl-scroll changes curved segment detail, Alt-click hides segments or removes points, Enter creates walls, and Escape cancels.",
-      "ConvertToIndyWalls": "Scans plain Foundry walls in the current scene and adds Indy shape metadata. Axis-aligned closed rectangles are converted to Indy rectangles first; remaining connected wall paths are converted to Indy polylines."
+      "ConvertToIndyWalls": "Scans plain Foundry walls in the current scene and previews Indy shape metadata. Adjust tolerance, then Save to convert or Cancel to discard. Axis-aligned closed rectangles are converted to Indy rectangles first; remaining connected wall paths are converted to Indy polylines."
     },
     "Notifications": {
       "WallTypesUpdated": "Indy Walls | Updated {count} selected wall(s).",
