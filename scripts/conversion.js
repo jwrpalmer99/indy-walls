@@ -61,6 +61,8 @@ const CONVERSION_TOLERANCE_CONFIG = {
 
 let convertingToIndyWalls = false;
 let conversionPreviewSession = null;
+let conversionPreviewRedrawTimeout = null;
+const pendingConversionToleranceSettingSaves = new Map();
 
 export async function convertSceneWallsToIndyWalls() {
   if (!game.user.isGM || !canvas?.scene) return;
@@ -82,6 +84,7 @@ export async function convertSceneWallsToIndyWalls() {
 
 export async function commitConversionPreview() {
   if (!conversionPreviewSession?.plan?.updates?.length || !canvas?.scene) return;
+  flushScheduledConversionPreviewRedraw();
   const plan = conversionPreviewSession.plan;
   clearConversionPreview();
   await canvas.scene.updateEmbeddedDocuments("Wall", plan.updates);
@@ -99,7 +102,7 @@ export function cancelConversionPreview() {
 
 export function redrawConversionPreview() {
   if (!conversionPreviewSession) return;
-  const plan = getSceneWallConversionPlan();
+  const plan = getSceneWallConversionPlan(conversionPreviewSession.candidates);
   if (!plan?.updates.length) {
     clearConversionPreviewGraphics();
     conversionPreviewSession.plan = plan;
@@ -109,8 +112,8 @@ export function redrawConversionPreview() {
   drawConversionPreview(plan);
 }
 
-function getSceneWallConversionPlan() {
-  const candidates = getPlainWallConversionCandidates();
+function getSceneWallConversionPlan(baseCandidates=null) {
+  const candidates = getPlainWallConversionCandidates(baseCandidates);
   if (!candidates.length) return null;
 
   const rectangleGroups = detectRectangleConversionGroups(candidates);
@@ -133,7 +136,14 @@ function getSceneWallConversionPlan() {
 
 function showConversionPreview(plan) {
   clearConversionPreview();
-  conversionPreviewSession = {plan, graphics: null, controls: null, hoveredGroupId: null};
+  conversionPreviewSession = {
+    plan,
+    candidates: getPlainWallConversionBaseCandidates(),
+    toleranceOverrides: {},
+    graphics: null,
+    controls: null,
+    hoveredGroupId: null
+  };
   drawConversionPreview(plan);
   renderConversionPreviewControls();
   window.addEventListener("pointermove", handleConversionPreviewPointerMove, {capture: true});
@@ -141,6 +151,8 @@ function showConversionPreview(plan) {
 }
 
 function clearConversionPreview() {
+  clearScheduledConversionPreviewRedraw();
+  flushPendingConversionToleranceSettingSaves();
   window.removeEventListener("pointermove", handleConversionPreviewPointerMove, {capture: true});
   window.removeEventListener("pointerleave", handleConversionPreviewPointerLeave, {capture: true});
   clearConversionPreviewGraphics();
@@ -215,7 +227,7 @@ function drawPolylineConversionPreview(graphics, group, style, alpha=0.88) {
     const a = group.points[index];
     const b = group.points[index + 1] ?? group.points[0];
     const curve = group.segmentCurves?.[String(index)];
-    const points = getConvertedPolylineSegmentPoints(a, b, curve, group.curveSegmentsBySegment?.[String(index)]);
+    const points = getCachedConvertedPolylineSegmentPoints(group, index, a, b, curve);
     graphics.lineStyle(getScaledRadius(style.wallWidth), style.wallColor, alpha);
     graphics.moveTo(points[0].x, points[0].y);
     for (const point of points.slice(1)) graphics.lineTo(point.x, point.y);
@@ -282,6 +294,7 @@ function drawConversionCircle(graphics, point, color, radius, outlineColor, outl
 }
 
 function getConvertedEllipsePoints(group) {
+  if (group._convertedEllipsePoints) return group._convertedEllipsePoints;
   const [a, b] = group.handles;
   const cx = (a.x + b.x) / 2;
   const cy = (a.y + b.y) / 2;
@@ -295,6 +308,7 @@ function getConvertedEllipsePoints(group) {
       y: cy + (Math.sin(angle) * ry)
     });
   }
+  group._convertedEllipsePoints = points;
   return points;
 }
 
@@ -310,6 +324,15 @@ function getConvertedPolylineSegmentPoints(a, b, curve, subdivisions=DEFAULT_POL
       : getQuadraticBezierPoint(a, curve.handles?.[0] ?? getConversionPointsCenter([a, b]), b, t));
   }
   return points;
+}
+
+function getCachedConvertedPolylineSegmentPoints(group, index, a, b, curve) {
+  const key = String(index);
+  group._convertedPolylineSegmentPoints ??= {};
+  if (!group._convertedPolylineSegmentPoints[key]) {
+    group._convertedPolylineSegmentPoints[key] = getConvertedPolylineSegmentPoints(a, b, curve, group.curveSegmentsBySegment?.[key]);
+  }
+  return group._convertedPolylineSegmentPoints[key];
 }
 
 function getConversionPointsCenter(points) {
@@ -384,7 +407,8 @@ function createConversionToleranceControl(kind, controls) {
   slider.step = "0.05";
   slider.value = String(getConversionToleranceMultiplier(kind));
   slider.title = game.i18n.localize(config.title);
-  slider.addEventListener("input", () => setConversionTolerance(kind, Number(slider.value)));
+  slider.addEventListener("input", () => setConversionTolerance(kind, Number(slider.value), {updateSlider: false}));
+  slider.addEventListener("change", () => setConversionTolerance(kind, Number(slider.value), {updateSlider: false, persist: true}));
 
   const value = document.createElement("span");
   value.textContent = getConversionToleranceMultiplier(kind).toFixed(2);
@@ -411,28 +435,79 @@ function createConversionControlButton(titleKey, icon, onClick) {
 }
 
 function adjustConversionTolerance(kind, delta) {
-  setConversionTolerance(kind, getConversionToleranceMultiplier(kind) + delta);
+  setConversionTolerance(kind, getConversionToleranceMultiplier(kind) + delta, {persist: true});
 }
 
-async function setConversionTolerance(kind, value) {
+function setConversionTolerance(kind, value, {updateSlider=true, persist=false} = {}) {
   const setting = CONVERSION_TOLERANCE_CONFIG[kind]?.setting;
   if (!setting) return;
   const next = clamp(Number.isFinite(Number(value)) ? Number(value) : 1, 0, 10);
-  await game.settings?.set?.(MODULE_ID, setting, next);
+  if (conversionPreviewSession) conversionPreviewSession.toleranceOverrides[kind] = next;
   const controls = conversionPreviewSession?.controls?._indyWallsToleranceControls?.[kind];
   if (controls) {
-    controls.slider.value = String(next);
+    if (updateSlider) controls.slider.value = String(next);
     controls.value.textContent = next.toFixed(2);
   }
-  redrawConversionPreview();
+  queueConversionToleranceSettingSave(kind, setting, next);
+  if (persist) flushConversionToleranceSettingSave(kind);
+  scheduleConversionPreviewRedraw();
 }
 
 function getConversionToleranceMultiplier(kind) {
+  const override = conversionPreviewSession?.toleranceOverrides?.[kind];
+  if (Number.isFinite(Number(override))) return clamp(Number(override), 0, 10);
   const setting = CONVERSION_TOLERANCE_CONFIG[kind]?.setting;
   const value = setting ? getSettingNumber(setting, null) : null;
   const fallback = getSettingNumber(LEGACY_CONVERSION_TOLERANCE_SETTING, 1);
   const number = Number(value ?? fallback);
   return clamp(Number.isFinite(number) ? number : 1, 0, 10);
+}
+
+function scheduleConversionPreviewRedraw() {
+  clearScheduledConversionPreviewRedraw();
+  conversionPreviewRedrawTimeout = window.setTimeout(() => {
+    conversionPreviewRedrawTimeout = null;
+    redrawConversionPreview();
+  }, 90);
+}
+
+function flushScheduledConversionPreviewRedraw() {
+  if (!conversionPreviewRedrawTimeout) return;
+  clearScheduledConversionPreviewRedraw();
+  redrawConversionPreview();
+}
+
+function clearScheduledConversionPreviewRedraw() {
+  if (!conversionPreviewRedrawTimeout) return;
+  window.clearTimeout(conversionPreviewRedrawTimeout);
+  conversionPreviewRedrawTimeout = null;
+}
+
+function queueConversionToleranceSettingSave(kind, setting, value) {
+  pendingConversionToleranceSettingSaves.set(kind, {setting, value});
+}
+
+function flushConversionToleranceSettingSave(kind) {
+  const pending = pendingConversionToleranceSettingSaves.get(kind);
+  if (!pending) return;
+  pendingConversionToleranceSettingSaves.delete(kind);
+  writeConversionToleranceSetting(pending.setting, pending.value);
+}
+
+function flushPendingConversionToleranceSettingSaves() {
+  for (const {setting, value} of pendingConversionToleranceSettingSaves.values()) {
+    writeConversionToleranceSetting(setting, value);
+  }
+  pendingConversionToleranceSettingSaves.clear();
+}
+
+function writeConversionToleranceSetting(setting, value) {
+  try {
+    const result = game.settings?.set?.(MODULE_ID, setting, value);
+    result?.catch?.(() => {});
+  } catch (_error) {
+    // Preview values were already applied locally.
+  }
 }
 
 function getSettingNumber(setting, fallback) {
@@ -484,13 +559,23 @@ function getConversionPreviewHoveredGroupId(point, plan) {
   };
 
   plan.rectangleGroups.forEach((group, index) => considerGroup(`rectangle:${index}`, getRectangleConversionPreviewSegments(group)));
-  plan.ellipseGroups.forEach((group, index) => considerGroup(`ellipse:${index}`, getCoordinateConversionPreviewSegments(getConvertedEllipseWallCoordinates(group))));
+  plan.ellipseGroups.forEach((group, index) => considerGroup(`ellipse:${index}`, getEllipseConversionPreviewSegments(group)));
   plan.polylineGroups.forEach((group, index) => considerGroup(`polyline:${index}`, getPolylineConversionPreviewSegments(group)));
   return best;
 }
 
 function getRectangleConversionPreviewSegments(group) {
-  return getCoordinateConversionPreviewSegments(Object.values(getConvertedRectangleWallCoordinates(group)));
+  if (!group._previewSegments) {
+    group._previewSegments = getCoordinateConversionPreviewSegments(Object.values(getConvertedRectangleWallCoordinates(group)));
+  }
+  return group._previewSegments;
+}
+
+function getEllipseConversionPreviewSegments(group) {
+  if (!group._previewSegments) {
+    group._previewSegments = getCoordinateConversionPreviewSegments(getConvertedEllipseWallCoordinates(group));
+  }
+  return group._previewSegments;
 }
 
 function getCoordinateConversionPreviewSegments(coordinates) {
@@ -500,15 +585,17 @@ function getCoordinateConversionPreviewSegments(coordinates) {
 }
 
 function getPolylineConversionPreviewSegments(group) {
+  if (group._previewSegments) return group._previewSegments;
   const segments = [];
   const segmentCount = group.closed ? group.points.length : Math.max(group.points.length - 1, 0);
   for (let index = 0; index < segmentCount; index++) {
     const a = group.points[index];
     const b = group.points[index + 1] ?? group.points[0];
     const curve = group.segmentCurves?.[String(index)];
-    const points = getConvertedPolylineSegmentPoints(a, b, curve, group.curveSegmentsBySegment?.[String(index)]);
+    const points = getCachedConvertedPolylineSegmentPoints(group, index, a, b, curve);
     for (let i = 0; i < points.length - 1; i++) segments.push([points[i], points[i + 1]]);
   }
+  group._previewSegments = segments;
   return segments;
 }
 
@@ -520,10 +607,16 @@ function isPointNearConversionSegmentBounds(point, a, b, tolerance) {
 }
 
 
-function getPlainWallConversionCandidates() {
+function getPlainWallConversionCandidates(baseCandidates=null) {
+  return (baseCandidates ?? getPlainWallConversionBaseCandidates())
+    .map(getWallConversionCandidateWithCurrentTolerance)
+    .filter((candidate) => candidate !== null);
+}
+
+function getPlainWallConversionBaseCandidates() {
   return getSceneWallDocuments()
     .filter((wall) => !hasIndyShapeFlag(wall))
-    .map(getWallConversionCandidate)
+    .map(getBaseWallConversionCandidate)
     .filter((candidate) => candidate !== null);
 }
 
@@ -541,7 +634,7 @@ function hasIndyShapeFlag(wallDocument) {
     || wallDocument?.getFlag(MODULE_ID, POLYLINE_FLAG));
 }
 
-function getWallConversionCandidate(wall) {
+function getBaseWallConversionCandidate(wall) {
   const c = wall?.c;
   if (!Array.isArray(c) || c.length < 4) return null;
 
@@ -551,7 +644,6 @@ function getWallConversionCandidate(wall) {
 
   const dx = b.x - a.x;
   const dy = b.y - a.y;
-  const axisTolerance = getRectangleAxisTolerance(a, b);
   return {
     wall,
     a,
@@ -559,8 +651,21 @@ function getWallConversionCandidate(wall) {
     aKey: conversionPointKey(a),
     bKey: conversionPointKey(b),
     levelKey: getWallLevelsKey(wall),
-    horizontal: Math.abs(dy) <= axisTolerance,
-    vertical: Math.abs(dx) <= axisTolerance
+    wallTypeTool: getWallTypeToolFromDocument(wall),
+    comparableWallData: getComparablePreservedWallData(wall),
+    dx,
+    dy,
+    length: Math.hypot(dx, dy)
+  };
+}
+
+function getWallConversionCandidateWithCurrentTolerance(base) {
+  if (!base) return null;
+  const axisTolerance = getRectangleAxisToleranceFromLength(base.length);
+  return {
+    ...base,
+    horizontal: Math.abs(base.dy) <= axisTolerance,
+    vertical: Math.abs(base.dx) <= axisTolerance
   };
 }
 
@@ -609,9 +714,10 @@ function getWallConversionComponents(candidates) {
 function getRectangleConversionGroupsFromComponent(component) {
   if (component.length < 4 || component.some((candidate) => !(candidate.horizontal || candidate.vertical))) return [];
 
-  const points = component.flatMap((candidate) => [candidate.a, candidate.b]);
-  const xs = [...new Set(points.map((point) => point.x))].sort((a, b) => a - b);
-  const ys = [...new Set(points.map((point) => point.y))].sort((a, b) => a - b);
+  const xs = getRectangleCandidateBoundaryValues(component, "x");
+  const ys = getRectangleCandidateBoundaryValues(component, "y");
+  if (xs.length < 2 || ys.length < 2) return [];
+
   const candidates = [];
   for (let xi = 0; xi < xs.length - 1; xi++) {
     for (let xj = xi + 1; xj < xs.length; xj++) {
@@ -640,6 +746,13 @@ function getRectangleConversionGroupsFromComponent(component) {
     groups.push(group);
   }
   return groups;
+}
+
+function getRectangleCandidateBoundaryValues(component, axis) {
+  const source = axis === "x"
+    ? component.filter((candidate) => candidate.vertical).flatMap((candidate) => [candidate.a.x, candidate.b.x])
+    : component.filter((candidate) => candidate.horizontal).flatMap((candidate) => [candidate.a.y, candidate.b.y]);
+  return [...new Set(source)].sort((a, b) => a - b);
 }
 
 function getRectangleConversionGroupForBounds(component, {minX, minY, maxX, maxY}) {
@@ -769,6 +882,7 @@ function buildRectangleConversionUpdates(group) {
 }
 
 function getConvertedRectangleWallCoordinates(group) {
+  if (group._convertedRectangleWallCoordinates) return group._convertedRectangleWallCoordinates;
   const [a, b] = group.handles;
   const bounds = {
     minX: Math.min(a.x, b.x),
@@ -797,6 +911,7 @@ function getConvertedRectangleWallCoordinates(group) {
       coordinates[`${side}:${index}`] = getRoundedWallCoordinates(points[index], points[index + 1]);
     }
   }
+  group._convertedRectangleWallCoordinates = coordinates;
   return coordinates;
 }
 
@@ -988,7 +1103,7 @@ function refineConvertedPolylineGroups(groups) {
       ellipseGroups.push(ellipse);
       continue;
     }
-    polylineGroups.push(convertPolylineLineRunsToBezier(group) ?? convertPolylineLineRunsToArcs(group));
+    polylineGroups.push(convertPolylineLineRunsToBezier(group) ?? convertPolylineLineRunsToCurves(group));
   }
   return {ellipseGroups, polylineGroups};
 }
@@ -1056,6 +1171,7 @@ function buildEllipseConversionUpdates(group) {
 }
 
 function getConvertedEllipseWallCoordinates(group) {
+  if (group._convertedEllipseWallCoordinates) return group._convertedEllipseWallCoordinates;
   const [a, b] = group.handles;
   const cx = (a.x + b.x) / 2;
   const cy = (a.y + b.y) / 2;
@@ -1069,7 +1185,8 @@ function getConvertedEllipseWallCoordinates(group) {
       y: cy + (Math.sin(angle) * ry)
     });
   }
-  return group.candidates.map((_, index) => getRoundedWallCoordinates(points[index], points[index + 1]));
+  group._convertedEllipseWallCoordinates = group.candidates.map((_, index) => getRoundedWallCoordinates(points[index], points[index + 1]));
+  return group._convertedEllipseWallCoordinates;
 }
 
 function convertPolylineLineRunsToBezier(group) {
@@ -1095,6 +1212,8 @@ function convertPolylineLineRunsToBezier(group) {
 }
 
 function getCubicBezierFit(points) {
+  if (getMaxPointSegmentDistance(points, points[0], points.at(-1)) <= getConversionBaseFitTolerance(points)) return null;
+
   const parameterSets = [
     getUniformParameters(points),
     getChordLengthParameters(points),
@@ -1108,7 +1227,6 @@ function getCubicBezierFit(points) {
     if (!best || fit.error < best.error) best = fit;
   }
   if (!best) return null;
-  if (getMaxPointSegmentDistance(points, points[0], points.at(-1)) <= getConversionBaseFitTolerance(points)) return null;
   if (best.error > getConversionFitTolerance(points, "bezier") * 1.2) return null;
 
   return best;
@@ -1195,7 +1313,7 @@ function getDistanceWeightedParameters(points, power) {
   return parameters;
 }
 
-function convertPolylineLineRunsToArcs(group) {
+function convertPolylineLineRunsToCurves(group) {
   if (group.closed || group.candidates.length < 3 || group.points.length < 4) return group;
 
   const outputPoints = [];
@@ -1208,16 +1326,13 @@ function convertPolylineLineRunsToArcs(group) {
   let segmentIndex = 0;
 
   while (candidateIndex < group.candidates.length) {
-    const run = findBestArcConversionRun(group, candidateIndex);
+    const run = findBestBezierConversionRun(group, candidateIndex) ?? findBestArcConversionRun(group, candidateIndex);
     if (run) {
       if (!outputPoints.length) outputPoints.push({...group.points[pointIndex]});
       outputCandidates.push(...group.candidates.slice(candidateIndex, run.endCandidate));
       for (let i = candidateIndex; i < run.endCandidate; i++) segmentIndexByCandidate.push(segmentIndex);
       outputPoints.push({...group.points[run.endPoint]});
-      segmentCurves[String(segmentIndex)] = {
-        mode: POLYLINE_SEGMENT_ARC,
-        handles: [run.control]
-      };
+      segmentCurves[String(segmentIndex)] = run.curve;
       curveSegmentsBySegment[String(segmentIndex)] = run.endCandidate - candidateIndex;
       candidateIndex = run.endCandidate;
       pointIndex = run.endPoint;
@@ -1244,25 +1359,54 @@ function convertPolylineLineRunsToArcs(group) {
   };
 }
 
+function findBestBezierConversionRun(group, startCandidate) {
+  const minSegments = 5;
+  const maxSegments = Math.min(24, group.candidates.length - startCandidate);
+  for (let count = maxSegments; count >= minSegments; count--) {
+    const endCandidate = startCandidate + count;
+    if (!canCompressWallDataForCandidateRange(group.candidates, startCandidate, endCandidate)) continue;
+
+    const endPoint = startCandidate + count;
+    const points = group.points.slice(startCandidate, endPoint + 1);
+    const fit = getCubicBezierFit(points);
+    if (!fit) continue;
+
+    return {
+      endCandidate,
+      endPoint,
+      curve: {
+        mode: POLYLINE_SEGMENT_BEZIER,
+        handles: fit.handles
+      },
+      error: fit.error
+    };
+  }
+  return null;
+}
+
 function findBestArcConversionRun(group, startCandidate) {
   const minSegments = 3;
   const maxSegments = Math.min(16, group.candidates.length - startCandidate);
-  let best = null;
-  for (let count = minSegments; count <= maxSegments; count++) {
+  for (let count = maxSegments; count >= minSegments; count--) {
     const endCandidate = startCandidate + count;
+    if (!canCompressWallDataForCandidateRange(group.candidates, startCandidate, endCandidate)) continue;
+
     const endPoint = startCandidate + count;
     const points = group.points.slice(startCandidate, endPoint + 1);
     const fit = getArcFit(points);
     if (!fit) continue;
-    if (!canCompressWallDataForCurve(group.candidates.slice(startCandidate, endCandidate))) continue;
-    best = {
+
+    return {
       endCandidate,
       endPoint,
-      control: fit.control,
+      curve: {
+        mode: POLYLINE_SEGMENT_ARC,
+        handles: [fit.control]
+      },
       error: fit.error
     };
   }
-  return best;
+  return null;
 }
 
 function getArcFit(points) {
@@ -1406,11 +1550,18 @@ function normalizeAngle(angle) {
 
 function canCompressWallDataForCurve(candidates) {
   if (candidates.length < 3) return false;
-  const firstTool = getWallTypeToolFromDocument(candidates[0].wall);
-  const firstData = getComparablePreservedWallData(candidates[0].wall);
-  return candidates.every((candidate) =>
-    getWallTypeToolFromDocument(candidate.wall) === firstTool
-    && getComparablePreservedWallData(candidate.wall) === firstData);
+  return canCompressWallDataForCandidateRange(candidates, 0, candidates.length);
+}
+
+function canCompressWallDataForCandidateRange(candidates, start, end) {
+  if (end - start < 3) return false;
+  const first = candidates[start];
+  if (!first) return false;
+  for (let index = start + 1; index < end; index++) {
+    const candidate = candidates[index];
+    if (candidate?.wallTypeTool !== first.wallTypeTool || candidate.comparableWallData !== first.comparableWallData) return false;
+  }
+  return true;
 }
 
 function getComparablePreservedWallData(wall) {
@@ -1459,9 +1610,8 @@ function getConversionBaseFitTolerance(points) {
   return clamp(diagonal * 0.025, 3, 18);
 }
 
-function getRectangleAxisTolerance(a, b) {
-  const length = Math.hypot(b.x - a.x, b.y - a.y);
-  return clamp(length * 0.015, 1.5, 12) * getConversionToleranceMultiplier("rectangle");
+function getRectangleAxisToleranceFromLength(length) {
+  return clamp(length * 0.03, 3, 24) * getConversionToleranceMultiplier("rectangle");
 }
 
 function getRectangleBoundsTolerance({minX, minY, maxX, maxY}) {
@@ -1520,6 +1670,7 @@ function buildPolylineConversionUpdates(group) {
 }
 
 function getConvertedPolylineWallCoordinates(group) {
+  if (group._convertedPolylineWallCoordinates) return group._convertedPolylineWallCoordinates;
   const coordinates = [];
   const segmentCount = group.closed ? group.points.length : Math.max(group.points.length - 1, 0);
   for (let index = 0; index < segmentCount; index++) {
@@ -1548,6 +1699,7 @@ function getConvertedPolylineWallCoordinates(group) {
     }
     coordinates.push(getRoundedWallCoordinates(a, b));
   }
+  group._convertedPolylineWallCoordinates = coordinates;
   return coordinates;
 }
 
