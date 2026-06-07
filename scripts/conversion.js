@@ -1109,7 +1109,11 @@ function refineConvertedPolylineGroups(groups) {
 }
 
 function getEllipseConversionGroup(group) {
-  if (!group.closed || group.candidates.length < 8 || group.points.length < 8) return null;
+  if (group.closed) {
+    if (group.candidates.length < 8 || group.points.length < 8) return null;
+  } else if (group.candidates.length < 5 || group.points.length < 6) {
+    return null;
+  }
 
   const points = group.points;
   const bounds = getConversionPointBounds(points);
@@ -1128,12 +1132,115 @@ function getEllipseConversionGroup(group) {
   if (maxError > tolerance) return null;
 
   const handles = [{x: bounds.minX, y: bounds.minY}, {x: bounds.maxX, y: bounds.maxY}];
+  if (!group.closed) {
+    const gapData = getOpenEllipseConversionGapData(group, handles);
+    if (!gapData) return null;
+    return {
+      candidates: group.candidates,
+      handles,
+      segments: gapData.segments,
+      levelKey: group.levelKey,
+      angleGaps: gapData.angleGaps,
+      candidateIntervals: gapData.candidateIntervals,
+      segmentIndexByCandidate: gapData.segmentIndexByCandidate
+    };
+  }
+
   return {
     candidates: group.candidates,
     handles,
     segments: group.candidates.length,
-    levelKey: group.levelKey
+    levelKey: group.levelKey,
+    angleGaps: []
   };
+}
+
+function getOpenEllipseConversionGapData(group, handles) {
+  const intervalData = getOpenEllipseCandidateIntervals(group, handles);
+  if (!intervalData?.intervals?.length) return null;
+  const {intervals, direction} = intervalData;
+
+  const visibleSweep = intervals.reduce((total, interval) => total + Math.abs(interval.end - interval.start), 0);
+  if (visibleSweep < 0.18 || visibleSweep >= 0.985) return null;
+
+  const first = intervals[0];
+  const last = intervals.at(-1);
+  const gap = direction > 0
+    ? normalizeAngleGap(last.end, first.start)
+    : normalizeAngleGap(first.start, last.end);
+  if (!gap || getAngleGapSize(gap) < 0.015) return null;
+
+  const estimatedSegments = Math.round(group.candidates.length / clamp(visibleSweep, 0.2, 0.98));
+  const segments = clamp(Math.max(8, estimatedSegments), group.candidates.length + 1, 96);
+  return {
+    segments,
+    angleGaps: [gap],
+    candidateIntervals: intervals.map((interval) => ({
+      start: modulo(interval.start, 1),
+      end: modulo(interval.end, 1)
+    })),
+    segmentIndexByCandidate: intervals.map((interval) => Math.floor(modulo((interval.start + interval.end) / 2, 1) * segments))
+  };
+}
+
+function getOpenEllipseCandidateIntervals(group, handles) {
+  if (group.points.length !== group.candidates.length + 1) return null;
+  const unwrapped = getUnwrappedEllipseFractions(group.points, handles);
+  if (!unwrapped?.values) return null;
+  return {
+    direction: unwrapped.direction,
+    intervals: group.candidates.map((_, index) => ({
+      start: unwrapped.values[index],
+      end: unwrapped.values[index + 1]
+    }))
+  };
+}
+
+function getUnwrappedEllipseFractions(points, handles) {
+  if (points.length < 2) return null;
+  const fractions = points.map((point) => getEllipsePointAngleFraction(point, handles));
+  const forward = unwrapEllipseFractions(fractions, 1);
+  const backward = unwrapEllipseFractions(fractions, -1);
+  if (!forward || !backward) return null;
+  return forward.sweep <= backward.sweep ? forward : backward;
+}
+
+function unwrapEllipseFractions(fractions, direction) {
+  const values = [fractions[0]];
+  for (let index = 1; index < fractions.length; index++) {
+    let value = fractions[index];
+    const previous = values[index - 1];
+    if (direction > 0) {
+      while (value < previous) value += 1;
+    } else {
+      while (value > previous) value -= 1;
+    }
+    values.push(value);
+  }
+  const sweep = Math.abs(values.at(-1) - values[0]);
+  if (!Number.isFinite(sweep)) return null;
+  return {values, sweep, direction};
+}
+
+function getEllipsePointAngleFraction(point, handles) {
+  const [a, b] = handles;
+  const cx = (a.x + b.x) / 2;
+  const cy = (a.y + b.y) / 2;
+  const rx = Math.max(Math.abs(b.x - a.x) / 2, 0.0001);
+  const ry = Math.max(Math.abs(b.y - a.y) / 2, 0.0001);
+  return modulo(Math.atan2((point.y - cy) / ry, (point.x - cx) / rx) / (Math.PI * 2), 1);
+}
+
+function normalizeAngleGap(start, end) {
+  const normalized = {
+    start: modulo(start, 1),
+    end: modulo(end, 1)
+  };
+  return getAngleGapSize(normalized) > 0 ? normalized : null;
+}
+
+function getAngleGapSize(gap) {
+  return modulo((Number(gap?.end) || 0) - (Number(gap?.start) || 0), 1);
 }
 
 function buildEllipseConversionUpdates(group) {
@@ -1144,7 +1251,7 @@ function buildEllipseConversionUpdates(group) {
   const wallDataBySegment = {};
   for (let index = 0; index < group.candidates.length; index++) {
     const candidate = group.candidates[index];
-    const key = String(index);
+    const key = String(group.segmentIndexByCandidate?.[index] ?? index);
     const tool = getWallTypeToolFromDocument(candidate.wall);
     if (tool) wallTypeBySegment[key] = tool;
     const preserved = getPreservedWallDataFromDocument(candidate.wall, MODULE_ID);
@@ -1157,12 +1264,14 @@ function buildEllipseConversionUpdates(group) {
     c: coordinates[index] ?? candidate.wall.c,
     [`flags.${MODULE_ID}.${ELLIPSE_FLAG}`]: {
       ellipseId,
-      index,
+      index: group.segmentIndexByCandidate?.[index] ?? index,
+      segmentIndex: group.segmentIndexByCandidate?.[index] ?? index,
       wallIds,
       handles: clonePoints(group.handles),
       segments: group.segments,
       rotation: 0,
       segmentGaps: [],
+      angleGaps: cloneAngleGaps(group.angleGaps),
       wallTypeBySegment: cloneWallTypeBySegment(wallTypeBySegment),
       wallDataBySegment: cloneWallDataBySegment(wallDataBySegment),
       wallTypeTool
@@ -1177,16 +1286,38 @@ function getConvertedEllipseWallCoordinates(group) {
   const cy = (a.y + b.y) / 2;
   const rx = Math.abs(b.x - a.x) / 2;
   const ry = Math.abs(b.y - a.y) / 2;
+  if (Array.isArray(group.candidateIntervals) && group.candidateIntervals.length === group.candidates.length) {
+    group._convertedEllipseWallCoordinates = group.candidateIntervals.map((interval) => {
+      const start = getEllipsePointAtFraction(cx, cy, rx, ry, interval.start);
+      const end = getEllipsePointAtFraction(cx, cy, rx, ry, interval.end);
+      return getRoundedWallCoordinates(start, end);
+    });
+    return group._convertedEllipseWallCoordinates;
+  }
+
   const points = [];
   for (let index = 0; index <= group.segments; index++) {
-    const angle = (Math.PI * 2 * index) / group.segments;
-    points.push({
-      x: cx + (Math.cos(angle) * rx),
-      y: cy + (Math.sin(angle) * ry)
-    });
+    points.push(getEllipsePointAtFraction(cx, cy, rx, ry, index / group.segments));
   }
   group._convertedEllipseWallCoordinates = group.candidates.map((_, index) => getRoundedWallCoordinates(points[index], points[index + 1]));
   return group._convertedEllipseWallCoordinates;
+}
+
+function getEllipsePointAtFraction(cx, cy, rx, ry, fraction) {
+  const angle = Math.PI * 2 * fraction;
+  return {
+    x: cx + (Math.cos(angle) * rx),
+    y: cy + (Math.sin(angle) * ry)
+  };
+}
+
+function cloneAngleGaps(gaps) {
+  return (Array.isArray(gaps) ? gaps : [])
+    .map((gap) => ({
+      start: modulo(Number(gap?.start) || 0, 1),
+      end: modulo(Number(gap?.end) || 0, 1)
+    }))
+    .filter((gap) => getAngleGapSize(gap) > 0.000001);
 }
 
 function convertPolylineLineRunsToBezier(group) {
@@ -1744,4 +1875,8 @@ function conversionPointKey(point) {
 function conversionPointFromKey(key) {
   const [x, y] = String(key).split(",").map((value) => Number(value) || 0);
   return {x, y};
+}
+
+function modulo(value, modulus) {
+  return ((value % modulus) + modulus) % modulus;
 }

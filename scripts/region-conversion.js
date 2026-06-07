@@ -602,6 +602,8 @@ function getShapeClipContours(shape, ellipseSegments=DEFAULT_ELLIPSE_SEGMENTS) {
 
 function clipWallsByContours(walls, contours) {
   if (!contours.length) return walls;
+  if (isEllipseWallGroup(walls)) return clipEllipseWallsByContours(walls, contours, false);
+
   const kept = [];
   const removedIndexes = new Set();
 
@@ -620,6 +622,8 @@ function clipWallsByContours(walls, contours) {
 
 function keepWallsByContours(walls, contours) {
   if (!contours.length) return [];
+  if (isEllipseWallGroup(walls)) return clipEllipseWallsByContours(walls, contours, true);
+
   const kept = [];
   const removedIndexes = new Set();
 
@@ -634,6 +638,201 @@ function keepWallsByContours(walls, contours) {
 
   applyRemovedShapeSegments(kept, removedIndexes);
   return kept;
+}
+
+function isEllipseWallGroup(walls) {
+  return Array.isArray(walls)
+    && walls.length > 0
+    && walls.every((wall) => Boolean(wall?.flags?.["indy-walls"]?.[ELLIPSE_FLAG]));
+}
+
+function clipEllipseWallsByContours(walls, contours, keepInside) {
+  const firstFlag = walls[0]?.flags?.["indy-walls"]?.[ELLIPSE_FLAG];
+  const geometry = getEllipseGeometryFromFlag(firstFlag);
+  if (!geometry) return keepInside ? [] : walls;
+
+  const segments = Number(firstFlag.segments) || 0;
+  const ellipseId = firstFlag.ellipseId ?? foundry.utils.randomID();
+  const wallTypeBySegment = clonePlainObject(firstFlag.wallTypeBySegment);
+  const wallDataBySegment = clonePlainObject(firstFlag.wallDataBySegment);
+  const wallTypeTool = firstFlag.wallTypeTool ?? "walls";
+  const visibleIntervals = [];
+  const nextWalls = [];
+
+  for (let index = 0; index < segments; index += 1) {
+    const start = index / segments;
+    const end = (index + 1) / segments;
+    const a = getEllipsePointAtFraction(geometry, start);
+    const b = getEllipsePointAtFraction(geometry, end);
+    const cuts = getEllipseSegmentClipCuts(a, b, contours);
+
+    for (let cutIndex = 0; cutIndex < cuts.length - 1; cutIndex += 1) {
+      const localStart = cuts[cutIndex];
+      const localEnd = cuts[cutIndex + 1];
+      if ((localEnd - localStart) < 0.000001) continue;
+
+      const localMid = (localStart + localEnd) * 0.5;
+      const midpoint = interpolatePoint(a, b, localMid);
+      const inside = contours.some((contour) => pointInPolygon(midpoint, contour));
+      if (keepInside ? !inside : inside) continue;
+
+      const interval = {
+        start: start + ((end - start) * localStart),
+        end: start + ((end - start) * localEnd)
+      };
+      visibleIntervals.push(interval);
+
+      const segmentStart = getEllipsePointAtFraction(geometry, interval.start);
+      const segmentEnd = getEllipsePointAtFraction(geometry, interval.end);
+      const source = getEllipseSourceWallForSegment(walls, index);
+      nextWalls.push(buildWallDocument(source, segmentStart, segmentEnd, {
+        "indy-walls": {
+          [ELLIPSE_FLAG]: {
+            ellipseId,
+            index: nextWalls.length,
+            segmentIndex: index,
+            wallIds: [],
+            handles: clonePoints(firstFlag.handles),
+            segments,
+            rotation: firstFlag.rotation ?? 0,
+            segmentGaps: [],
+            angleGaps: [],
+            wallTypeBySegment,
+            wallDataBySegment,
+            wallTypeTool
+          }
+        }
+      }));
+    }
+  }
+
+  const filtered = nextWalls.filter(Boolean);
+  const angleGaps = getAngleGapsFromVisibleIntervals(visibleIntervals);
+  const segmentGaps = getSegmentGapsFromAngleGaps(angleGaps, segments);
+  for (const wall of filtered) {
+    const flag = wall?.flags?.["indy-walls"]?.[ELLIPSE_FLAG];
+    if (!flag) continue;
+    flag.wallIds = [];
+    flag.angleGaps = cloneAngleGaps(angleGaps);
+    flag.segmentGaps = [...segmentGaps];
+  }
+  return filtered;
+}
+
+function getEllipseGeometryFromFlag(flag) {
+  if (!Array.isArray(flag?.handles) || flag.handles.length !== 2) return null;
+  const [a, b] = flag.handles;
+  const cx = (Number(a?.x) + Number(b?.x)) / 2;
+  const cy = (Number(a?.y) + Number(b?.y)) / 2;
+  const rx = Math.abs(Number(b?.x) - Number(a?.x)) / 2;
+  const ry = Math.abs(Number(b?.y) - Number(a?.y)) / 2;
+  const rotation = Number(flag.rotation) || 0;
+  if (![cx, cy, rx, ry, rotation].every(Number.isFinite) || rx <= 0 || ry <= 0) return null;
+  return {cx, cy, rx, ry, rotation};
+}
+
+function getEllipsePointAtFraction({cx, cy, rx, ry, rotation}, fraction) {
+  const angle = Math.PI * 2 * fraction;
+  const x = Math.cos(angle) * rx;
+  const y = Math.sin(angle) * ry;
+  const cosRotation = Math.cos(rotation);
+  const sinRotation = Math.sin(rotation);
+  return {
+    x: cx + (x * cosRotation) - (y * sinRotation),
+    y: cy + (x * sinRotation) + (y * cosRotation)
+  };
+}
+
+function getEllipseSegmentClipCuts(a, b, contours) {
+  const cuts = [0, 1];
+  for (const contour of contours) {
+    for (let i = 0; i < contour.length; i += 1) {
+      const p = contour[i];
+      const q = contour[(i + 1) % contour.length];
+      const t = getSegmentIntersectionParameter(a, b, p, q);
+      if (Number.isFinite(t) && t > 0.000001 && t < 0.999999) cuts.push(t);
+    }
+  }
+  return [...new Set(cuts.map((value) => Math.round(value * 1000000) / 1000000))]
+    .sort((x, y) => x - y);
+}
+
+function getEllipseSourceWallForSegment(walls, segmentIndex) {
+  return walls.find((wall) => {
+    const flag = wall?.flags?.["indy-walls"]?.[ELLIPSE_FLAG];
+    const index = Number(flag?.segmentIndex ?? flag?.index);
+    return Number.isInteger(index) && index === segmentIndex;
+  }) ?? walls[0];
+}
+
+function getAngleGapsFromVisibleIntervals(visibleIntervals) {
+  const intervals = mergeAngleIntervals(visibleIntervals);
+  if (!intervals.length) return [{start: 0, end: 0}];
+  const gaps = [];
+  let cursor = 0;
+  for (const interval of intervals) {
+    if (interval.start > cursor + 0.000001) gaps.push({start: cursor, end: interval.start});
+    cursor = Math.max(cursor, interval.end);
+  }
+  if (cursor < 1 - 0.000001) gaps.push({start: cursor, end: 0});
+  return gaps.filter((gap) => getAngleGapSize(gap) > 0.000001);
+}
+
+function mergeAngleIntervals(intervals) {
+  const sorted = intervals
+    .map((interval) => ({
+      start: Math.max(0, Math.min(1, Number(interval.start) || 0)),
+      end: Math.max(0, Math.min(1, Number(interval.end) || 0))
+    }))
+    .filter((interval) => interval.end - interval.start > 0.000001)
+    .sort((a, b) => a.start - b.start);
+  const merged = [];
+  for (const interval of sorted) {
+    const previous = merged.at(-1);
+    if (previous && interval.start <= previous.end + 0.000001) {
+      previous.end = Math.max(previous.end, interval.end);
+    } else {
+      merged.push({...interval});
+    }
+  }
+  return merged;
+}
+
+function getSegmentGapsFromAngleGaps(angleGaps, segmentCount) {
+  const count = Number(segmentCount);
+  if (!Number.isInteger(count) || count <= 0) return [];
+  const gaps = [];
+  for (let index = 0; index < count; index += 1) {
+    const center = (index + 0.5) / count;
+    if (angleGaps.some((gap) => isAngleFractionInGap(center, gap))) gaps.push(index);
+  }
+  return gaps;
+}
+
+function isAngleFractionInGap(fraction, gap) {
+  const value = modulo(fraction, 1);
+  const start = modulo(Number(gap?.start) || 0, 1);
+  const end = modulo(Number(gap?.end) || 0, 1);
+  if (Math.abs(start - end) < 0.000001) return false;
+  if (start < end) return value >= start && value < end;
+  return value >= start || value < end;
+}
+
+function cloneAngleGaps(gaps) {
+  return (Array.isArray(gaps) ? gaps : [])
+    .map((gap) => ({
+      start: modulo(Number(gap?.start) || 0, 1),
+      end: modulo(Number(gap?.end) || 0, 1)
+    }))
+    .filter((gap) => getAngleGapSize(gap) > 0.000001);
+}
+
+function getAngleGapSize(gap) {
+  return modulo((Number(gap?.end) || 0) - (Number(gap?.start) || 0), 1);
+}
+
+function clonePlainObject(source) {
+  return source && typeof source === "object" && !Array.isArray(source) ? {...source} : {};
 }
 
 function isWallKeptByContours(wall, contours) {
