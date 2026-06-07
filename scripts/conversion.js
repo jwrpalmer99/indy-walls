@@ -67,6 +67,7 @@ const CONVERSION_FIT_TOLERANCE_PIXEL_CAPS = {
   arc: 24,
   bezier: 32
 };
+const ELLIPSE_ROTATION_SWEEP_ERROR_MULTIPLIER = 10;
 
 let convertingToIndyWalls = false;
 let conversionPreviewSession = null;
@@ -404,12 +405,15 @@ function getConvertedEllipsePoints(group) {
   const cy = (a.y + b.y) / 2;
   const rx = Math.abs(b.x - a.x) / 2;
   const ry = Math.abs(b.y - a.y) / 2;
+  const rotation = Number(group.rotation) || 0;
   const points = [];
   for (let index = 0; index <= group.segments; index++) {
     const angle = (Math.PI * 2 * index) / group.segments;
+    const x = Math.cos(angle) * rx;
+    const y = Math.sin(angle) * ry;
     points.push({
-      x: cx + (Math.cos(angle) * rx),
-      y: cy + (Math.sin(angle) * ry)
+      x: cx + (x * Math.cos(rotation)) - (y * Math.sin(rotation)),
+      y: cy + (x * Math.sin(rotation)) + (y * Math.cos(rotation))
     });
   }
   group._convertedEllipsePoints = points;
@@ -1300,28 +1304,16 @@ function getEllipseConversionGroup(group) {
   }
 
   const points = group.points;
-  const bounds = getConversionPointBounds(points);
-  const rx = (bounds.maxX - bounds.minX) / 2;
-  const ry = (bounds.maxY - bounds.minY) / 2;
-  if (rx < 1 || ry < 1) return null;
+  const fit = getBestEllipseConversionFit(points, group.closed);
+  if (!fit) return null;
 
-  const center = {x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2};
-  const tolerance = getConversionFitTolerance(points, "ellipse");
-  let maxError = 0;
-  for (const point of points) {
-    const normalized = Math.hypot((point.x - center.x) / rx, (point.y - center.y) / ry);
-    const radialError = Math.abs(normalized - 1) * Math.min(rx, ry);
-    maxError = Math.max(maxError, radialError);
-  }
-  if (maxError > tolerance) return null;
-
-  const handles = [{x: bounds.minX, y: bounds.minY}, {x: bounds.maxX, y: bounds.maxY}];
   if (!group.closed) {
-    const gapData = getOpenEllipseConversionGapData(group, handles);
+    const gapData = getOpenEllipseConversionGapData(group, fit);
     if (!gapData) return null;
     return {
       candidates: group.candidates,
-      handles,
+      handles: fit.handles,
+      rotation: fit.rotation,
       segments: gapData.segments,
       levelKey: group.levelKey,
       angleGaps: gapData.angleGaps,
@@ -1332,15 +1324,273 @@ function getEllipseConversionGroup(group) {
 
   return {
     candidates: group.candidates,
-    handles,
+    handles: fit.handles,
+    rotation: fit.rotation,
     segments: group.candidates.length,
     levelKey: group.levelKey,
     angleGaps: []
   };
 }
 
-function getOpenEllipseConversionGapData(group, handles) {
-  const intervalData = getOpenEllipseCandidateIntervals(group, handles);
+function getBestEllipseConversionFit(points, closed=false) {
+  const tolerance = getConversionFitTolerance(points, "ellipse");
+  const directFit = getDirectEllipseConversionFit(points);
+  const directReverseError = directFit && closed ? getMaxSampledEllipsePolylineDistance(directFit, points, true) : 0;
+  if (directFit && directFit.error <= tolerance && (!closed || directReverseError <= tolerance)) {
+    return directFit;
+  }
+  if (directFit && directFit.error > tolerance * ELLIPSE_ROTATION_SWEEP_ERROR_MULTIPLIER) {
+    return null;
+  }
+
+  let best = null;
+  const angles = getEllipseFitCandidateRotations(points);
+  for (const rotation of angles) {
+    const fit = getEllipseConversionFitAtRotation(points, rotation);
+    if (!fit) continue;
+    if (fit.error > tolerance) continue;
+    const reverseError = closed ? getMaxSampledEllipsePolylineDistance(fit, points, true) : 0;
+    if (closed && reverseError > tolerance) continue;
+    if (!best || fit.error < best.error) best = fit;
+  }
+  return best;
+}
+
+function getDirectEllipseConversionFit(points) {
+  if (!Array.isArray(points) || points.length < 6) return null;
+  const bounds = getConversionPointBounds(points);
+  const origin = {
+    x: (bounds.minX + bounds.maxX) / 2,
+    y: (bounds.minY + bounds.maxY) / 2
+  };
+  const scale = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY, 1);
+  const normalizedPoints = points.map((point) => ({
+    x: (point.x - origin.x) / scale,
+    y: (point.y - origin.y) / scale
+  }));
+  const normal = Array.from({length: 5}, () => Array(5).fill(0));
+  const rhs = Array(5).fill(0);
+  for (const point of normalizedPoints) {
+    const row = [
+      point.x * point.x,
+      point.x * point.y,
+      point.y * point.y,
+      point.x,
+      point.y
+    ];
+    for (let r = 0; r < row.length; r += 1) {
+      rhs[r] += row[r];
+      for (let c = 0; c < row.length; c += 1) {
+        normal[r][c] += row[r] * row[c];
+      }
+    }
+  }
+
+  const solution = solveLinearSystem(normal, rhs);
+  if (!solution) return null;
+  const [a, b, c, d, e] = solution;
+  if (((b * b) - (4 * a * c)) >= 0) return null;
+
+  const centerDenominator = (4 * a * c) - (b * b);
+  if (Math.abs(centerDenominator) < 0.0001) return null;
+  const normalizedCenter = {
+    x: ((b * e) - (2 * c * d)) / centerDenominator,
+    y: ((b * d) - (2 * a * e)) / centerDenominator
+  };
+  if (!isFiniteConversionPoint(normalizedCenter)) return null;
+
+  const q11 = a;
+  const q12 = b / 2;
+  const q22 = c;
+  const trace = (q11 + q22) / 2;
+  const delta = Math.hypot((q11 - q22) / 2, q12);
+  const lambdaA = trace + delta;
+  const lambdaB = trace - delta;
+  if (lambdaA <= 0 || lambdaB <= 0) return null;
+
+  const centerValue = (a * normalizedCenter.x * normalizedCenter.x)
+    + (b * normalizedCenter.x * normalizedCenter.y)
+    + (c * normalizedCenter.y * normalizedCenter.y)
+    + (d * normalizedCenter.x)
+    + (e * normalizedCenter.y)
+    - 1;
+  if (centerValue >= 0) return null;
+
+  const rotation = Math.atan2(q12, lambdaA - q11);
+  const rx = Math.sqrt(-centerValue / lambdaA) * scale;
+  const ry = Math.sqrt(-centerValue / lambdaB) * scale;
+  const center = {
+    x: origin.x + (normalizedCenter.x * scale),
+    y: origin.y + (normalizedCenter.y * scale)
+  };
+  if (!Number.isFinite(rx) || !Number.isFinite(ry) || rx < 1 || ry < 1) return null;
+
+  const fit = {
+    handles: [{x: center.x - rx, y: center.y - ry}, {x: center.x + rx, y: center.y + ry}],
+    rotation: normalizeHalfTurn(rotation),
+    center,
+    rx,
+    ry
+  };
+  fit.error = getEllipseFitError(points, fit);
+  return fit;
+}
+
+function solveLinearSystem(matrix, values) {
+  const n = values.length;
+  const augmented = matrix.map((row, index) => [...row, values[index]]);
+  for (let column = 0; column < n; column += 1) {
+    let pivot = column;
+    for (let row = column + 1; row < n; row += 1) {
+      if (Math.abs(augmented[row][column]) > Math.abs(augmented[pivot][column])) pivot = row;
+    }
+    if (Math.abs(augmented[pivot][column]) < 0.0000001) return null;
+    if (pivot !== column) [augmented[pivot], augmented[column]] = [augmented[column], augmented[pivot]];
+
+    const divisor = augmented[column][column];
+    for (let col = column; col <= n; col += 1) augmented[column][col] /= divisor;
+
+    for (let row = 0; row < n; row += 1) {
+      if (row === column) continue;
+      const factor = augmented[row][column];
+      for (let col = column; col <= n; col += 1) {
+        augmented[row][col] -= factor * augmented[column][col];
+      }
+    }
+  }
+  return augmented.map((row) => row[n]);
+}
+
+function getEllipseFitCandidateRotations(points) {
+  const rotations = [0, Math.PI / 4, Math.PI / 2, Math.PI * 0.75];
+  const coarseStep = Math.PI / 18;
+  for (let index = 0; index < 18; index += 1) {
+    rotations.push(index * coarseStep);
+  }
+  const pca = getPointCloudPrincipalAxisRotation(points);
+  if (Number.isFinite(pca)) {
+    for (const offset of [-Math.PI / 6, -Math.PI / 12, 0, Math.PI / 12, Math.PI / 6]) {
+      rotations.push(pca + offset, pca + (Math.PI / 2) + offset);
+    }
+  }
+  return [...new Set(rotations.map((angle) => Math.round(normalizeHalfTurn(angle) * 1000000) / 1000000))];
+}
+
+function getPointCloudPrincipalAxisRotation(points) {
+  if (!Array.isArray(points) || points.length < 3) return null;
+  const center = getConversionPointsCenter(points);
+  let xx = 0;
+  let yy = 0;
+  let xy = 0;
+  for (const point of points) {
+    const dx = point.x - center.x;
+    const dy = point.y - center.y;
+    xx += dx * dx;
+    yy += dy * dy;
+    xy += dx * dy;
+  }
+  if (Math.abs(xx) < 0.0001 && Math.abs(yy) < 0.0001) return null;
+  return Math.atan2(2 * xy, xx - yy) / 2;
+}
+
+function getEllipseConversionFitAtRotation(points, rotation) {
+  const local = points.map((point) => rotateConversionPoint(point, -rotation));
+  const bounds = getConversionPointBounds(local);
+  const localCenter = {
+    x: (bounds.minX + bounds.maxX) / 2,
+    y: (bounds.minY + bounds.maxY) / 2
+  };
+  const boundsFit = getEllipseFitFromLocalGeometry(local, rotation, localCenter, (bounds.maxX - bounds.minX) / 2, (bounds.maxY - bounds.minY) / 2);
+  const radii = getLeastSquaresEllipseRadii(local, localCenter);
+  const leastSquaresFit = radii ? getEllipseFitFromLocalGeometry(local, rotation, localCenter, radii.rx, radii.ry) : null;
+  if (!boundsFit) return leastSquaresFit;
+  if (!leastSquaresFit) return boundsFit;
+  return leastSquaresFit.error < boundsFit.error ? leastSquaresFit : boundsFit;
+}
+
+function getLeastSquaresEllipseRadii(localPoints, localCenter) {
+  let xx = 0;
+  let xy = 0;
+  let yy = 0;
+  let x1 = 0;
+  let y1 = 0;
+  for (const point of localPoints) {
+    const x = (point.x - localCenter.x) ** 2;
+    const y = (point.y - localCenter.y) ** 2;
+    xx += x * x;
+    xy += x * y;
+    yy += y * y;
+    x1 += x;
+    y1 += y;
+  }
+
+  const determinant = (xx * yy) - (xy * xy);
+  if (Math.abs(determinant) < 0.0001) return null;
+  const a = ((x1 * yy) - (y1 * xy)) / determinant;
+  const b = ((xx * y1) - (xy * x1)) / determinant;
+  if (a <= 0 || b <= 0) return null;
+
+  const rx = 1 / Math.sqrt(a);
+  const ry = 1 / Math.sqrt(b);
+  if (!Number.isFinite(rx) || !Number.isFinite(ry)) return null;
+  return {rx, ry};
+}
+
+function getEllipseFitFromLocalGeometry(localPoints, rotation, localCenter, rx, ry) {
+  if (rx < 1 || ry < 1) return null;
+  const center = rotateConversionPoint(localCenter, rotation);
+  const fit = {
+    handles: [{x: center.x - rx, y: center.y - ry}, {x: center.x + rx, y: center.y + ry}],
+    rotation: normalizeHalfTurn(rotation),
+    center,
+    rx,
+    ry
+  };
+  fit.error = getEllipseFitError(localPoints.map((point) => rotateConversionPoint(point, rotation)), fit);
+  return fit;
+}
+
+function getEllipseFitError(points, fit) {
+  let maxError = 0;
+  const center = fit.center ?? getEllipseFitCenter(fit.handles);
+  const rx = Math.max(Number(fit.rx) || Math.abs(fit.handles[1].x - fit.handles[0].x) / 2, 0.0001);
+  const ry = Math.max(Number(fit.ry) || Math.abs(fit.handles[1].y - fit.handles[0].y) / 2, 0.0001);
+  const rotation = Number(fit.rotation) || 0;
+  for (const point of points) {
+    const local = rotateConversionPoint({x: point.x - center.x, y: point.y - center.y}, -rotation);
+    const normalized = Math.hypot(local.x / rx, local.y / ry);
+    const radialError = Math.abs(normalized - 1) * Math.min(rx, ry);
+    maxError = Math.max(maxError, radialError);
+  }
+  return maxError;
+}
+
+function getMaxSampledEllipsePolylineDistance(fit, points, closed=false) {
+  const samples = Math.max(24, Math.min(160, points.length * 6));
+  const path = closed ? [...points, points[0]] : points;
+  let maxDistance = 0;
+  for (let step = 0; step < samples; step += 1) {
+    maxDistance = Math.max(maxDistance, getPointPolylineDistance(getEllipseFitPointAtFraction(fit, step / samples), path));
+  }
+  return maxDistance;
+}
+
+function rotateConversionPoint(point, angle) {
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  return {
+    x: (point.x * cos) - (point.y * sin),
+    y: (point.x * sin) + (point.y * cos)
+  };
+}
+
+function normalizeHalfTurn(angle) {
+  const halfTurn = Math.PI;
+  return ((angle % halfTurn) + halfTurn) % halfTurn;
+}
+
+function getOpenEllipseConversionGapData(group, fit) {
+  const intervalData = getOpenEllipseCandidateIntervals(group, fit);
   if (!intervalData?.intervals?.length) return null;
   const {intervals, direction} = intervalData;
 
@@ -1367,9 +1617,9 @@ function getOpenEllipseConversionGapData(group, handles) {
   };
 }
 
-function getOpenEllipseCandidateIntervals(group, handles) {
+function getOpenEllipseCandidateIntervals(group, fit) {
   if (group.points.length !== group.candidates.length + 1) return null;
-  const unwrapped = getUnwrappedEllipseFractions(group.points, handles);
+  const unwrapped = getUnwrappedEllipseFractions(group.points, fit);
   if (!unwrapped?.values) return null;
   return {
     direction: unwrapped.direction,
@@ -1380,9 +1630,9 @@ function getOpenEllipseCandidateIntervals(group, handles) {
   };
 }
 
-function getUnwrappedEllipseFractions(points, handles) {
+function getUnwrappedEllipseFractions(points, fit) {
   if (points.length < 2) return null;
-  const fractions = points.map((point) => getEllipsePointAngleFraction(point, handles));
+  const fractions = points.map((point) => getEllipsePointAngleFraction(point, fit));
   const forward = unwrapEllipseFractions(fractions, 1);
   const backward = unwrapEllipseFractions(fractions, -1);
   if (!forward || !backward) return null;
@@ -1406,13 +1656,15 @@ function unwrapEllipseFractions(fractions, direction) {
   return {values, sweep, direction};
 }
 
-function getEllipsePointAngleFraction(point, handles) {
-  const [a, b] = handles;
-  const cx = (a.x + b.x) / 2;
-  const cy = (a.y + b.y) / 2;
-  const rx = Math.max(Math.abs(b.x - a.x) / 2, 0.0001);
-  const ry = Math.max(Math.abs(b.y - a.y) / 2, 0.0001);
-  return modulo(Math.atan2((point.y - cy) / ry, (point.x - cx) / rx) / (Math.PI * 2), 1);
+function getEllipsePointAngleFraction(point, fit) {
+  const center = fit.center ?? getEllipseFitCenter(fit.handles);
+  const rx = Math.max(Number(fit.rx) || Math.abs(fit.handles[1].x - fit.handles[0].x) / 2, 0.0001);
+  const ry = Math.max(Number(fit.ry) || Math.abs(fit.handles[1].y - fit.handles[0].y) / 2, 0.0001);
+  const rotation = Number(fit.rotation) || 0;
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  const local = rotateConversionPoint({x: dx, y: dy}, -rotation);
+  return modulo(Math.atan2(local.y / ry, local.x / rx) / (Math.PI * 2), 1);
 }
 
 function normalizeAngleGap(start, end) {
@@ -1453,7 +1705,7 @@ function buildEllipseConversionUpdates(group) {
       wallIds: [],
       handles: clonePoints(group.handles),
       segments: group.segments,
-      rotation: 0,
+      rotation: Number(group.rotation) || 0,
       segmentGaps: [],
       angleGaps: cloneAngleGaps(group.angleGaps),
       wallTypeBySegment: index === 0 ? cloneWallTypeBySegment(wallTypeBySegment) : {},
@@ -1470,10 +1722,17 @@ function getConvertedEllipseWallCoordinates(group) {
   const cy = (a.y + b.y) / 2;
   const rx = Math.abs(b.x - a.x) / 2;
   const ry = Math.abs(b.y - a.y) / 2;
+  const fit = {
+    handles: group.handles,
+    center: {x: cx, y: cy},
+    rx,
+    ry,
+    rotation: Number(group.rotation) || 0
+  };
   if (Array.isArray(group.candidateIntervals) && group.candidateIntervals.length === group.candidates.length) {
     group._convertedEllipseWallCoordinates = group.candidateIntervals.map((interval) => {
-      const start = getEllipsePointAtFraction(cx, cy, rx, ry, interval.start);
-      const end = getEllipsePointAtFraction(cx, cy, rx, ry, interval.end);
+      const start = getEllipseFitPointAtFraction(fit, interval.start);
+      const end = getEllipseFitPointAtFraction(fit, interval.end);
       return getRoundedWallCoordinates(start, end);
     });
     return group._convertedEllipseWallCoordinates;
@@ -1481,17 +1740,28 @@ function getConvertedEllipseWallCoordinates(group) {
 
   const points = [];
   for (let index = 0; index <= group.segments; index++) {
-    points.push(getEllipsePointAtFraction(cx, cy, rx, ry, index / group.segments));
+    points.push(getEllipseFitPointAtFraction(fit, index / group.segments));
   }
   group._convertedEllipseWallCoordinates = group.candidates.map((_, index) => getRoundedWallCoordinates(points[index], points[index + 1]));
   return group._convertedEllipseWallCoordinates;
 }
 
-function getEllipsePointAtFraction(cx, cy, rx, ry, fraction) {
+function getEllipseFitCenter(handles) {
+  const [a, b] = handles;
+  return {x: (a.x + b.x) / 2, y: (a.y + b.y) / 2};
+}
+
+function getEllipseFitPointAtFraction(fit, fraction) {
+  const center = fit.center ?? getEllipseFitCenter(fit.handles);
+  const rx = Number(fit.rx) || Math.abs(fit.handles[1].x - fit.handles[0].x) / 2;
+  const ry = Number(fit.ry) || Math.abs(fit.handles[1].y - fit.handles[0].y) / 2;
+  const rotation = Number(fit.rotation) || 0;
   const angle = Math.PI * 2 * fraction;
+  const x = Math.cos(angle) * rx;
+  const y = Math.sin(angle) * ry;
   return {
-    x: cx + (Math.cos(angle) * rx),
-    y: cy + (Math.sin(angle) * ry)
+    x: center.x + (x * Math.cos(rotation)) - (y * Math.sin(rotation)),
+    y: center.y + (x * Math.sin(rotation)) + (y * Math.cos(rotation))
   };
 }
 
