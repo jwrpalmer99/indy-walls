@@ -136,8 +136,8 @@ Basic workflow:
 5. Hold Ctrl while placing to grow the ellipse from the center point.
 6. Drag the red corner handles to resize the ellipse. Hold Alt while resizing to keep it circular.
 7. Drag ellipse vertices to rotate the ellipse.
-8. Left-click a hidden segment to restore it.
-9. Alt-click a segment to hide it.
+8. Left-click a hidden segment to restore it and close a gap. An elipse can have multiple gaps.
+9. Alt-click a segment to hide it and create a gap - a gap can be resized by dragging its handles.
 10. Use `+` and `-`, or Ctrl-scrollwheel, to change the number of generated wall segments.
 11. Use the check button or Enter to create wall segments, or Escape to cancel.
 
