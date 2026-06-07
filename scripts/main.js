@@ -18,9 +18,13 @@ import {
   pushEditorUndoSnapshot as pushSessionEditorUndoSnapshot
 } from "./editor-session.js";
 import {
-  cancelConversionPreview,
+  cancelConversionPreview as cancelWallConversionPreview,
   convertSceneWallsToIndyWalls as convertSceneWallsToIndyWallsImpl
 } from "./conversion.js";
+import {
+  cancelRegionConversionPreview as cancelRegionConversionPreviewImpl,
+  createIndyWallsFromRegions as createIndyWallsFromRegionsImpl
+} from "./region-conversion.js";
 import {drawDoorGlyphForSegment} from "./door-glyphs.js";
 import {cleanupSceneWalls as cleanupSceneWallsImpl} from "./wall-cleanup.js";
 import {
@@ -196,9 +200,15 @@ const WALL_CLEANUP_SNAP_STANDALONE_TARGETS_SETTING = "wallCleanupSnapStandaloneT
 const WALL_CLEANUP_SIMPLIFY_PATHS_SETTING = "wallCleanupSimplifyPaths";
 const CONVERT_TO_INDY_TOOL = "indyConvertToIndyWalls";
 const CLEANUP_WALLS_TOOL = "indyCleanupWalls";
+const REGIONS_TO_INDY_TOOL = "indyRegionsToIndyWalls";
 const shapeLoadState = {
   allowControlWallLoad: false
 };
+
+function cancelConversionPreview() {
+  cancelWallConversionPreview();
+  cancelRegionConversionPreviewImpl();
+}
 const controlKeyState = {
   down: false
 };
@@ -521,55 +531,54 @@ function registerActiveToolHighlightColorSetting() {
 
 Hooks.on("getSceneControlButtons", (controls) => {
   const wallTools = controls.walls?.tools;
-  if (!wallTools) return;
+  if (wallTools) {
+    for (const toolId of Object.keys(wallTools)) {
+      const tool = wallTools[toolId];
+      if (!tool || tool._indyWallsWrapped) continue;
+      const toolName = getWallTypeToolName(toolId);
 
-  for (const toolId of Object.keys(wallTools)) {
-    const tool = wallTools[toolId];
-    if (!tool || tool._indyWallsWrapped) continue;
-    const toolName = getWallTypeToolName(toolId);
-
-    const originalOnChange = tool.onChange;
-    tool.onChange = async (event, active) => {
-      originalOnChange?.(event, active);
-      if (!active) return;
-      cancelConversionPreview();
-      if (!toolName) return;
-      setAllShapeWallTypeTools(toolName);
-      if (isControlInteraction(event)) await updateSelectedWalls(toolName);
-    };
-    tool._indyWallsWrapped = true;
-  }
-
-  wallTools[CUBIC_TOOL] = {
-    name: CUBIC_TOOL,
-    order: 13,
-    title: "indy-walls.Controls.CubicBezier",
-    icon: "fa-solid fa-bezier-curve",
-    onChange: (event, active) => {
-      cubicState.active = active;
-      if (active) {
+      const originalOnChange = tool.onChange;
+      tool.onChange = async (event, active) => {
+        originalOnChange?.(event, active);
+        if (!active) return;
         cancelConversionPreview();
-        syncShapeLevelIdsFromPalette(cubicState, {force: !cubicState.placed});
-        ellipseState.active = false;
-        rectangleState.active = false;
-        polylineState.active = false;
-        clearEllipsePreview();
-        clearRectanglePreview();
-        clearPolylinePreview();
-        canvas.walls.activate();
-      }
-      else clearCubicPreview();
-      updateIndyToolButtonHighlights();
-    },
-    toolclip: {
-      heading: "indy-walls.Controls.CubicBezier",
-      items: [
-        {paragraph: "indy-walls.Tooltips.CubicBezier"}
-      ]
+        if (!toolName) return;
+        setAllShapeWallTypeTools(toolName);
+        if (isControlInteraction(event)) await updateSelectedWalls(toolName);
+      };
+      tool._indyWallsWrapped = true;
     }
-  };
 
-  wallTools[ELLIPSE_TOOL] = {
+    wallTools[CUBIC_TOOL] = {
+      name: CUBIC_TOOL,
+      order: 13,
+      title: "indy-walls.Controls.CubicBezier",
+      icon: "fa-solid fa-bezier-curve",
+      onChange: (event, active) => {
+        cubicState.active = active;
+        if (active) {
+          cancelConversionPreview();
+          syncShapeLevelIdsFromPalette(cubicState, {force: !cubicState.placed});
+          ellipseState.active = false;
+          rectangleState.active = false;
+          polylineState.active = false;
+          clearEllipsePreview();
+          clearRectanglePreview();
+          clearPolylinePreview();
+          canvas.walls.activate();
+        }
+        else clearCubicPreview();
+        updateIndyToolButtonHighlights();
+      },
+      toolclip: {
+        heading: "indy-walls.Controls.CubicBezier",
+        items: [
+          {paragraph: "indy-walls.Tooltips.CubicBezier"}
+        ]
+      }
+    };
+
+    wallTools[ELLIPSE_TOOL] = {
     name: ELLIPSE_TOOL,
     order: 14,
     title: "indy-walls.Controls.Ellipse",
@@ -596,9 +605,9 @@ Hooks.on("getSceneControlButtons", (controls) => {
         {paragraph: "indy-walls.Tooltips.Ellipse"}
       ]
     }
-  };
+    };
 
-  wallTools[RECTANGLE_TOOL] = {
+    wallTools[RECTANGLE_TOOL] = {
     name: RECTANGLE_TOOL,
     order: 15,
     title: "indy-walls.Controls.Rectangle",
@@ -625,9 +634,9 @@ Hooks.on("getSceneControlButtons", (controls) => {
         {paragraph: "indy-walls.Tooltips.Rectangle"}
       ]
     }
-  };
+    };
 
-  wallTools[POLYLINE_TOOL] = {
+    wallTools[POLYLINE_TOOL] = {
     name: POLYLINE_TOOL,
     order: 16,
     title: "indy-walls.Controls.Polyline",
@@ -654,9 +663,9 @@ Hooks.on("getSceneControlButtons", (controls) => {
         {paragraph: "indy-walls.Tooltips.Polyline"}
       ]
     }
-  };
+    };
 
-  wallTools[CONVERT_TO_INDY_TOOL] = {
+    wallTools[CONVERT_TO_INDY_TOOL] = {
     name: CONVERT_TO_INDY_TOOL,
     order: 17,
     title: "indy-walls.Controls.ConvertToIndyWalls",
@@ -671,9 +680,9 @@ Hooks.on("getSceneControlButtons", (controls) => {
         {paragraph: "indy-walls.Tooltips.ConvertToIndyWalls"}
       ]
     }
-  };
+    };
 
-  wallTools[CLEANUP_WALLS_TOOL] = {
+    wallTools[CLEANUP_WALLS_TOOL] = {
     name: CLEANUP_WALLS_TOOL,
     order: 18,
     title: "indy-walls.Controls.CleanupWalls",
@@ -688,8 +697,63 @@ Hooks.on("getSceneControlButtons", (controls) => {
         {paragraph: "indy-walls.Tooltips.CleanupWalls"}
       ]
     }
-  };
+    };
+  }
+
+  addRegionControlTool(controls, {
+    name: REGIONS_TO_INDY_TOOL,
+    order: 30,
+    title: "indy-walls.Controls.RegionsToIndyWalls",
+    icon: "fa-solid fa-draw-polygon",
+    button: true,
+    visible: game.user?.isGM === true,
+    onChange: (_event, active) => {
+      if (!active) return;
+      cancelConversionPreview();
+      createIndyWallsFromRegionsImpl({
+        MODULE_ID,
+        getSegmentWallData,
+        replaceShapeWalls
+      });
+    },
+    toolclip: {
+      heading: "indy-walls.Controls.RegionsToIndyWalls",
+      items: [
+        {paragraph: "indy-walls.Tooltips.RegionsToIndyWalls"}
+      ]
+    }
+  });
 });
+
+function addRegionControlTool(controls, tool) {
+  const addTool = (control) => {
+    if (!control) return;
+    if (Array.isArray(control.tools)) {
+      const index = control.tools.findIndex((existing) => existing?.name === tool.name);
+      if (index >= 0) control.tools[index] = {...control.tools[index], ...tool};
+      else control.tools.push(tool);
+      return;
+    }
+    control.tools ??= {};
+    control.tools[tool.name] = {
+      ...(control.tools[tool.name] ?? {}),
+      ...tool
+    };
+  };
+
+  if (Array.isArray(controls)) {
+    for (const control of controls) {
+      const name = String(control?.name ?? "").toLowerCase();
+      if (name === "region" || name === "regions") addTool(control);
+    }
+    return;
+  }
+
+  for (const [key, control] of Object.entries(controls ?? {})) {
+    const name = String(control?.name ?? key ?? "").toLowerCase();
+    if (name === "region" || name === "regions") addTool(control);
+  }
+}
 
 Hooks.on("renderSceneControls", () => {
   if (!isWallControlsActive()) cancelConversionPreview();

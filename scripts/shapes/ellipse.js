@@ -145,6 +145,48 @@ export function reconcileEllipseSegmentGaps(source, segmentCount) {
     .sort((a, b) => a - b);
 }
 
+function remapEllipseSegmentGaps(source, oldSegmentCount, newSegmentCount) {
+  const oldCount = Number(oldSegmentCount);
+  const newCount = Number(newSegmentCount);
+  if (!Number.isInteger(oldCount) || !Number.isInteger(newCount) || oldCount <= 0 || newCount <= 0) {
+    return reconcileEllipseSegmentGaps(source, newSegmentCount);
+  }
+  if (oldCount === newCount) return reconcileEllipseSegmentGaps(source, newCount);
+
+  const oldGaps = reconcileEllipseSegmentGaps(source, oldCount);
+  if (!oldGaps.length) return [];
+
+  const next = new Set();
+  for (const run of getContiguousEllipseGapRuns(oldGaps, oldCount)) {
+    const sizeFraction = run.length / oldCount;
+    const newLength = Math.max(1, Math.min(newCount, Math.round(sizeFraction * newCount)));
+    const center = ((run.start + (run.length / 2)) / oldCount) % 1;
+    const first = Math.round((center * newCount) - (newLength / 2));
+    for (let offset = 0; offset < newLength; offset += 1) {
+      next.add(modulo(first + offset, newCount));
+    }
+  }
+
+  return [...next].sort((a, b) => a - b);
+}
+
+function getContiguousEllipseGapRuns(gaps, segmentCount) {
+  if (!gaps.length) return [];
+  if (gaps.length === segmentCount) return [{start: 0, length: segmentCount}];
+
+  const gapSet = new Set(gaps);
+  const starts = gaps.filter((index) => !gapSet.has(modulo(index - 1, segmentCount)));
+  return starts.map((start) => {
+    let length = 1;
+    while (gapSet.has(modulo(start + length, segmentCount))) length += 1;
+    return {start, length};
+  });
+}
+
+function modulo(value, modulus) {
+  return ((value % modulus) + modulus) % modulus;
+}
+
 export function setEllipseRotationFromVertex(vertex, point) {
   if (!vertex || !Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return;
   const {cx, cy, rx, ry} = getEllipseGeometry();
@@ -161,8 +203,11 @@ function normalizeAngle(angle) {
 
 export function changeEllipseSegments(delta, deps) {
   if (!deps.isEllipseToolActive()) return;
-  ellipseState.segments = deps.clamp(ellipseState.segments + delta, 4, 96);
-  ellipseState.segmentGaps = reconcileEllipseSegmentGaps(ellipseState.segmentGaps, ellipseState.segments);
+  const oldSegments = ellipseState.segments;
+  const nextSegments = deps.clamp(oldSegments + delta, 4, 96);
+  if (nextSegments === oldSegments) return;
+  ellipseState.segments = nextSegments;
+  ellipseState.segmentGaps = remapEllipseSegmentGaps(ellipseState.segmentGaps, oldSegments, nextSegments);
   deps.drawEllipsePreview();
 }
 

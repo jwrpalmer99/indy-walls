@@ -7,6 +7,7 @@
       "Polyline": "Polyline Wall",
       "ConvertToIndyWalls": "Convert to Indy Walls",
       "CleanupWalls": "Clean Up Walls",
+      "RegionsToIndyWalls": "Create Indy Walls from Regions",
       "DecreaseSegments": "Decrease Curve Segments",
       "IncreaseSegments": "Increase Curve Segments",
       "UndoEdit": "Undo Edit",
@@ -27,6 +28,7 @@
       "EllipseConversionTolerance": "Ellipse",
       "ArcConversionTolerance": "Arc",
       "BezierConversionTolerance": "Bezier",
+      "RegionConversionDetail": "Detail",
       "ShapeLevels": "Indy shape levels",
       "NoShapeLevels": "No levels",
       "MixedShapeLevels": "Mixed",
@@ -230,6 +232,8 @@
       "Rectangle": "Click-drag to place the rectangle. Left-click a side to add a vertex, restore a gapped segment, or restore a removed side. Alt-click a segment to create a gap, Alt-click a vertex to remove it, drag vertices to reposition them, Enter creates walls, and Escape cancels.",
       "Polyline": "Click to place each vertex. Left-click a segment to add a point or restore a hidden segment, right-click a segment to cycle line/arc/Bezier modes, drag curve handles to shape arcs and Beziers, Ctrl-scroll changes curved segment detail, Alt-click hides segments or removes points, Enter creates walls, and Escape cancels.",
       "ConvertToIndyWalls": "Scans plain Foundry walls in the current scene and previews Indy shape metadata. Adjust tolerance, then Save to convert or Cancel to discard. Axis-aligned closed rectangles are converted to Indy rectangles first; remaining connected wall paths are converted to Indy polylines.",
+      "RegionsToIndyWalls": "Creates Indy wall shapes from selected Region shapes. If no Regions are selected, every Region in the scene is used. Region rectangles become Indy rectangles, ellipses and circles become Indy ellipses, and polygons become closed Indy polylines.",
+      "RegionConversionDetail": "Number of generated wall segments used for circles and ellipses in Region conversion previews.",
       "CleanupWalls": "Snaps nearby wall endpoints together, smart-extends or trims endpoints to nearby wall segments, splits non-door plain walls at intersections, optionally simplifies noisy plain wall paths within tolerance, deletes collapsed walls, and removes duplicate lines with matching wall data. Indy shape endpoint metadata is updated where possible, but curve handles are left unchanged."
     },
     "Notifications": {
@@ -238,8 +242,12 @@
       "EllipseWallsCreated": "Indy Walls | Created {count} ellipse wall segment(s).",
       "RectangleWallsCreated": "Indy Walls | Created {count} rectangle wall segment(s).",
       "PolylineWallsCreated": "Indy Walls | Created {count} polyline wall segment(s).",
+      "SceneNotReady": "Indy Walls | Canvas scene is not ready.",
       "NoWallsToConvert": "Indy Walls | No plain walls found to convert.",
       "WallsConvertedToIndy": "Indy Walls | Converted {count} wall(s) into {rectangles} rectangle(s), {ellipses} ellipse(s), and {polylines} polyline(s).",
+      "NoRegionsToConvert": "Indy Walls | No Regions found to convert.",
+      "NoRegionShapesToConvert": "Indy Walls | No supported Region shapes found to convert.",
+      "RegionWallsCreated": "Indy Walls | Created {count} wall segment(s) from {regions} Region(s): {rectangles} rectangle(s), {ellipses} ellipse(s), and {polylines} polyline(s).",
       "NoWallsToClean": "Indy Walls | No walls found to clean.",
       "WallsAlreadyClean": "Indy Walls | No wall cleanup changes were needed.",
       "WallsCleaned": "Indy Walls | Cleaned walls: snapped or adjusted {snapped} endpoint(s), split {split} wall(s), simplified {simplified} wall segment(s), created {created} wall(s), updated {updated} wall(s), deleted {deleted} duplicate, simplified, or collapsed wall(s)."

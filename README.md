@@ -77,6 +77,10 @@ On Foundry v14, conversion only joins walls into the same Indy shape when those 
 
 The inline tolerance sliders and matching stored settings control how aggressively rectangle, ellipse, arc, and Bezier fits are accepted. The default value of `1` keeps the automatic scene-size-derived tolerance; lower values are stricter, and higher values, up to `10`, allow looser fits.
 
+### Regions to Indy Walls
+
+The Region Controls include a Create Indy Walls from Regions button for GMs. If Regions are selected, it creates Indy walls from those Region shapes; if none are selected, it uses every Region in the scene. Region rectangles become Indy rectangles, ellipses and circles become Indy ellipses, and polygon sub-shapes become closed Indy polylines.
+
 ### Clean Up Walls
 
 The Wall Controls include a Clean Up Walls button for GMs. It
