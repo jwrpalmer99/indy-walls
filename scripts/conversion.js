@@ -63,6 +63,10 @@ const CONVERSION_TOLERANCE_CONFIG = {
     title: "indy-walls.Settings.BezierConversionTolerance.Name"
   }
 };
+const CONVERSION_FIT_TOLERANCE_PIXEL_CAPS = {
+  arc: 24,
+  bezier: 32
+};
 
 let convertingToIndyWalls = false;
 let conversionPreviewSession = null;
@@ -1524,6 +1528,7 @@ function convertPolylineLineRunsToBezier(group) {
 
 function getCubicBezierFit(points) {
   if (getMaxPointSegmentDistance(points, points[0], points.at(-1)) <= getConversionBaseFitTolerance(points)) return null;
+  if (!hasSmoothBezierTurns(points)) return null;
 
   const parameterSets = [
     getUniformParameters(points),
@@ -1592,8 +1597,9 @@ function getCubicBezierFitForParameters(points, parameters) {
     const point = getCubicBezierPoint(p0, c1, c2, p3, parameters[index]);
     maxError = Math.max(maxError, Math.hypot(point.x - points[index].x, point.y - points[index].y));
   }
+  const reverseError = getMaxSampledCurvePolylineDistance(points, (t) => getCubicBezierPoint(p0, c1, c2, p3, t));
 
-  return {handles: [c1, c2], error: maxError};
+  return {handles: [c1, c2], error: Math.max(maxError, reverseError), vertexError: maxError, reverseError};
 }
 
 function getUniformParameters(points) {
@@ -1675,6 +1681,7 @@ function findBestBezierConversionRun(group, startCandidate) {
   activeConversionTiming && (activeConversionTiming.counts.bezierRunChecks = (activeConversionTiming.counts.bezierRunChecks ?? 0) + 1);
   const minSegments = 5;
   const maxSegments = Math.min(24, group.candidates.length - startCandidate);
+  let best = null;
   for (let count = maxSegments; count >= minSegments; count--) {
     const endCandidate = startCandidate + count;
     if (!canCompressWallDataForCandidateRange(group.candidates, startCandidate, endCandidate)) continue;
@@ -1684,23 +1691,26 @@ function findBestBezierConversionRun(group, startCandidate) {
     const fit = getCubicBezierFit(points);
     if (!fit) continue;
 
-    return {
+    const run = {
       endCandidate,
       endPoint,
       curve: {
         mode: POLYLINE_SEGMENT_BEZIER,
         handles: fit.handles
       },
-      error: fit.error
+      error: fit.error,
+      score: getCurveRunScore(fit.error, count, "bezier")
     };
+    if (!best || run.score < best.score) best = run;
   }
-  return null;
+  return best;
 }
 
 function findBestArcConversionRun(group, startCandidate) {
   activeConversionTiming && (activeConversionTiming.counts.arcRunChecks = (activeConversionTiming.counts.arcRunChecks ?? 0) + 1);
   const minSegments = 3;
   const maxSegments = Math.min(16, group.candidates.length - startCandidate);
+  let best = null;
   for (let count = maxSegments; count >= minSegments; count--) {
     const endCandidate = startCandidate + count;
     if (!canCompressWallDataForCandidateRange(group.candidates, startCandidate, endCandidate)) continue;
@@ -1710,17 +1720,24 @@ function findBestArcConversionRun(group, startCandidate) {
     const fit = getArcFit(points);
     if (!fit) continue;
 
-    return {
+    const run = {
       endCandidate,
       endPoint,
       curve: {
         mode: POLYLINE_SEGMENT_ARC,
         handles: [fit.control]
       },
-      error: fit.error
+      error: fit.error,
+      score: getCurveRunScore(fit.error, count, "arc")
     };
+    if (!best || run.score < best.score) best = run;
   }
-  return null;
+  return best;
+}
+
+function getCurveRunScore(error, segmentCount, kind) {
+  const lengthBias = kind === "bezier" ? 0.35 : 0.25;
+  return error - (segmentCount * lengthBias);
 }
 
 function getArcFit(points) {
@@ -1750,12 +1767,18 @@ function getArcFit(points) {
   };
   const start = points[0];
   const end = points.at(-1);
+  const control = {
+    x: (2 * mid.x) - ((start.x + end.x) / 2),
+    y: (2 * mid.y) - ((start.y + end.y) / 2)
+  };
+  const reverseError = getMaxSampledCurvePolylineDistance(points, (t) => getQuadraticBezierPoint(start, control, end, t));
+  if (reverseError > tolerance) return null;
+
   return {
-    error: maxError,
-    control: {
-      x: (2 * mid.x) - ((start.x + end.x) / 2),
-      y: (2 * mid.y) - ((start.y + end.y) / 2)
-    }
+    error: Math.max(maxError, reverseError),
+    vertexError: maxError,
+    reverseError,
+    control
   };
 }
 
@@ -1770,19 +1793,76 @@ function hasBalancedArcSegments(points) {
 }
 
 function hasSmoothArcTurns(points) {
-  const turns = getPolylineTurnAngles(points).map((turn) => Math.abs(turn));
+  return hasDistributedCurveTurns(points, {
+    minTotalTurn: Math.PI / 8,
+    maxTurn: Math.PI * 0.32,
+    minMeaningfulRatio: 0.55,
+    maxTailRatio: 0.35,
+    maxTurnRatio: 2.5
+  });
+}
+
+function hasSmoothBezierTurns(points) {
+  return hasDistributedCurveTurns(points, {
+    minTotalTurn: Math.PI / 9,
+    maxTurn: Math.PI * 0.42,
+    minMeaningfulRatio: 0.4,
+    maxTailRatio: 0.45,
+    maxTurnRatio: 3
+  });
+}
+
+function hasDistributedCurveTurns(points, {
+  minTotalTurn,
+  maxTurn,
+  minMeaningfulRatio,
+  maxTailRatio,
+  maxTurnRatio
+}) {
+  const turns = getPolylineTurnAngles(points);
   if (turns.length < 2) return false;
 
-  const totalTurn = turns.reduce((sum, turn) => sum + turn, 0);
-  if (totalTurn < Math.PI / 8) return false;
-  if (Math.max(...turns) > Math.PI * 0.38) return false;
+  const absoluteTurns = turns.map((turn) => Math.abs(turn));
+  const totalTurn = absoluteTurns.reduce((sum, turn) => sum + turn, 0);
+  if (totalTurn < minTotalTurn) return false;
+  if (Math.max(...absoluteTurns) > maxTurn) return false;
 
-  const meaningfulTurns = turns.filter((turn) => turn > Math.PI / 72);
-  if (meaningfulTurns.length < Math.max(2, Math.ceil(turns.length * 0.5))) return false;
+  const meaningfulTurns = turns
+    .map((turn, index) => ({turn, index, absolute: Math.abs(turn)}))
+    .filter((turn) => turn.absolute > Math.PI / 72);
+  if (meaningfulTurns.length < Math.max(2, Math.ceil(turns.length * minMeaningfulRatio))) return false;
+  if (hasOpposingMeaningfulTurns(meaningfulTurns)) return false;
+  if (hasLongStraightCurveTail(points, meaningfulTurns, maxTailRatio)) return false;
 
-  const median = getMedianNumber(meaningfulTurns);
+  const median = getMedianNumber(meaningfulTurns.map((turn) => turn.absolute));
   if (median <= 0) return false;
-  return Math.max(...meaningfulTurns) <= median * 3.5;
+  return Math.max(...meaningfulTurns.map((turn) => turn.absolute)) <= median * maxTurnRatio;
+}
+
+function hasOpposingMeaningfulTurns(turns) {
+  let sign = 0;
+  for (const turn of turns) {
+    const current = Math.sign(turn.turn);
+    if (!current) continue;
+    if (!sign) {
+      sign = current;
+      continue;
+    }
+    if (sign !== current) return true;
+  }
+  return false;
+}
+
+function hasLongStraightCurveTail(points, meaningfulTurns, maxTailRatio) {
+  const lengths = getPolylineSegmentLengths(points);
+  const totalLength = lengths.reduce((sum, length) => sum + length, 0);
+  if (totalLength < 0.1 || !meaningfulTurns.length) return true;
+
+  const firstTurnIndex = Math.min(...meaningfulTurns.map((turn) => turn.index));
+  const lastTurnIndex = Math.max(...meaningfulTurns.map((turn) => turn.index));
+  const leadingLength = lengths.slice(0, firstTurnIndex + 1).reduce((sum, length) => sum + length, 0);
+  const trailingLength = lengths.slice(lastTurnIndex + 1).reduce((sum, length) => sum + length, 0);
+  return leadingLength / totalLength > maxTailRatio || trailingLength / totalLength > maxTailRatio;
 }
 
 function getPolylineTurnAngles(points) {
@@ -1915,7 +1995,9 @@ function getConversionPointBounds(points) {
 }
 
 function getConversionFitTolerance(points, kind) {
-  return getConversionBaseFitTolerance(points) * getConversionToleranceMultiplier(kind);
+  const tolerance = getConversionBaseFitTolerance(points) * getConversionToleranceMultiplier(kind);
+  const cap = CONVERSION_FIT_TOLERANCE_PIXEL_CAPS[kind];
+  return Number.isFinite(cap) ? Math.min(tolerance, cap) : tolerance;
 }
 
 function getConversionBaseFitTolerance(points) {
@@ -1945,6 +2027,23 @@ function getPointSegmentDistance(point, start, end) {
 
   const t = clamp((((point.x - start.x) * dx) + ((point.y - start.y) * dy)) / lengthSquared, 0, 1);
   return Math.hypot(point.x - (start.x + dx * t), point.y - (start.y + dy * t));
+}
+
+function getMaxSampledCurvePolylineDistance(points, getPoint) {
+  const samples = Math.max(12, Math.min(96, (points.length - 1) * 6));
+  let maxDistance = 0;
+  for (let step = 1; step < samples; step++) {
+    maxDistance = Math.max(maxDistance, getPointPolylineDistance(getPoint(step / samples), points));
+  }
+  return maxDistance;
+}
+
+function getPointPolylineDistance(point, points) {
+  let minDistance = Infinity;
+  for (let index = 0; index < points.length - 1; index++) {
+    minDistance = Math.min(minDistance, getPointSegmentDistance(point, points[index], points[index + 1]));
+  }
+  return Number.isFinite(minDistance) ? minDistance : 0;
 }
 
 function buildPolylineConversionUpdates(group) {
