@@ -90,6 +90,7 @@ import {
   ELLIPSE_TOOL,
   ellipseState,
   getEllipseGeometry,
+  getEllipseGapHandleAt as getEllipseGapHandleAtImpl,
   getEllipsePoints,
   getEllipseSegmentAt as getEllipseSegmentAtImpl,
   getEllipseVertexAt as getEllipseVertexAtImpl,
@@ -97,6 +98,7 @@ import {
   loadEllipseFromWall as loadEllipseFromWallImpl,
   reconcileEllipseSegmentGaps,
   setEllipseHandle,
+  setEllipseGapHandle as setEllipseGapHandleImpl,
   setEllipseResizeHandle,
   setEllipseRotationFromVertex,
   updateEllipseInitialHandles
@@ -217,6 +219,7 @@ const editorDomDragState = {
   tool: null,
   handle: null,
   vertex: null,
+  gapHandle: null,
   move: false,
   coordinateLabel: null,
   pointerCoordinateLabel: null,
@@ -898,9 +901,18 @@ function patchWallsLayer() {
 
     if (isEllipseToolActive()) {
       ellipseState.draggingHandle = getEllipseHandleAt({x: hitPoint.x, y: hitPoint.y});
-      ellipseState.draggingVertex = ellipseState.draggingHandle === null
+      ellipseState.draggingGapHandle = ellipseState.draggingHandle === null
+        ? getEllipseGapHandleAt({x: hitPoint.x, y: hitPoint.y})
+        : null;
+      ellipseState.draggingVertex = ellipseState.draggingHandle === null && !ellipseState.draggingGapHandle
         ? getEllipseVertexAt({x: hitPoint.x, y: hitPoint.y})
         : null;
+      if (ellipseState.draggingGapHandle) {
+        beginEditorOperation(ellipseState);
+        markSuppressEllipseSegmentClick();
+        drawEllipsePreview();
+        return;
+      }
       if (ellipseState.draggingVertex) {
         beginEditorOperation(ellipseState);
         markSuppressEllipseSegmentClick();
@@ -920,11 +932,13 @@ function patchWallsLayer() {
         ellipseState.initialOrigin = point;
         ellipseState.draggingHandle = 1;
         ellipseState.draggingVertex = null;
+        ellipseState.draggingGapHandle = null;
         ellipseState.ellipseId = null;
         ellipseState.wallIds = [];
         ellipseState.wallTypeBySegment = {};
         ellipseState.wallDataBySegment = {};
         ellipseState.rotation = 0;
+        ellipseState.angleGaps = [];
         ellipseState.segmentGaps = [];
         setEllipseHandle(0, point);
         setEllipseHandle(1, point);
@@ -1032,6 +1046,12 @@ function patchWallsLayer() {
     if (isPolylineToolActive()) return;
 
     if (isEllipseToolActive()) {
+      if (ellipseState.draggingGapHandle) {
+        const point = getEventPoint(this, event.interactionData.destination, event);
+        setEllipseGapHandle(ellipseState.draggingGapHandle, point);
+        drawEllipsePreview();
+        return;
+      }
       if (ellipseState.draggingVertex) {
         const point = getEventPoint(this, event.interactionData.destination, event);
         setEllipseRotationFromVertex(ellipseState.draggingVertex, point);
@@ -1103,13 +1123,16 @@ function patchWallsLayer() {
     }
     if (isEllipseToolActive()) {
       const wasVertexDrag = !!ellipseState.draggingVertex;
+      const wasGapHandleDrag = !!ellipseState.draggingGapHandle;
       ellipseState.draggingHandle = null;
       ellipseState.draggingVertex = null;
+      ellipseState.draggingGapHandle = null;
+      ellipseState.draggingGapHandle = null;
       ellipseState.initializing = false;
       ellipseState.initialOrigin = null;
       event.interactionData.clearPreviewContainer = false;
       commitEditorOperation(ellipseState);
-      if (wasVertexDrag) markSuppressEllipseSegmentClick();
+      if (wasVertexDrag || wasGapHandleDrag) markSuppressEllipseSegmentClick();
       drawEllipsePreview();
       return;
     }
@@ -1864,6 +1887,7 @@ function commitEllipseSegmentEdit(edit, event=null) {
 
   ellipseState.draggingHandle = null;
   ellipseState.draggingVertex = null;
+  ellipseState.draggingGapHandle = null;
   ellipseState.lastSegmentEditAction = Date.now();
   ellipseState.suppressNextSegmentEditClick = false;
   debugInteractionManagers("after ellipse canvas click commit", event, {edit});
@@ -1960,6 +1984,7 @@ function handleEditorDomPointerDown(event) {
   editorDomDragState.tool = hit.tool;
   editorDomDragState.handle = hit.handle;
   editorDomDragState.vertex = hit.vertex;
+  editorDomDragState.gapHandle = hit.gapHandle;
   editorDomDragState.move = !!hit.move;
   editorDomDragState.coordinateLabel = hit.coordinateLabel;
   editorDomDragState.pointerCoordinateLabel = hit.pointerCoordinateLabel;
@@ -1973,8 +1998,10 @@ function handleEditorDomPointerDown(event) {
 
   if (hit.move) {
     cubicState.draggingHandle = null;
-    ellipseState.draggingHandle = null;
-    ellipseState.draggingVertex = null;
+  ellipseState.draggingHandle = null;
+  ellipseState.draggingVertex = null;
+  ellipseState.draggingGapHandle = null;
+    ellipseState.draggingGapHandle = null;
     rectangleState.draggingHandle = null;
     rectangleState.draggingVertex = null;
     polylineState.draggingVertex = null;
@@ -1992,7 +2019,8 @@ function handleEditorDomPointerDown(event) {
     else {
       ellipseState.draggingHandle = hit.handle;
       ellipseState.draggingVertex = hit.vertex;
-      if (hit.vertex) markSuppressEllipseSegmentClick();
+      ellipseState.draggingGapHandle = hit.gapHandle;
+      if (hit.vertex || hit.gapHandle) markSuppressEllipseSegmentClick();
     }
   }
   else if (hit.tool === POLYLINE_TOOL) {
@@ -2027,7 +2055,9 @@ function handleEditorDomPointerMove(event) {
     cubicState.placed = true;
     drawCubicPreview();
   } else if (editorDomDragState.tool === ELLIPSE_TOOL) {
-    if (editorDomDragState.vertex) {
+    if (editorDomDragState.gapHandle) {
+      setEllipseGapHandle(editorDomDragState.gapHandle, point);
+    } else if (editorDomDragState.vertex) {
       setEllipseRotationFromVertex(editorDomDragState.vertex, point);
     } else {
       setEllipseResizeHandle(editorDomDragState.handle, point, isAltInteraction(event));
@@ -2099,13 +2129,15 @@ function finalizeEditorDomDrag(event=null, cancelled=false) {
     drawCubicPreview();
   } else if (editorDomDragState.tool === ELLIPSE_TOOL) {
     const wasVertexDrag = !!editorDomDragState.vertex;
+    const wasGapHandleDrag = !!editorDomDragState.gapHandle;
     ellipseState.draggingHandle = null;
     ellipseState.draggingVertex = null;
+    ellipseState.draggingGapHandle = null;
     ellipseState.initializing = false;
     ellipseState.initialOrigin = null;
     if (cancelled) cancelEditorOperation(ellipseState);
     else commitEditorOperation(ellipseState);
-    if (wasVertexDrag) markSuppressEllipseSegmentClick();
+    if (wasVertexDrag || wasGapHandleDrag) markSuppressEllipseSegmentClick();
     drawEllipsePreview();
   } else if (editorDomDragState.tool === RECTANGLE_TOOL) {
     rectangleState.draggingHandle = null;
@@ -2129,6 +2161,7 @@ function finalizeEditorDomDrag(event=null, cancelled=false) {
   editorDomDragState.tool = null;
   editorDomDragState.handle = null;
   editorDomDragState.vertex = null;
+  editorDomDragState.gapHandle = null;
   editorDomDragState.move = false;
   editorDomDragState.coordinateLabel = null;
   editorDomDragState.pointerCoordinateLabel = null;
@@ -2147,6 +2180,7 @@ function resetEditorDomDragState() {
   editorDomDragState.tool = null;
   editorDomDragState.handle = null;
   editorDomDragState.vertex = null;
+  editorDomDragState.gapHandle = null;
   editorDomDragState.move = false;
   editorDomDragState.coordinateLabel = null;
   editorDomDragState.pointerCoordinateLabel = null;
@@ -2244,6 +2278,7 @@ function getEditorDomDragHit(event) {
         tool: ELLIPSE_TOOL,
         handle: null,
         vertex: null,
+        gapHandle: null,
         move: true,
         coordinateLabel: label,
         hitPoint: point,
@@ -2254,16 +2289,29 @@ function getEditorDomDragHit(event) {
         tool: ELLIPSE_TOOL,
         handle,
         vertex: null,
+        gapHandle: null,
         move: false,
         coordinateLabel: label,
         hitPoint: point,
         editorPoint: ellipseState.handles[handle]
+      });
+      const gapHandle = getEllipseGapHandleAt(point);
+      if (gapHandle) return withDomPointerDragData(event, {
+        tool: ELLIPSE_TOOL,
+        handle: null,
+        vertex: null,
+        gapHandle,
+        move: false,
+        coordinateLabel: label,
+        hitPoint: point,
+        editorPoint: point
       });
       const vertex = getEllipseVertexAt(point);
       if (vertex) return withDomPointerDragData(event, {
         tool: ELLIPSE_TOOL,
         handle: null,
         vertex,
+        gapHandle: null,
         move: false,
         coordinateLabel: label,
         hitPoint: point,
@@ -2421,6 +2469,7 @@ function initializeEllipseDomPlacement(point) {
   ellipseState.wallTypeBySegment = {};
   ellipseState.wallDataBySegment = {};
   ellipseState.rotation = 0;
+  ellipseState.angleGaps = [];
   ellipseState.segmentGaps = [];
   setEllipseHandle(0, point);
   setEllipseHandle(1, point);
@@ -2549,9 +2598,10 @@ function hasActiveEditorDrag() {
 }
 
 function finalizeActiveEditorDrag(event=null, cancelled=false) {
-  if (isEllipseToolActive() && (ellipseState.draggingHandle !== null || ellipseState.draggingVertex)) {
+  if (isEllipseToolActive() && (ellipseState.draggingHandle !== null || ellipseState.draggingVertex || ellipseState.draggingGapHandle)) {
     ellipseState.draggingHandle = null;
     ellipseState.draggingVertex = null;
+    ellipseState.draggingGapHandle = null;
     ellipseState.initializing = false;
     ellipseState.initialOrigin = null;
     if (cancelled) cancelEditorOperation(ellipseState);
@@ -3303,6 +3353,7 @@ function getEditorSnapshot(state) {
       handles: clonePoints(ellipseState.handles),
       segments: ellipseState.segments,
       rotation: ellipseState.rotation,
+      angleGaps: ellipseState.angleGaps.map((gap) => ({...gap})),
       segmentGaps: [...ellipseState.segmentGaps],
       wallTypeBySegment: cloneWallTypeBySegment(ellipseState.wallTypeBySegment),
       wallDataBySegment: cloneWallDataBySegment(ellipseState.wallDataBySegment),
@@ -3371,6 +3422,7 @@ function restoreEditorSnapshot(state, snapshot) {
     ellipseState.handles = clonePoints(snapshot.handles);
     ellipseState.segments = snapshot.segments;
     ellipseState.rotation = Number(snapshot.rotation) || 0;
+    ellipseState.angleGaps = Array.isArray(snapshot.angleGaps) ? snapshot.angleGaps.map((gap) => ({...gap})) : [];
     ellipseState.segmentGaps = reconcileEllipseSegmentGaps(snapshot.segmentGaps, ellipseState.segments);
     ellipseState.wallTypeBySegment = cloneWallTypeBySegment(snapshot.wallTypeBySegment);
     ellipseState.wallDataBySegment = cloneWallDataBySegment(snapshot.wallDataBySegment);
@@ -3379,6 +3431,7 @@ function restoreEditorSnapshot(state, snapshot) {
     ellipseState.levelIdsMixed = !!snapshot.levelIdsMixed;
     ellipseState.draggingHandle = null;
     ellipseState.draggingVertex = null;
+    ellipseState.draggingGapHandle = null;
     ellipseState.initializing = false;
     ellipseState.initialOrigin = null;
     renderAllShapeLevelControls();
@@ -3713,6 +3766,14 @@ function getEllipseHandleAt(point) {
 
 function getEllipseVertexAt(point) {
   return getEllipseVertexAtImpl(point, getEllipseDeps());
+}
+
+function getEllipseGapHandleAt(point) {
+  return getEllipseGapHandleAtImpl(point, getEllipseDeps());
+}
+
+function setEllipseGapHandle(handle, point) {
+  return setEllipseGapHandleImpl(handle, point);
 }
 
 function changeEllipseSegments(delta) {

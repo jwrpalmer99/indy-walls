@@ -63,11 +63,15 @@ async function commitRegionConversionPreview() {
   if (!regionConversionPreviewSession?.plan?.wallData?.length || !canvas?.scene) return;
   const {plan, replaceShapeWalls} = regionConversionPreviewSession;
   clearRegionConversionPreview();
-  const state = {
-    ...DEFAULT_WALL_STATE,
-    replacingWallIds: new Set()
-  };
-  const created = await replaceShapeWalls(state, [], plan.wallData);
+  const created = [];
+  for (const group of plan.wallGroups ?? [plan.wallData]) {
+    if (!group?.length) continue;
+    const state = {
+      ...DEFAULT_WALL_STATE,
+      replacingWallIds: new Set()
+    };
+    created.push(...await replaceShapeWalls(state, [], group));
+  }
   ui.notifications.info(game.i18n.format("indy-walls.Notifications.RegionWallsCreated", {
     count: created.length,
     regions: plan.stats.regions,
@@ -95,6 +99,7 @@ function getRegionConversionPlan({MODULE_ID, getSegmentWallData, ellipseSegments
     replacingWallIds: new Set()
   };
   const wallData = [];
+  const wallGroups = [];
   const existingWalls = getExistingSceneWallRecords();
   const stats = {
     regions: regions.length,
@@ -106,28 +111,30 @@ function getRegionConversionPlan({MODULE_ID, getSegmentWallData, ellipseSegments
 
   for (const region of regions) {
     const shapes = getRegionDocumentShapes(region);
-    const holes = shapes
+    const solidShapes = shapes
       .map((shape) => regionShapeToObject(shape))
-      .filter((shape) => shape && isRegionShapeHole(shape))
+      .filter((shape) => shape && !isRegionShapeHole(shape));
+    const holeShapes = shapes
+      .map((shape) => regionShapeToObject(shape))
+      .filter((shape) => shape && isRegionShapeHole(shape));
+    const solidContours = solidShapes.flatMap((shape) => getShapeClipContours(shape, ellipseSegments));
+    const holeContours = holeShapes
       .flatMap((shape) => getShapeClipContours(shape, ellipseSegments));
 
-    for (const shape of shapes) {
-      const data = regionShapeToObject(shape);
-      if (!data || isRegionShapeHole(data)) continue;
+    for (const data of solidShapes) {
       const converted = clipWallsByContours(
         buildWallsForRegionShape(data, {MODULE_ID, getSegmentWallData, state, ellipseSegments}),
-        holes
+        holeContours
       );
-      const deduped = rejectExistingWallCandidates(converted, existingWalls);
-      if (!deduped.length) {
-        stats.skipped += 1;
-        continue;
-      }
-      wallData.push(...deduped);
-      const kind = deduped[0]?.flags?.[MODULE_ID]?.[RECTANGLE_FLAG] ? "rectangles"
-        : deduped[0]?.flags?.[MODULE_ID]?.[ELLIPSE_FLAG] ? "ellipses"
-          : "polylines";
-      stats[kind] += 1;
+      addRegionConversionWalls(converted, wallData, wallGroups, existingWalls, stats, MODULE_ID);
+    }
+
+    for (const data of holeShapes) {
+      const converted = keepWallsByContours(
+        buildWallsForRegionShape(data, {MODULE_ID, getSegmentWallData, state, ellipseSegments}),
+        solidContours
+      );
+      addRegionConversionWalls(converted, wallData, wallGroups, existingWalls, stats, MODULE_ID);
     }
   }
 
@@ -136,7 +143,7 @@ function getRegionConversionPlan({MODULE_ID, getSegmentWallData, ellipseSegments
     return null;
   }
 
-  return {wallData, stats, ellipseSegments};
+  return {wallData, wallGroups, stats, ellipseSegments};
 }
 
 function showRegionConversionPreview(plan, {MODULE_ID, getSegmentWallData, replaceShapeWalls, ellipseSegments=DEFAULT_ELLIPSE_SEGMENTS}={}) {
@@ -152,6 +159,20 @@ function showRegionConversionPreview(plan, {MODULE_ID, getSegmentWallData, repla
   };
   drawRegionConversionPreview();
   renderRegionConversionPreviewControls();
+}
+
+function addRegionConversionWalls(converted, wallData, wallGroups, existingWalls, stats, MODULE_ID) {
+  const deduped = rejectExistingWallCandidates(converted, existingWalls);
+  if (!deduped.length) {
+    if (converted.length) stats.skipped += 1;
+    return;
+  }
+  wallData.push(...deduped);
+  wallGroups.push(deduped);
+  const kind = deduped[0]?.flags?.[MODULE_ID]?.[RECTANGLE_FLAG] ? "rectangles"
+    : deduped[0]?.flags?.[MODULE_ID]?.[ELLIPSE_FLAG] ? "ellipses"
+      : "polylines";
+  stats[kind] += 1;
 }
 
 function clearRegionConversionPreview() {
@@ -306,7 +327,7 @@ function setRegionConversionDetail(value, {updateSlider=true}={}) {
   });
   if (!plan) {
     clearRegionConversionPreviewGraphics();
-    session.plan = {wallData: [], stats: {regions: 0, rectangles: 0, ellipses: 0, polylines: 0}, ellipseSegments: next};
+    session.plan = {wallData: [], wallGroups: [], stats: {regions: 0, rectangles: 0, ellipses: 0, polylines: 0}, ellipseSegments: next};
     return;
   }
   session.plan = plan;
@@ -468,6 +489,7 @@ function buildEllipseWalls(data, deps) {
           segments,
           rotation,
           segmentGaps: [],
+          angleGaps: [],
           wallTypeBySegment: {},
           wallDataBySegment: {},
           wallTypeTool: "walls"
@@ -596,6 +618,44 @@ function clipWallsByContours(walls, contours) {
   return kept;
 }
 
+function keepWallsByContours(walls, contours) {
+  if (!contours.length) return [];
+  const kept = [];
+  const removedIndexes = new Set();
+
+  for (const wall of walls) {
+    const index = getIndyShapeSegmentIndex(wall);
+    if (isWallKeptByContours(wall, contours)) {
+      kept.push(wall);
+      continue;
+    }
+    if (Number.isInteger(index)) removedIndexes.add(index);
+  }
+
+  applyRemovedShapeSegments(kept, removedIndexes);
+  return kept;
+}
+
+function isWallKeptByContours(wall, contours) {
+  const c = wall?.c;
+  if (!Array.isArray(c) || c.length < 4) return false;
+  const a = {x: c[0], y: c[1]};
+  const b = {x: c[2], y: c[3]};
+  const mid = interpolatePoint(a, b, 0.5);
+  if (contours.some((contour) => pointInPolygon(mid, contour))) return true;
+
+  for (const contour of contours) {
+    for (let i = 0; i < contour.length; i += 1) {
+      const p = contour[i];
+      const q = contour[(i + 1) % contour.length];
+      const t = getSegmentIntersectionParameter(a, b, p, q);
+      if (Number.isFinite(t) && t > 0.000001 && t < 0.999999) return true;
+    }
+  }
+
+  return false;
+}
+
 function rejectExistingWallCandidates(walls, existingWalls) {
   if (!existingWalls.length) return walls;
   const kept = [];
@@ -676,11 +736,39 @@ function applyRemovedShapeSegments(walls, removedIndexes) {
   for (const wall of walls) {
     const moduleFlags = wall?.flags?.["indy-walls"];
     if (moduleFlags?.[ELLIPSE_FLAG]) {
+      const segments = Number(moduleFlags[ELLIPSE_FLAG].segments) || 0;
+      moduleFlags[ELLIPSE_FLAG].angleGaps = getAngleGapsFromSegmentIndexes(gaps, segments);
       moduleFlags[ELLIPSE_FLAG].segmentGaps = gaps;
     } else if (moduleFlags?.[POLYLINE_FLAG]) {
       moduleFlags[POLYLINE_FLAG].segmentGaps = gaps;
     }
   }
+}
+
+function getAngleGapsFromSegmentIndexes(indexes, segmentCount) {
+  const count = Number(segmentCount);
+  if (!Number.isInteger(count) || count <= 0 || !indexes.length) return [];
+  return getContiguousIndexRuns(indexes, count).map((run) => ({
+    start: run.start / count,
+    end: ((run.start + run.length) / count) % 1
+  }));
+}
+
+function getContiguousIndexRuns(indexes, count) {
+  const sorted = [...new Set(indexes)].sort((a, b) => a - b);
+  if (sorted.length === count) return [{start: 0, length: count}];
+  const set = new Set(sorted);
+  return sorted
+    .filter((index) => !set.has(modulo(index - 1, count)))
+    .map((start) => {
+      let length = 1;
+      while (set.has(modulo(start + length, count))) length += 1;
+      return {start, length};
+    });
+}
+
+function modulo(value, modulus) {
+  return ((value % modulus) + modulus) % modulus;
 }
 
 function getSegmentIntersectionParameter(a, b, p, q) {
