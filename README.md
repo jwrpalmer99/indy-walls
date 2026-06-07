@@ -75,11 +75,15 @@ The Wall Controls include a Convert to Indy Walls button for GMs. It scans plain
 
 On Foundry v14, conversion only joins walls into the same Indy shape when those walls share the same `levels` list. Original wall data, including v14 level assignment, is preserved on converted segments.
 
-The inline tolerance sliders and matching stored settings control how aggressively rectangle, ellipse, arc, and Bezier fits are accepted. The default value of `1` keeps the automatic scene-size-derived tolerance; lower values are stricter, and higher values, up to `10`, allow looser fits.
+The inline tolerance sliders and matching stored settings control how aggressively rectangle, ellipse, arc, and Bezier fits are accepted. The default value of `1` keeps the automatic scene-size-derived tolerance; lower values are stricter, and higher values, up to `10`, allow looser fits. Arc and Bezier conversion also use fixed pixel caps and curve-shape checks, so long straight wall runs, sharp L-shapes, and S-bends are less likely to be incorrectly compressed into curves. When several arc or Bezier run lengths are possible, conversion scores all acceptable candidates and chooses the best fit, with only a small bias toward longer runs when quality is similar.
+
+Shared Indy shape metadata is stored on the Scene rather than duplicated on every generated wall. Wall segments keep compact per-shape and per-segment references so shape editors can reopen quickly and the exported wall data stays smaller.
 
 ### Regions to Indy Walls
 
-The Region Controls include a Create Indy Walls from Regions button for GMs. If Regions are selected, it creates Indy walls from those Region shapes; if none are selected, it uses every Region in the scene. Region rectangles become Indy rectangles, ellipses and circles become Indy ellipses, and polygon sub-shapes become closed Indy polylines.
+The Region Controls include a Create Indy Walls from Regions button for GMs. If Regions are selected, it creates Indy walls from those Region shapes; if none are selected, it uses every Region in the scene. Conversion opens a preview first, with Save and Cancel controls like the normal wall conversion preview.
+
+Region rectangles become Indy rectangles, ellipses and circles become Indy ellipses, and polygon sub-shapes become closed Indy polylines. Hole sub-shapes are respected: they clip overlapping non-hole shapes, and hole boundaries that intersect converted areas are also converted to walls where needed. Circle and ellipse gaps are represented as angular gaps so changing detail tries to keep gap position and size stable, including partial wall segments at exact gap start and end angles.
 
 ### Clean Up Walls
 
@@ -94,7 +98,7 @@ The Wall Controls include a Clean Up Walls button for GMs. It
 
 Standalone snapping to nearby grid lines or map edges is available as a module setting and is disabled by default. Wall path simplification is also gated by a module setting and disabled by default. On Foundry v14, cleanup respects wall level lists by default and only snaps or joins endpoints across matching levels; this can be disabled in module settings. 
 
-For Indy shapes, saved endpoint or vertex metadata is updated where possible so the editor reopens on the cleaned points, but curve handles are left unchanged; intersection splitting is limited to non-door plain walls so Indy shape metadata and door state are not invalidated.
+For Indy shapes, saved shape metadata is updated where possible so the editor reopens on the cleaned points, but curve handles are left unchanged; intersection splitting is limited to non-door plain walls so Indy shape metadata and door state are not invalidated.
 
 ### Preview Styling
 
@@ -121,7 +125,7 @@ Basic workflow:
 6. Use `+` and `-`, or Ctrl-scrollwheel, to change the number of generated wall segments.
 7. Use the check button or Enter to create wall segments, or Escape to cancel.
 
-Curve metadata is stored on each generated wall segment. Ctrl-left-click any generated segment to reopen the curve editor, including arc/Bezier mode, handles, segment count, hidden segments, and per-segment wall types, so it can be adjusted and re-applied.
+Curve metadata is stored as shared Scene metadata with compact references on each generated wall segment. Ctrl-left-click any generated segment to reopen the curve editor, including arc/Bezier mode, handles, segment count, hidden segments, and per-segment wall types, so it can be adjusted and re-applied.
 
 ### Ellipse Walls
 
@@ -136,12 +140,12 @@ Basic workflow:
 5. Hold Ctrl while placing to grow the ellipse from the center point.
 6. Drag the red corner handles to resize the ellipse. Hold Alt while resizing to keep it circular.
 7. Drag ellipse vertices to rotate the ellipse.
-8. Left-click a hidden segment to restore it and close a gap. An elipse can have multiple gaps.
-9. Alt-click a segment to hide it and create a gap - a gap can be resized by dragging its handles.
+8. Left-click inside an ellipse gap to close that gap. An ellipse can have multiple gaps.
+9. Alt-click a visible segment to create an angular gap. Drag the gap start/end handles to resize or move the gap precisely.
 10. Use `+` and `-`, or Ctrl-scrollwheel, to change the number of generated wall segments.
 11. Use the check button or Enter to create wall segments, or Escape to cancel.
 
-Ellipse metadata is stored on each generated wall segment. Ctrl-left-click any generated segment to reopen the ellipse editor so it can be adjusted and re-applied.
+Ellipse metadata is stored as shared Scene metadata with compact references on each generated wall segment. Ctrl-left-click any generated segment to reopen the ellipse editor, including rotation, detail, angular gaps, gap handles, and per-segment wall types, so it can be adjusted and re-applied. Ellipse gaps are stored by angle, not only by segment number, so changing detail keeps gap position and size as close as possible and creates partial wall segments at exact gap boundaries.
 
 ### Rectangle Walls
 
@@ -162,7 +166,7 @@ Basic workflow:
 11. Use Ctrl-scrollwheel to change all four side segment counts together.
 12. Use the check button or Enter to create wall segments, or Escape to cancel.
 
-Rectangle metadata is stored on each generated wall segment. Ctrl-left-click any generated segment to reopen the rectangle editor, including per-side vertices, segment gaps, and removed sides, so it can be adjusted and re-applied.
+Rectangle metadata is stored as shared Scene metadata with compact references on each generated wall segment. Ctrl-left-click any generated segment to reopen the rectangle editor, including per-side vertices, segment gaps, and removed sides, so it can be adjusted and re-applied.
 
 ### Polyline Walls
 
@@ -184,7 +188,7 @@ Basic workflow:
 12. Alt-click a segment to hide it.
 13. Use the check button or Enter to create wall segments, or Escape to cancel.
 
-Polyline metadata is stored on each generated wall segment. Ctrl-left-click any generated segment to reopen the polyline editor, including closed polygon state, hidden segments, curve modes and handles, global and per-segment curved detail, and per-segment wall types.
+Polyline metadata is stored as shared Scene metadata with compact references on each generated wall segment. Ctrl-left-click any generated segment to reopen the polyline editor, including closed polygon state, hidden segments, curve modes and handles, global and per-segment curved detail, and per-segment wall types.
 
 ## License
 
