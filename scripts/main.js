@@ -28,6 +28,13 @@ import {
 import {drawDoorGlyphForSegment} from "./door-glyphs.js";
 import {cleanupSceneWalls as cleanupSceneWallsImpl} from "./wall-cleanup.js";
 import {
+  compactWallShapeMetadata,
+  getSceneShapeMetadata,
+  getShapeMetadataEntriesFromWallData,
+  mergeSceneShapeMetadata,
+  pruneSceneShapeMetadata
+} from "./shape-metadata.js";
+import {
   configureInteractionHelpers,
   consumeCanvasInteraction,
   debugInteractionManagers,
@@ -252,6 +259,8 @@ const lastCanvasPointerState = {
 const lastHoveredWallState = {
   id: null
 };
+let shapeMetadataPruneTimeout = null;
+const pendingShapeMetadataPruneWallIds = new Set();
 let shortcutHelpDragState = null;
 let copiedEditorShape = null;
 let activePreviewRedrawFrame = null;
@@ -437,6 +446,7 @@ Hooks.on("deleteWall", (wallDocument) => {
   cancelEllipseEditingForDeletedWall(wallDocument);
   cancelRectangleEditingForDeletedWall(wallDocument);
   cancelPolylineEditingForDeletedWall(wallDocument);
+  scheduleShapeMetadataPrune([wallDocument.id]);
 });
 
 Hooks.on("drawWall", (wall) => {
@@ -3253,6 +3263,11 @@ async function deleteActiveEditorWalls() {
   } finally {
     wallIds.forEach((id) => replacingWallIds.delete(id));
   }
+  await pruneSceneShapeMetadata(canvas.scene, MODULE_ID, {
+    excludeWallIds: wallIds,
+    debug: debugShapeSelection,
+    reason: "deleteActiveEditorWalls"
+  });
 
   clearActivePreview();
   cubicState.active = false;
@@ -3505,14 +3520,22 @@ function getWallDocumentById(id) {
   return canvas?.scene?.walls?.get(id) ?? null;
 }
 
+function getSceneWallDocuments() {
+  const walls = canvas?.scene?.walls;
+  if (!walls) return [];
+  if (Array.isArray(walls.contents)) return walls.contents;
+  return Array.from(walls);
+}
+
 async function replaceShapeWalls(state, oldWallIds, wallData) {
   const existingIds = [...new Set(oldWallIds ?? [])].filter((id) => canvas.scene.walls.has(id));
   const reusedIds = existingIds.slice(0, wallData.length);
   const createdIds = wallData.slice(reusedIds.length).map(() => foundry.utils.randomID());
   const finalWallIds = [...reusedIds, ...createdIds];
+  await mergeSceneShapeMetadata(canvas.scene, MODULE_ID, getShapeMetadataEntriesFromWallData(wallData, MODULE_ID));
   const walls = wallData.map((wall, index) => {
     const data = foundry.utils.deepClone(wall);
-    setShapeWallIds(data, finalWallIds);
+    compactWallShapeMetadata(data, MODULE_ID);
     if (index < reusedIds.length) data._id = reusedIds[index];
     else data._id = createdIds[index - reusedIds.length];
     return data;
@@ -3536,6 +3559,10 @@ async function replaceShapeWalls(state, oldWallIds, wallData) {
       deleteIds.forEach((id) => state.replacingWallIds.delete(id));
     }
   }
+  await pruneSceneShapeMetadata(canvas.scene, MODULE_ID, {
+    debug: debugShapeSelection,
+    reason: "replaceShapeWalls"
+  });
 
   return finalWallIds.map((id) =>
     updated.find((wall) => wall.id === id)
@@ -3544,12 +3571,79 @@ async function replaceShapeWalls(state, oldWallIds, wallData) {
   ).filter(Boolean);
 }
 
-function setShapeWallIds(wallData, wallIds) {
-  const moduleFlags = wallData?.flags?.[MODULE_ID];
-  if (!moduleFlags) return;
-  for (const shapeData of Object.values(moduleFlags)) {
-    if (shapeData && typeof shapeData === "object" && "wallIds" in shapeData) shapeData.wallIds = wallIds;
+function resolveShapeWallIds(flagName, idField, shapeId, fallbackWallId=null, storedWallIds=null) {
+  const resolved = [];
+  if (shapeId) {
+    for (const wall of getSceneWallDocuments()) {
+      const data = wall?.getFlag?.(MODULE_ID, flagName);
+      if (data?.[idField] === shapeId) resolved.push({
+        id: wall.id,
+        index: Number(data.segmentIndex ?? data.index)
+      });
+    }
   }
+
+  if (resolved.length) {
+    return resolved
+      .sort((a, b) => {
+        if (Number.isInteger(a.index) && Number.isInteger(b.index) && a.index !== b.index) return a.index - b.index;
+        return String(a.id).localeCompare(String(b.id));
+      })
+      .map((entry) => entry.id);
+  }
+
+  const stored = Array.isArray(storedWallIds)
+    ? storedWallIds.filter((id) => canvas?.scene?.walls?.has(id))
+    : [];
+  if (stored.length) return stored;
+  return fallbackWallId ? [fallbackWallId] : [];
+}
+
+function getShapeFlagSourceData(flagName, idField, shapeId, fallbackData=null) {
+  const sceneData = getSceneShapeMetadata(canvas?.scene, MODULE_ID, flagName, shapeId);
+  if (sceneData) return {
+    ...(fallbackData ?? {}),
+    ...foundry.utils.deepClone(sceneData)
+  };
+
+  if (shapeId) {
+    for (const wall of getSceneWallDocuments()) {
+      const data = wall?.getFlag?.(MODULE_ID, flagName);
+      if (data?.[idField] !== shapeId) continue;
+      if (hasSharedShapeFlagData(data)) return data;
+    }
+  }
+  return fallbackData;
+}
+
+function scheduleShapeMetadataPrune(excludeWallIds=[]) {
+  for (const id of excludeWallIds ?? []) {
+    if (id) pendingShapeMetadataPruneWallIds.add(id);
+  }
+  if (shapeMetadataPruneTimeout) window.clearTimeout(shapeMetadataPruneTimeout);
+  shapeMetadataPruneTimeout = window.setTimeout(async () => {
+    shapeMetadataPruneTimeout = null;
+    const excluded = [...pendingShapeMetadataPruneWallIds];
+    pendingShapeMetadataPruneWallIds.clear();
+    await pruneSceneShapeMetadata(canvas?.scene, MODULE_ID, {
+      excludeWallIds: excluded,
+      debug: debugShapeSelection,
+      reason: "deleteWall hook"
+    });
+  }, 100);
+}
+
+function hasSharedShapeFlagData(data) {
+  return (Array.isArray(data?.points) && data.points.length)
+    || (Array.isArray(data?.handles) && data.handles.length)
+    || hasObjectEntries(data?.wallTypeBySegment)
+    || hasObjectEntries(data?.wallDataBySegment)
+    || hasObjectEntries(data?.segmentCurves)
+    || hasObjectEntries(data?.curveSegmentsBySegment);
+}
+
+function hasObjectEntries(value) {
+  return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length > 0;
 }
 
 function getShapeWallTypeByIndexedFlag(wallIds, flagName) {
@@ -4389,6 +4483,7 @@ function getPolylineDeps() {
     getSegmentKey,
     getSegmentPreviewColor,
     getSegmentWallData,
+    getShapeFlagSourceData,
     getShapeWallDataByIndexedFlag,
     getShapeWallTypeByIndexedFlag,
     getSplitVertexHitRadius,
@@ -4398,6 +4493,7 @@ function getPolylineDeps() {
     isPolylineToolActive,
     pushEditorUndoSnapshot,
     replaceShapeWalls,
+    resolveShapeWallIds,
     restoreEditSessionWalls,
     scheduleEditorInteractionReset,
     setPolylineEditingState
@@ -4435,6 +4531,7 @@ function getCubicDeps() {
     getSegmentKey,
     getSegmentPreviewColor,
     getSegmentWallData,
+    getShapeFlagSourceData,
     getShapeWallDataByIndexedFlag,
     getShapeWallTypeByIndexedFlag,
     getWallTypeToolFromDocument,
@@ -4443,6 +4540,7 @@ function getCubicDeps() {
     isPointNearSegmentBounds,
     pushEditorUndoSnapshot,
     replaceShapeWalls,
+    resolveShapeWallIds,
     restoreEditSessionWalls,
     setCubicEditingState
   };
@@ -4470,6 +4568,7 @@ function getEllipseDeps() {
     getSegmentKey,
     getSegmentPreviewColor,
     getSegmentWallData,
+    getShapeFlagSourceData,
     getShapeWallDataByIndexedFlag,
     getShapeWallTypeByIndexedFlag,
     getSplitVertexHitRadius,
@@ -4479,6 +4578,7 @@ function getEllipseDeps() {
     isPointNearSegmentBounds,
     pushEditorUndoSnapshot,
     replaceShapeWalls,
+    resolveShapeWallIds,
     restoreEditSessionWalls,
     setEllipseEditingState
   };
@@ -4512,6 +4612,7 @@ function getRectangleDeps() {
     getSegmentPreviewColor,
     getSegmentWallData,
     getSplitVertexHitRadius,
+    getShapeFlagSourceData,
     getWallTypeToolFromDocument,
     hideEditSessionWalls,
     isAltInteraction,
@@ -4519,6 +4620,7 @@ function getRectangleDeps() {
     prepareRectanglePreviewGraphics,
     pushEditorUndoSnapshot,
     replaceShapeWalls,
+    resolveShapeWallIds,
     restoreEditSessionWalls,
     scheduleEditorInteractionReset,
     setRectangleEditingState

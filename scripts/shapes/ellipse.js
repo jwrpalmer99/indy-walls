@@ -540,7 +540,7 @@ export async function applyEllipseWalls(deps) {
             handles: deps.clonePoints(ellipseState.handles),
             segments: ellipseState.segments,
             rotation: ellipseState.rotation,
-            segmentGaps,
+            segmentGaps: [],
             angleGaps: reconcileEllipseAngleGaps(ellipseState.angleGaps),
             wallTypeBySegment: deps.cloneWallTypeBySegment(ellipseState.wallTypeBySegment),
             wallDataBySegment: deps.cloneWallDataBySegment(ellipseState.wallDataBySegment),
@@ -609,7 +609,9 @@ export function cancelEllipseEditingForDeletedWall(wallDocument, deps) {
 }
 
 export function loadEllipseFromWall(wall, deps) {
-  const ellipseData = wall.document.getFlag(deps.MODULE_ID, ELLIPSE_FLAG);
+  const clickedData = wall.document.getFlag(deps.MODULE_ID, ELLIPSE_FLAG);
+  const ellipseId = clickedData?.ellipseId ?? null;
+  const ellipseData = deps.getShapeFlagSourceData(ELLIPSE_FLAG, "ellipseId", ellipseId, clickedData);
   if (!Array.isArray(ellipseData?.handles) || ellipseData.handles.length !== 2) return;
 
   deps.deactivateOtherShapeStates(ellipseState);
@@ -623,8 +625,8 @@ export function loadEllipseFromWall(wall, deps) {
   ellipseState.draggingGapHandle = null;
   ellipseState.lastSegmentEditAction = 0;
   ellipseState.suppressNextSegmentEditClick = false;
-  ellipseState.ellipseId = ellipseData.ellipseId ?? null;
-  ellipseState.wallIds = Array.isArray(ellipseData.wallIds) ? [...ellipseData.wallIds] : [wall.document.id];
+  ellipseState.ellipseId = ellipseId;
+  ellipseState.wallIds = deps.resolveShapeWallIds(ELLIPSE_FLAG, "ellipseId", ellipseState.ellipseId, wall.document.id, clickedData?.wallIds);
   ellipseState.wallTypeTool = deps.getWallTypeToolFromDocument(wall.document) ?? ellipseData.wallTypeTool ?? "walls";
   ellipseState.segments = deps.clamp(Number(ellipseData.segments) || DEFAULT_ELLIPSE_SEGMENTS, 4, 96);
   ellipseState.rotation = Number(ellipseData.rotation) || 0;

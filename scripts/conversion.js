@@ -29,6 +29,11 @@ import {
   getPreservedWallDataFromDocument
 } from "./wall-preservation.js";
 import {getWallTypeToolFromDocument} from "./wall-types.js";
+import {
+  compactWallShapeMetadata,
+  getShapeMetadataEntriesFromWallData,
+  mergeSceneShapeMetadata
+} from "./shape-metadata.js";
 
 const MODULE_ID = "indy-walls";
 const LEGACY_CONVERSION_TOLERANCE_SETTING = "conversionTolerance";
@@ -63,6 +68,7 @@ let convertingToIndyWalls = false;
 let conversionPreviewSession = null;
 let conversionPreviewRedrawTimeout = null;
 const pendingConversionToleranceSettingSaves = new Map();
+let activeConversionTiming = null;
 
 export async function convertSceneWallsToIndyWalls() {
   if (!game.user.isGM || !canvas?.scene) return;
@@ -76,6 +82,7 @@ export async function convertSceneWallsToIndyWalls() {
       return;
     }
 
+    logConversionTiming("plan", plan.timing);
     showConversionPreview(plan);
   } finally {
     convertingToIndyWalls = false;
@@ -87,13 +94,90 @@ export async function commitConversionPreview() {
   flushScheduledConversionPreviewRedraw();
   const plan = conversionPreviewSession.plan;
   clearConversionPreview();
-  await canvas.scene.updateEmbeddedDocuments("Wall", plan.updates);
+  const timing = createConversionTiming();
+  const metadataEntries = measureConversionTiming(timing, "metadata.extract", () => getShapeMetadataEntriesFromWallData(plan.updates, MODULE_ID));
+  await measureConversionTimingAsync(timing, "metadata.mergeSceneFlag", () => mergeSceneShapeMetadata(canvas.scene, MODULE_ID, metadataEntries));
+  const updates = measureConversionTiming(timing, "metadata.compactWallFlags", () => plan.updates.map((update) => {
+    const data = foundry.utils.deepClone(update);
+    compactWallShapeMetadata(data, MODULE_ID);
+    return data;
+  }));
+  await measureConversionTimingAsync(timing, "foundry.updateWalls", () => canvas.scene.updateEmbeddedDocuments("Wall", updates));
+  logConversionTiming("commit", {
+    ...timing,
+    counts: {
+      updates: plan.updates.length,
+      metadataEntries: Object.keys(metadataEntries ?? {}).length
+    }
+  });
   ui.notifications?.info(game.i18n.format("indy-walls.Notifications.WallsConvertedToIndy", {
     count: plan.updates.length,
     rectangles: plan.rectangleGroups.length,
     ellipses: plan.ellipseGroups.length,
     polylines: plan.polylineGroups.length
   }));
+}
+
+function createConversionTiming() {
+  return {
+    startedAt: getConversionNow(),
+    timings: {},
+    counts: {}
+  };
+}
+
+function getConversionNow() {
+  return globalThis.performance?.now?.() ?? Date.now();
+}
+
+function measureConversionTiming(timing, key, fn) {
+  const started = getConversionNow();
+  try {
+    return fn();
+  } finally {
+    addConversionTiming(timing, key, getConversionNow() - started);
+  }
+}
+
+async function measureConversionTimingAsync(timing, key, fn) {
+  const started = getConversionNow();
+  try {
+    return await fn();
+  } finally {
+    addConversionTiming(timing, key, getConversionNow() - started);
+  }
+}
+
+function measureActiveConversionTiming(key, fn) {
+  if (!activeConversionTiming) return fn();
+  return measureConversionTiming(activeConversionTiming, key, fn);
+}
+
+function addConversionTiming(timing, key, elapsed) {
+  if (!timing || !Number.isFinite(elapsed)) return;
+  timing.timings[key] = (timing.timings[key] ?? 0) + elapsed;
+}
+
+function logConversionTiming(stage, timing) {
+  if (!timing) return;
+  const timings = Object.fromEntries(Object.entries(timing.timings ?? {})
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => [key, roundTiming(value)]));
+  const totalMs = roundTiming(getConversionNow() - (timing.startedAt ?? getConversionNow()));
+  const metadataMs = roundTiming(Object.entries(timing.timings ?? {})
+    .filter(([key]) => key.startsWith("metadata."))
+    .reduce((sum, [, value]) => sum + value, 0));
+  console.debug(`${MODULE_ID} | conversion timing`, {
+    stage,
+    totalMs,
+    metadataMs,
+    timings,
+    counts: timing.counts ?? {}
+  });
+}
+
+function roundTiming(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
 }
 
 export function cancelConversionPreview() {
@@ -113,25 +197,41 @@ export function redrawConversionPreview() {
 }
 
 function getSceneWallConversionPlan(baseCandidates=null) {
-  const candidates = getPlainWallConversionCandidates(baseCandidates);
-  if (!candidates.length) return null;
+  const previousTiming = activeConversionTiming;
+  const timing = createConversionTiming();
+  activeConversionTiming = timing;
+  try {
+    const candidates = measureConversionTiming(timing, "candidates", () => getPlainWallConversionCandidates(baseCandidates));
+    timing.counts.candidates = candidates.length;
+    if (!candidates.length) return null;
 
-  const rectangleGroups = detectRectangleConversionGroups(candidates);
-  const usedIds = new Set(rectangleGroups.flatMap((group) => group.records.map((record) => record.wall.id)));
-  const remaining = candidates.filter((candidate) => !usedIds.has(candidate.wall.id));
-  const refinedPolylines = refineConvertedPolylineGroups(detectPolylineConversionGroups(remaining));
-  const updates = [
-    ...rectangleGroups.flatMap((group) => buildRectangleConversionUpdates(group)),
-    ...refinedPolylines.ellipseGroups.flatMap((group) => buildEllipseConversionUpdates(group)),
-    ...refinedPolylines.polylineGroups.flatMap((group) => buildPolylineConversionUpdates(group))
-  ];
+    const rectangleGroups = measureConversionTiming(timing, "rectangles.detect", () => detectRectangleConversionGroups(candidates));
+    timing.counts.rectangles = rectangleGroups.length;
+    const usedIds = new Set(rectangleGroups.flatMap((group) => group.records.map((record) => record.wall.id)));
+    const remaining = measureConversionTiming(timing, "rectangles.filterRemaining", () => candidates.filter((candidate) => !usedIds.has(candidate.wall.id)));
+    timing.counts.remaining = remaining.length;
+    const polylineBaseGroups = measureConversionTiming(timing, "polylines.group", () => detectPolylineConversionGroups(remaining));
+    timing.counts.polylineBaseGroups = polylineBaseGroups.length;
+    const refinedPolylines = measureConversionTiming(timing, "polylines.refine", () => refineConvertedPolylineGroups(polylineBaseGroups));
+    timing.counts.ellipses = refinedPolylines.ellipseGroups.length;
+    timing.counts.polylines = refinedPolylines.polylineGroups.length;
+    const updates = measureConversionTiming(timing, "updates.build", () => [
+      ...rectangleGroups.flatMap((group) => buildRectangleConversionUpdates(group)),
+      ...refinedPolylines.ellipseGroups.flatMap((group) => buildEllipseConversionUpdates(group)),
+      ...refinedPolylines.polylineGroups.flatMap((group) => buildPolylineConversionUpdates(group))
+    ]);
+    timing.counts.updates = updates.length;
 
-  return {
-    updates,
-    rectangleGroups,
-    ellipseGroups: refinedPolylines.ellipseGroups,
-    polylineGroups: refinedPolylines.polylineGroups
-  };
+    return {
+      updates,
+      rectangleGroups,
+      ellipseGroups: refinedPolylines.ellipseGroups,
+      polylineGroups: refinedPolylines.polylineGroups,
+      timing
+    };
+  } finally {
+    activeConversionTiming = previousTiming;
+  }
 }
 
 function showConversionPreview(plan) {
@@ -719,22 +819,13 @@ function getRectangleConversionGroupsFromComponent(component) {
   if (xs.length < 2 || ys.length < 2) return [];
 
   const candidates = [];
-  for (let xi = 0; xi < xs.length - 1; xi++) {
-    for (let xj = xi + 1; xj < xs.length; xj++) {
-      for (let yi = 0; yi < ys.length - 1; yi++) {
-        for (let yj = yi + 1; yj < ys.length; yj++) {
-          const group = getRectangleConversionGroupForBounds(component, {
-            minX: xs[xi],
-            maxX: xs[xj],
-            minY: ys[yi],
-            maxY: ys[yj]
-          });
-          if (group) candidates.push({
-            group,
-            area: (xs[xj] - xs[xi]) * (ys[yj] - ys[yi])
-          });
-        }
-      }
+  for (const bounds of getRectangleBoundsCandidates(component, xs, ys)) {
+    const group = getRectangleConversionGroupForBounds(component, bounds);
+    if (group) {
+      candidates.push({
+        group,
+        area: (bounds.maxX - bounds.minX) * (bounds.maxY - bounds.minY)
+      });
     }
   }
 
@@ -753,6 +844,89 @@ function getRectangleCandidateBoundaryValues(component, axis) {
     ? component.filter((candidate) => candidate.vertical).flatMap((candidate) => [candidate.a.x, candidate.b.x])
     : component.filter((candidate) => candidate.horizontal).flatMap((candidate) => [candidate.a.y, candidate.b.y]);
   return [...new Set(source)].sort((a, b) => a - b);
+}
+
+function getRectangleBoundsCandidates(component, xs, ys) {
+  const xPairs = (xs.length * (xs.length - 1)) / 2;
+  const yPairs = (ys.length * (ys.length - 1)) / 2;
+  const bruteForceCount = xPairs * yPairs;
+  if (bruteForceCount <= 6000) {
+    const bounds = [];
+    for (let xi = 0; xi < xs.length - 1; xi++) {
+      for (let xj = xi + 1; xj < xs.length; xj++) {
+        for (let yi = 0; yi < ys.length - 1; yi++) {
+          for (let yj = yi + 1; yj < ys.length; yj++) {
+            bounds.push({minX: xs[xi], maxX: xs[xj], minY: ys[yi], maxY: ys[yj]});
+          }
+        }
+      }
+    }
+    return bounds;
+  }
+
+  activeConversionTiming && (activeConversionTiming.counts.rectangleBruteForceSkipped = (activeConversionTiming.counts.rectangleBruteForceSkipped ?? 0) + 1);
+  activeConversionTiming && (activeConversionTiming.counts.rectangleBruteForceCandidatesSkipped = (activeConversionTiming.counts.rectangleBruteForceCandidatesSkipped ?? 0) + bruteForceCount);
+
+  const bounds = new Map();
+  const addBounds = ({minX, maxX, minY, maxY}) => {
+    if (minX === maxX || minY === maxY) return;
+    bounds.set(`${minX},${minY},${maxX},${maxY}`, {minX, minY, maxX, maxY});
+  };
+
+  addBounds({
+    minX: xs[0],
+    maxX: xs.at(-1),
+    minY: ys[0],
+    maxY: ys.at(-1)
+  });
+
+  const horizontals = component
+    .filter((candidate) => candidate.horizontal)
+    .map((candidate) => ({
+      y: Math.round((candidate.a.y + candidate.b.y) / 2),
+      minX: Math.min(candidate.a.x, candidate.b.x),
+      maxX: Math.max(candidate.a.x, candidate.b.x)
+    }))
+    .filter((item) => item.minX !== item.maxX);
+  const verticals = component
+    .filter((candidate) => candidate.vertical)
+    .map((candidate) => ({
+      x: Math.round((candidate.a.x + candidate.b.x) / 2),
+      minY: Math.min(candidate.a.y, candidate.b.y),
+      maxY: Math.max(candidate.a.y, candidate.b.y)
+    }))
+    .filter((item) => item.minY !== item.maxY);
+
+  for (let i = 0; i < horizontals.length - 1; i++) {
+    for (let j = i + 1; j < horizontals.length; j++) {
+      const a = horizontals[i];
+      const b = horizontals[j];
+      if (a.y === b.y || a.minX !== b.minX || a.maxX !== b.maxX) continue;
+      addBounds({
+        minX: a.minX,
+        maxX: a.maxX,
+        minY: Math.min(a.y, b.y),
+        maxY: Math.max(a.y, b.y)
+      });
+    }
+  }
+
+  for (let i = 0; i < verticals.length - 1; i++) {
+    for (let j = i + 1; j < verticals.length; j++) {
+      const a = verticals[i];
+      const b = verticals[j];
+      if (a.x === b.x || a.minY !== b.minY || a.maxY !== b.maxY) continue;
+      addBounds({
+        minX: Math.min(a.x, b.x),
+        maxX: Math.max(a.x, b.x),
+        minY: a.minY,
+        maxY: a.maxY
+      });
+    }
+  }
+
+  activeConversionTiming && (activeConversionTiming.counts.rectangleLikelyBounds = (activeConversionTiming.counts.rectangleLikelyBounds ?? 0) + bounds.size);
+  return [...bounds.values()];
 }
 
 function getRectangleConversionGroupForBounds(component, {minX, minY, maxX, maxY}) {
@@ -868,14 +1042,14 @@ function buildRectangleConversionUpdates(group) {
       index,
       side: record.side,
       segmentIndex: record.index,
-      wallIds,
+      wallIds: [],
       handles: clonePoints(group.handles),
       sideSegments: {...group.sideSegments},
       sideRatios: cloneRectangleSideRatios(group.sideRatios),
       sideEnabled: cloneRectangleSideEnabled(group.sideEnabled),
       sideGaps: cloneRectangleSideGaps(group.sideGaps),
-      wallTypeBySegment: cloneWallTypeBySegment(wallTypeBySegment),
-      wallDataBySegment: cloneWallDataBySegment(wallDataBySegment),
+      wallTypeBySegment: index === 0 ? cloneWallTypeBySegment(wallTypeBySegment) : {},
+      wallDataBySegment: index === 0 ? cloneWallDataBySegment(wallDataBySegment) : {},
       wallTypeTool
     }
   }));
@@ -1098,12 +1272,18 @@ function refineConvertedPolylineGroups(groups) {
   const ellipseGroups = [];
   const polylineGroups = [];
   for (const group of groups) {
-    const ellipse = getEllipseConversionGroup(group);
+    activeConversionTiming && (activeConversionTiming.counts.ellipseChecks = (activeConversionTiming.counts.ellipseChecks ?? 0) + 1);
+    const ellipse = measureActiveConversionTiming("ellipses.consider", () => getEllipseConversionGroup(group));
     if (ellipse) {
       ellipseGroups.push(ellipse);
       continue;
     }
-    polylineGroups.push(convertPolylineLineRunsToBezier(group) ?? convertPolylineLineRunsToCurves(group));
+    const bezier = measureActiveConversionTiming("beziers.considerWholeGroup", () => convertPolylineLineRunsToBezier(group));
+    if (bezier) {
+      polylineGroups.push(bezier);
+      continue;
+    }
+    polylineGroups.push(measureActiveConversionTiming("polylines.convertRuns", () => convertPolylineLineRunsToCurves(group)));
   }
   return {ellipseGroups, polylineGroups};
 }
@@ -1266,14 +1446,14 @@ function buildEllipseConversionUpdates(group) {
       ellipseId,
       index: group.segmentIndexByCandidate?.[index] ?? index,
       segmentIndex: group.segmentIndexByCandidate?.[index] ?? index,
-      wallIds,
+      wallIds: [],
       handles: clonePoints(group.handles),
       segments: group.segments,
       rotation: 0,
       segmentGaps: [],
       angleGaps: cloneAngleGaps(group.angleGaps),
-      wallTypeBySegment: cloneWallTypeBySegment(wallTypeBySegment),
-      wallDataBySegment: cloneWallDataBySegment(wallDataBySegment),
+      wallTypeBySegment: index === 0 ? cloneWallTypeBySegment(wallTypeBySegment) : {},
+      wallDataBySegment: index === 0 ? cloneWallDataBySegment(wallDataBySegment) : {},
       wallTypeTool
     }
   }));
@@ -1457,7 +1637,8 @@ function convertPolylineLineRunsToCurves(group) {
   let segmentIndex = 0;
 
   while (candidateIndex < group.candidates.length) {
-    const run = findBestBezierConversionRun(group, candidateIndex) ?? findBestArcConversionRun(group, candidateIndex);
+    const bezierRun = measureActiveConversionTiming("beziers.findRuns", () => findBestBezierConversionRun(group, candidateIndex));
+    const run = bezierRun ?? measureActiveConversionTiming("arcs.findRuns", () => findBestArcConversionRun(group, candidateIndex));
     if (run) {
       if (!outputPoints.length) outputPoints.push({...group.points[pointIndex]});
       outputCandidates.push(...group.candidates.slice(candidateIndex, run.endCandidate));
@@ -1491,6 +1672,7 @@ function convertPolylineLineRunsToCurves(group) {
 }
 
 function findBestBezierConversionRun(group, startCandidate) {
+  activeConversionTiming && (activeConversionTiming.counts.bezierRunChecks = (activeConversionTiming.counts.bezierRunChecks ?? 0) + 1);
   const minSegments = 5;
   const maxSegments = Math.min(24, group.candidates.length - startCandidate);
   for (let count = maxSegments; count >= minSegments; count--) {
@@ -1516,6 +1698,7 @@ function findBestBezierConversionRun(group, startCandidate) {
 }
 
 function findBestArcConversionRun(group, startCandidate) {
+  activeConversionTiming && (activeConversionTiming.counts.arcRunChecks = (activeConversionTiming.counts.arcRunChecks ?? 0) + 1);
   const minSegments = 3;
   const maxSegments = Math.min(16, group.candidates.length - startCandidate);
   for (let count = maxSegments; count >= minSegments; count--) {
@@ -1786,15 +1969,15 @@ function buildPolylineConversionUpdates(group) {
     [`flags.${MODULE_ID}.${POLYLINE_FLAG}`]: {
       polylineId,
       index: group.segmentIndexByCandidate?.[index] ?? index,
-      wallIds,
-      points: clonePoints(group.points),
+      wallIds: [],
+      points: index === 0 ? clonePoints(group.points) : [],
       closed: group.closed,
       segmentGaps: [],
-      segmentCurves: clonePolylineSegmentCurves(group.segmentCurves),
+      segmentCurves: index === 0 ? clonePolylineSegmentCurves(group.segmentCurves) : {},
       curveSegments: DEFAULT_POLYLINE_CURVE_SEGMENTS,
-      curveSegmentsBySegment: clonePolylineCurveSegmentsBySegment(group.curveSegmentsBySegment),
-      wallTypeBySegment: cloneWallTypeBySegment(wallTypeBySegment),
-      wallDataBySegment: cloneWallDataBySegment(wallDataBySegment),
+      curveSegmentsBySegment: index === 0 ? clonePolylineCurveSegmentsBySegment(group.curveSegmentsBySegment) : {},
+      wallTypeBySegment: index === 0 ? cloneWallTypeBySegment(wallTypeBySegment) : {},
+      wallDataBySegment: index === 0 ? cloneWallDataBySegment(wallDataBySegment) : {},
       wallTypeTool
     }
   }));

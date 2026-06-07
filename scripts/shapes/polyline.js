@@ -1236,7 +1236,9 @@ export function cancelPolylineEditingForDeletedWall(wallDocument, deps) {
 }
 
 export function loadPolylineFromWall(wall, deps) {
-  const polylineData = wall.document.getFlag(deps.MODULE_ID, POLYLINE_FLAG);
+  const clickedData = wall.document.getFlag(deps.MODULE_ID, POLYLINE_FLAG);
+  const polylineId = clickedData?.polylineId ?? null;
+  const polylineData = deps.getShapeFlagSourceData(POLYLINE_FLAG, "polylineId", polylineId, clickedData);
   if (!Array.isArray(polylineData?.points) || polylineData.points.length < 2) return;
 
   deps.deactivateOtherShapeStates(polylineState);
@@ -1247,8 +1249,8 @@ export function loadPolylineFromWall(wall, deps) {
   polylineState.draggingVertex = null;
   polylineState.draggingCurveHandle = null;
   polylineState.hoveredVertex = null;
-  polylineState.polylineId = polylineData.polylineId ?? null;
-  polylineState.wallIds = Array.isArray(polylineData.wallIds) ? [...polylineData.wallIds] : [wall.document.id];
+  polylineState.polylineId = polylineId;
+  polylineState.wallIds = deps.resolveShapeWallIds(POLYLINE_FLAG, "polylineId", polylineState.polylineId, wall.document.id, clickedData?.wallIds);
   polylineState.wallTypeTool = deps.getWallTypeToolFromDocument(wall.document) ?? polylineData.wallTypeTool ?? "walls";
   polylineState.points = polylineData.points.map((point) => ({
     x: Number(point.x) || 0,

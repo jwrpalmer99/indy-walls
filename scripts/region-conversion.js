@@ -708,13 +708,12 @@ function clipEllipseWallsByContours(walls, contours, keepInside) {
 
   const filtered = nextWalls.filter(Boolean);
   const angleGaps = getAngleGapsFromVisibleIntervals(visibleIntervals);
-  const segmentGaps = getSegmentGapsFromAngleGaps(angleGaps, segments);
   for (const wall of filtered) {
     const flag = wall?.flags?.["indy-walls"]?.[ELLIPSE_FLAG];
     if (!flag) continue;
     flag.wallIds = [];
     flag.angleGaps = cloneAngleGaps(angleGaps);
-    flag.segmentGaps = [...segmentGaps];
+    flag.segmentGaps = [];
   }
   return filtered;
 }
@@ -796,17 +795,6 @@ function mergeAngleIntervals(intervals) {
     }
   }
   return merged;
-}
-
-function getSegmentGapsFromAngleGaps(angleGaps, segmentCount) {
-  const count = Number(segmentCount);
-  if (!Number.isInteger(count) || count <= 0) return [];
-  const gaps = [];
-  for (let index = 0; index < count; index += 1) {
-    const center = (index + 0.5) / count;
-    if (angleGaps.some((gap) => isAngleFractionInGap(center, gap))) gaps.push(index);
-  }
-  return gaps;
 }
 
 function isAngleFractionInGap(fraction, gap) {
@@ -937,7 +925,7 @@ function applyRemovedShapeSegments(walls, removedIndexes) {
     if (moduleFlags?.[ELLIPSE_FLAG]) {
       const segments = Number(moduleFlags[ELLIPSE_FLAG].segments) || 0;
       moduleFlags[ELLIPSE_FLAG].angleGaps = getAngleGapsFromSegmentIndexes(gaps, segments);
-      moduleFlags[ELLIPSE_FLAG].segmentGaps = gaps;
+      moduleFlags[ELLIPSE_FLAG].segmentGaps = [];
     } else if (moduleFlags?.[POLYLINE_FLAG]) {
       moduleFlags[POLYLINE_FLAG].segmentGaps = gaps;
     }

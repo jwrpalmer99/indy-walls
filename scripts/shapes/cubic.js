@@ -425,7 +425,9 @@ export function cancelCubicEditingForDeletedWall(wallDocument, deps) {
 }
 
 export function loadCubicCurveFromWall(wall, deps) {
-  const cubicData = wall.document.getFlag(deps.MODULE_ID, CUBIC_FLAG);
+  const clickedData = wall.document.getFlag(deps.MODULE_ID, CUBIC_FLAG);
+  const curveId = clickedData?.curveId ?? null;
+  const cubicData = deps.getShapeFlagSourceData(CUBIC_FLAG, "curveId", curveId, clickedData);
   if (!Array.isArray(cubicData?.handles) || cubicData.handles.length !== 4) return;
 
   deps.deactivateOtherShapeStates(cubicState);
@@ -436,8 +438,8 @@ export function loadCubicCurveFromWall(wall, deps) {
   cubicState.draggingHandle = null;
   cubicState.lastSegmentEditAction = 0;
   cubicState.suppressNextSegmentEditClick = false;
-  cubicState.curveId = cubicData.curveId ?? null;
-  cubicState.wallIds = Array.isArray(cubicData.wallIds) ? [...cubicData.wallIds] : [wall.document.id];
+  cubicState.curveId = curveId;
+  cubicState.wallIds = deps.resolveShapeWallIds(CUBIC_FLAG, "curveId", cubicState.curveId, wall.document.id, clickedData?.wallIds);
   cubicState.wallTypeTool = deps.getWallTypeToolFromDocument(wall.document) ?? cubicData.wallTypeTool ?? "walls";
   cubicState.curveMode = normalizeCubicCurveMode(cubicData.curveMode);
   cubicState.curveModeMemory = {};

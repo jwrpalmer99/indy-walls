@@ -790,7 +790,9 @@ export function cancelRectangleEditingForDeletedWall(wallDocument, deps) {
 }
 
 export function loadRectangleFromWall(wall, deps) {
-  const rectangleData = wall.document.getFlag(deps.MODULE_ID, RECTANGLE_FLAG);
+  const clickedData = wall.document.getFlag(deps.MODULE_ID, RECTANGLE_FLAG);
+  const rectangleId = clickedData?.rectangleId ?? null;
+  const rectangleData = deps.getShapeFlagSourceData(RECTANGLE_FLAG, "rectangleId", rectangleId, clickedData);
   if (!Array.isArray(rectangleData?.handles) || rectangleData.handles.length !== 2) return;
 
   deps.deactivateOtherShapeStates(rectangleState);
@@ -801,8 +803,8 @@ export function loadRectangleFromWall(wall, deps) {
   rectangleState.draggingHandle = null;
   rectangleState.draggingVertex = null;
   rectangleState.hoveredVertex = null;
-  rectangleState.rectangleId = rectangleData.rectangleId ?? null;
-  rectangleState.wallIds = Array.isArray(rectangleData.wallIds) ? [...rectangleData.wallIds] : [wall.document.id];
+  rectangleState.rectangleId = rectangleId;
+  rectangleState.wallIds = deps.resolveShapeWallIds(RECTANGLE_FLAG, "rectangleId", rectangleState.rectangleId, wall.document.id, clickedData?.wallIds);
   rectangleState.wallTypeTool = deps.getWallTypeToolFromDocument(wall.document) ?? rectangleData.wallTypeTool ?? "walls";
   rectangleState.sideSegments = normalizeRectangleSideSegments(rectangleData.sideSegments);
   rectangleState.sideRatios = normalizeRectangleSideRatios(rectangleData.sideRatios, rectangleState.sideSegments);
