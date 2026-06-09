@@ -23,6 +23,10 @@
       {
         "id": "colorsettings",
         "type": "module"
+      },
+      {
+        "id": "monks-wall-enhancement",
+        "type": "module"
       }
     ]
   },
