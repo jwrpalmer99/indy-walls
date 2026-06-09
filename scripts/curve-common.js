@@ -22,7 +22,7 @@ export function getEventPoint(layer, point, event, {snapToClosestWallPoint=false
   return {x, y};
 }
 
-export function getMonksClosestWallPoint(point, excludeWallId=null) {
+export function getMonksClosestWallPoint(point, excludeWallId=null, {endpointsOnly=false}={}) {
   if (!point) return null;
 
   const activeState = getMonksSnapActiveState();
@@ -48,6 +48,8 @@ export function getMonksClosestWallPoint(point, excludeWallId=null) {
         closestEndpoint = endpoint;
       }
     }
+
+    if (endpointsOnly) continue;
 
     const segmentPoint = getClosestWallSegmentPoint(point, c);
     if (!segmentPoint) continue;

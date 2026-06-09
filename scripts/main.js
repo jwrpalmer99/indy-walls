@@ -20,7 +20,8 @@ import {
 } from "./editor-session.js";
 import {
   cancelConversionPreview as cancelWallConversionPreview,
-  convertSceneWallsToIndyWalls as convertSceneWallsToIndyWallsImpl
+  convertSceneWallsToIndyWalls as convertSceneWallsToIndyWallsImpl,
+  redrawConversionPreview
 } from "./conversion.js";
 import {
   cancelRegionConversionPreview as cancelRegionConversionPreviewImpl,
@@ -202,6 +203,7 @@ const ACTIVE_TOOL_HIGHLIGHT_BORDER_WIDTH_SETTING = "activeShapeToolHighlightBord
 const SHOW_DOOR_GLYPHS_SETTING = "showDoorGlyphsInEditor";
 const SHOW_SHORTCUT_HELP_SETTING = "showShortcutHelpInEditor";
 const SHORTCUT_HELP_POSITION_SETTING = "shortcutHelpPosition";
+const SHARED_RECTANGLE_CONVERSION_SETTING = "sharedRectangleConversion";
 const RECTANGLE_CONVERSION_TOLERANCE_SETTING = "rectangleConversionTolerance";
 const ELLIPSE_CONVERSION_TOLERANCE_SETTING = "ellipseConversionTolerance";
 const ARC_CONVERSION_TOLERANCE_SETTING = "arcConversionTolerance";
@@ -325,6 +327,15 @@ Hooks.once("init", () => {
     config: false,
     type: Object,
     default: {}
+  });
+  game.settings.register(MODULE_ID, SHARED_RECTANGLE_CONVERSION_SETTING, {
+    name: game.i18n.localize("indy-walls.Settings.SharedRectangleConversion.Name"),
+    hint: game.i18n.localize("indy-walls.Settings.SharedRectangleConversion.Hint"),
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: true,
+    onChange: redrawConversionPreview
   });
   registerConversionToleranceSetting(RECTANGLE_CONVERSION_TOLERANCE_SETTING, "RectangleConversionTolerance");
   registerConversionToleranceSetting(ELLIPSE_CONVERSION_TOLERANCE_SETTING, "EllipseConversionTolerance");
@@ -1099,7 +1110,7 @@ function patchWallsLayer() {
       }
 
       if (rectangleState.draggingHandle === null) return;
-      const point = getSnappedEditorEventPoint(this, event.interactionData.destination, event);
+      const point = getSnappedRectangleDragPoint(this, event);
       setRectangleHandle(rectangleState.draggingHandle, point);
       rectangleState.placed = true;
       autoHideRectangleOverlappingIndyWalls();
@@ -2098,7 +2109,10 @@ function handleEditorDomPointerMove(event) {
     }
     drawPolylinePreview();
   } else if (editorDomDragState.handle !== null) {
-    setRectangleHandle(editorDomDragState.handle, point);
+    const rectanglePoint = rectangleState.initializing
+      ? getSnappedCurrentDomEditorPoint(event, editorDomDragState.handle) ?? point
+      : getRectangleCornerAugmentedSnap(editorDomDragState.handle, point);
+    setRectangleHandle(editorDomDragState.handle, rectanglePoint);
     rectangleState.placed = true;
     autoHideRectangleOverlappingIndyWalls();
     drawRectanglePreview();
@@ -2548,6 +2562,54 @@ function getSnappedDomEditorPoint(event) {
   const point = getDomEditorDragPoint(event);
   if (!point || !canvas?.walls?._getWallEndpointCoordinates) return point ?? null;
   return getSnappedEditorEventPoint(canvas.walls, point, event);
+}
+
+function getSnappedCurrentDomEditorPoint(event, handle=rectangleState.draggingHandle) {
+  if (!canvas?.walls?._getWallEndpointCoordinates) return null;
+  const point = getInteractionPoint(event);
+  return point ? getSnappedRectangleHandlePoint(canvas.walls, point, event, handle) : null;
+}
+
+function getSnappedRectangleDragPoint(layer, event) {
+  const source = rectangleState.initializing
+    ? getInteractionPoint(event) ?? event.interactionData.destination
+    : event.interactionData.destination;
+  return getSnappedRectangleHandlePoint(layer, source, event, rectangleState.draggingHandle);
+}
+
+function getSnappedRectangleHandlePoint(layer, source, event, handle) {
+  const directEndpointSnap = getMonksClosestWallPoint(source, null, {endpointsOnly: true});
+  if (directEndpointSnap) return directEndpointSnap;
+
+  return getRectangleCornerAugmentedSnap(handle, getSnappedEditorEventPoint(layer, source, event));
+}
+
+function getRectangleCornerAugmentedSnap(handle, point) {
+  const geometry = getRectangleDragHandleGeometry(handle, point);
+  if (!geometry) return point;
+
+  const result = {...point};
+  const xSnap = getMonksClosestWallPoint(geometry.xAdjacent, null, {endpointsOnly: true});
+  if (xSnap) result.x = xSnap.x;
+
+  const ySnap = getMonksClosestWallPoint(geometry.yAdjacent, null, {endpointsOnly: true});
+  if (ySnap) result.y = ySnap.y;
+  return result;
+}
+
+function getRectangleDragHandleGeometry(handle, point) {
+  const [a, b] = rectangleState.handles;
+  let opposite = null;
+  if (handle === 0) opposite = b;
+  else if (handle === 1) opposite = a;
+  else if (handle === 2) opposite = {x: b.x, y: a.y};
+  else if (handle === 3) opposite = {x: a.x, y: b.y};
+  if (!opposite) return null;
+
+  return {
+    xAdjacent: {x: point.x, y: opposite.y},
+    yAdjacent: {x: opposite.x, y: point.y}
+  };
 }
 
 function getSnappedEditorEventPoint(layer, point, event) {
@@ -4653,6 +4715,7 @@ function getRectangleDeps() {
     getSceneWallDocuments,
     getWallTypeToolFromDocument,
     hasIndyShapeFlag,
+    isSharedRectangleConversionEnabled,
     hideEditSessionWalls,
     isAltInteraction,
     isRectangleToolActive,
@@ -4732,6 +4795,14 @@ async function applyRectangleWalls() {
 
 function autoHideRectangleOverlappingIndyWalls() {
   return autoHideRectangleOverlappingIndyWallsImpl(getRectangleDeps());
+}
+
+function isSharedRectangleConversionEnabled() {
+  try {
+    return game?.settings?.get?.(MODULE_ID, SHARED_RECTANGLE_CONVERSION_SETTING) !== false;
+  } catch (_error) {
+    return true;
+  }
 }
 
 async function applyEllipseWalls() {

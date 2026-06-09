@@ -296,6 +296,9 @@ export function getRectangleSideGaps(side) {
 
 export function autoHideRectangleOverlappingIndyWalls(deps) {
   if (!rectangleState.placed) return false;
+  if (deps.isSharedRectangleConversionEnabled?.() === false) {
+    return clearAutomaticRectangleSideGaps(deps);
+  }
   const intervalsBySide = getRectangleIndyWallOverlapIntervals(deps);
   let changed = false;
   for (const side of ["top", "right", "bottom", "left"]) {
@@ -308,6 +311,20 @@ export function autoHideRectangleOverlappingIndyWalls(deps) {
     rectangleState.autoSideGaps[side] = state.autoSideGaps;
     rectangleState.wallTypeBySegment = removeRectangleWallTypesForSide(rectangleState.wallTypeBySegment, side);
     rectangleState.wallDataBySegment = removeRectangleWallTypesForSide(rectangleState.wallDataBySegment, side);
+    changed = true;
+  }
+  if (changed) deps.drawRectanglePreview();
+  return changed;
+}
+
+function clearAutomaticRectangleSideGaps(deps) {
+  let changed = false;
+  for (const side of ["top", "right", "bottom", "left"]) {
+    const autoGaps = getRectangleAutoSideGaps(side);
+    if (!autoGaps.length) continue;
+
+    rectangleState.sideGaps[side] = getRectangleSideGaps(side).filter((gap) => !autoGaps.includes(gap));
+    rectangleState.autoSideGaps[side] = [];
     changed = true;
   }
   if (changed) deps.drawRectanglePreview();

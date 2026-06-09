@@ -37,6 +37,7 @@ import {
 
 const MODULE_ID = "indy-walls";
 const LEGACY_CONVERSION_TOLERANCE_SETTING = "conversionTolerance";
+const SHARED_RECTANGLE_CONVERSION_SETTING = "sharedRectangleConversion";
 const RECTANGLE_CONVERSION_TOLERANCE_SETTING = "rectangleConversionTolerance";
 const ELLIPSE_CONVERSION_TOLERANCE_SETTING = "ellipseConversionTolerance";
 const ARC_CONVERSION_TOLERANCE_SETTING = "arcConversionTolerance";
@@ -895,6 +896,15 @@ function getRectangleConversionGroupsFromComponent(component) {
 
   const used = new Set();
   const groups = [];
+  if (!isSharedRectangleConversionEnabled()) {
+    for (const {group} of candidates.sort((a, b) => b.area - a.area)) {
+      if (group.records.some((record) => used.has(record.wall.id))) continue;
+      group.records.forEach((record) => used.add(record.wall.id));
+      groups.push(group);
+    }
+    return groups;
+  }
+
   for (const {group} of candidates.sort((a, b) => a.area - b.area)) {
     const wallIds = new Set(group.records.map((record) => record.wall.id));
     if (![...wallIds].some((id) => !used.has(id))) continue;
@@ -902,6 +912,14 @@ function getRectangleConversionGroupsFromComponent(component) {
     groups.push({...group, allRecords: group.records});
   }
   return applySharedRectangleConversionGaps(groups);
+}
+
+function isSharedRectangleConversionEnabled() {
+  try {
+    return game?.settings?.get?.(MODULE_ID, SHARED_RECTANGLE_CONVERSION_SETTING) !== false;
+  } catch (_error) {
+    return true;
+  }
 }
 
 function getRectangleCandidateBoundaryValues(component, axis) {

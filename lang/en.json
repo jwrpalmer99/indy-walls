@@ -68,6 +68,10 @@
         "Name": "Show shortcut help in Indy shape editor",
         "Hint": "When enabled, Indy shape editor controls include a compact help button showing shortcuts for the current shape tool."
       },
+      "SharedRectangleConversion": {
+        "Name": "Convert adjacent rectangles with shared sides",
+        "Hint": "When enabled, conversion can detect adjacent rectangles that share full or partial wall sides and hide duplicate shared segments. Disable this to use the older exclusive-wall rectangle detection."
+      },
       "RectangleConversionTolerance": {
         "Name": "Convert to Indy Walls rectangle tolerance",
         "Hint": "Multiplier for how loosely plain walls may fit detected rectangles during conversion. Lower values are stricter; higher values convert more aggressively."
