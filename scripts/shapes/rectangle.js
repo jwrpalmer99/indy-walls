@@ -47,6 +47,12 @@ export const rectangleState = {
     bottom: [],
     left: []
   },
+  autoSideGaps: {
+    top: [],
+    right: [],
+    bottom: [],
+    left: []
+  },
   graphics: null,
   handles: [
     {x: 0, y: 0},
@@ -132,6 +138,10 @@ export function getDefaultRectangleSideGaps() {
     bottom: [],
     left: []
   };
+}
+
+export function getDefaultRectangleAutoSideGaps() {
+  return getDefaultRectangleSideGaps();
 }
 
 export function cloneRectangleSideRatios(source) {
@@ -284,6 +294,151 @@ export function getRectangleSideGaps(side) {
   return gaps;
 }
 
+export function autoHideRectangleOverlappingIndyWalls(deps) {
+  if (!rectangleState.placed) return false;
+  const intervalsBySide = getRectangleIndyWallOverlapIntervals(deps);
+  let changed = false;
+  for (const side of ["top", "right", "bottom", "left"]) {
+    const state = getRectangleSideStateForGapIntervals(side, intervalsBySide[side]);
+    if (!state) continue;
+    rectangleState.sideEnabled[side] = true;
+    rectangleState.sideSegments[side] = state.sideSegments;
+    rectangleState.sideRatios[side] = state.sideRatios;
+    rectangleState.sideGaps[side] = state.sideGaps;
+    rectangleState.autoSideGaps[side] = state.autoSideGaps;
+    rectangleState.wallTypeBySegment = removeRectangleWallTypesForSide(rectangleState.wallTypeBySegment, side);
+    rectangleState.wallDataBySegment = removeRectangleWallTypesForSide(rectangleState.wallDataBySegment, side);
+    changed = true;
+  }
+  if (changed) deps.drawRectanglePreview();
+  return changed;
+}
+
+function getRectangleIndyWallOverlapIntervals(deps) {
+  const result = {top: [], right: [], bottom: [], left: []};
+  const walls = deps.getSceneWallDocuments?.() ?? [];
+  const ownWallIds = new Set(rectangleState.wallIds ?? []);
+  const tolerance = deps.getScaledRadius?.(4) ?? 4;
+  const bounds = getRectangleBounds();
+
+  for (const wall of walls) {
+    const document = wall?.document ?? wall;
+    if (!document || ownWallIds.has(document.id)) continue;
+    if (!deps.hasIndyShapeFlag?.(document)) continue;
+    const c = document.c;
+    if (!Array.isArray(c) || c.length < 4) continue;
+    const start = {x: Number(c[0]) || 0, y: Number(c[1]) || 0};
+    const end = {x: Number(c[2]) || 0, y: Number(c[3]) || 0};
+    for (const [side, sideStart, sideEnd] of getRectangleBoundsSides(bounds)) {
+      const interval = getCollinearSegmentOverlapRatio(sideStart, sideEnd, start, end, tolerance);
+      if (interval) result[side].push(interval);
+    }
+  }
+
+  return result;
+}
+
+function getRectangleSideStateForGapIntervals(side, intervals) {
+  const autoIntervals = mergeRectangleGapIntervals(intervals);
+  const previousAutoGaps = getRectangleAutoSideGaps(side);
+  if (!autoIntervals.length && !previousAutoGaps.length) return null;
+
+  const manualIntervals = getManualRectangleSideGapIntervals(side, previousAutoGaps);
+  const sideRatios = [...new Set([
+    ...getPreservedRectangleSideRatios(side, previousAutoGaps),
+    ...manualIntervals.flatMap(([start, end]) => [start, end]),
+    ...autoIntervals.flatMap(([start, end]) => [start, end])
+  ]
+    .filter((ratio) => ratio > 0 && ratio < 1))]
+    .sort((a, b) => a - b);
+  const points = [0, ...sideRatios, 1];
+  const sideGaps = [];
+  const autoSideGaps = [];
+  for (let index = 0; index < points.length - 1; index++) {
+    const center = (points[index] + points[index + 1]) / 2;
+    const auto = autoIntervals.some(([start, end]) => center >= start && center <= end);
+    const manual = manualIntervals.some(([start, end]) => center >= start && center <= end);
+    if (auto || manual) sideGaps.push(index);
+    if (auto) autoSideGaps.push(index);
+  }
+  return {
+    sideSegments: Math.max(points.length - 1, 1),
+    sideRatios,
+    sideGaps,
+    autoSideGaps
+  };
+}
+
+function getManualRectangleSideGapIntervals(side, previousAutoGaps) {
+  const gaps = getRectangleSideGaps(side);
+  if (!gaps.length) return [];
+  const auto = new Set(previousAutoGaps);
+  const points = [0, ...getRectangleSideRatios(side), 1];
+  return gaps
+    .filter((gap) => !auto.has(gap) && points[gap] !== undefined && points[gap + 1] !== undefined)
+    .map((gap) => [points[gap], points[gap + 1]]);
+}
+
+function getPreservedRectangleSideRatios(side, previousAutoGaps) {
+  const ratios = rectangleState.sideRatios?.[side] ?? [];
+  if (!previousAutoGaps.length) return ratios;
+
+  const auto = new Set(previousAutoGaps);
+  return ratios.filter((_ratio, index) => !auto.has(index) && !auto.has(index + 1));
+}
+
+function getRectangleAutoSideGaps(side) {
+  const count = rectangleState.sideSegments[side] ?? DEFAULT_RECTANGLE_SEGMENTS;
+  return reconcileRectangleSideGaps(rectangleState.autoSideGaps?.[side], count);
+}
+
+function mergeRectangleGapIntervals(intervals) {
+  const ordered = (intervals ?? [])
+    .map(([start, end]) => [clamp(Math.min(start, end), 0, 1), clamp(Math.max(start, end), 0, 1)])
+    .filter(([start, end]) => (end - start) > 0.0001)
+    .sort((a, b) => a[0] - b[0]);
+  const merged = [];
+  for (const interval of ordered) {
+    const previous = merged.at(-1);
+    if (previous && interval[0] <= previous[1] + 0.0001) previous[1] = Math.max(previous[1], interval[1]);
+    else merged.push([...interval]);
+  }
+  return merged;
+}
+
+function getCollinearSegmentOverlapRatio(sideStart, sideEnd, wallStart, wallEnd, tolerance) {
+  const sideHorizontal = Math.abs(sideStart.y - sideEnd.y) <= tolerance;
+  const wallHorizontal = Math.abs(wallStart.y - wallEnd.y) <= tolerance;
+  const sideVertical = Math.abs(sideStart.x - sideEnd.x) <= tolerance;
+  const wallVertical = Math.abs(wallStart.x - wallEnd.x) <= tolerance;
+  if (sideHorizontal) {
+    if (!wallHorizontal || Math.abs(((wallStart.y + wallEnd.y) / 2) - sideStart.y) > tolerance) return null;
+    return getAxisOverlapRatio(sideStart.x, sideEnd.x, wallStart.x, wallEnd.x, tolerance);
+  }
+  if (sideVertical) {
+    if (!wallVertical || Math.abs(((wallStart.x + wallEnd.x) / 2) - sideStart.x) > tolerance) return null;
+    return getAxisOverlapRatio(sideStart.y, sideEnd.y, wallStart.y, wallEnd.y, tolerance);
+  }
+  return null;
+}
+
+function getAxisOverlapRatio(sideStart, sideEnd, wallStart, wallEnd, tolerance) {
+  const sideMin = Math.min(sideStart, sideEnd);
+  const sideMax = Math.max(sideStart, sideEnd);
+  const wallMin = Math.min(wallStart, wallEnd);
+  const wallMax = Math.max(wallStart, wallEnd);
+  const overlapStart = Math.max(sideMin, wallMin);
+  const overlapEnd = Math.min(sideMax, wallMax);
+  if (overlapEnd <= overlapStart + tolerance) return null;
+
+  const length = sideEnd - sideStart;
+  if (!length) return null;
+  return [
+    clamp((overlapStart - sideStart) / length, 0, 1),
+    clamp((overlapEnd - sideStart) / length, 0, 1)
+  ].sort((a, b) => a - b);
+}
+
 export function getRectangleSegmentIndexAt(side, ratio) {
   const ratios = getRectangleSideRatios(side);
   const points = [0, ...ratios, 1];
@@ -434,6 +589,7 @@ function addRectangleVertexAt({side, ratio}, deps) {
     rectangleState.sideSegments[side] = DEFAULT_RECTANGLE_SEGMENTS;
     rectangleState.sideRatios[side] = [];
     rectangleState.sideGaps[side] = [];
+    rectangleState.autoSideGaps[side] = [];
     deps.drawRectanglePreview();
     return true;
   }
@@ -451,6 +607,7 @@ function addRectangleVertexAt({side, ratio}, deps) {
   rectangleState.sideSegments[side] += 1;
   rectangleState.sideRatios[side] = reconcileRectangleSideRatios([...ratios, ratio], rectangleState.sideSegments[side]);
   rectangleState.sideGaps[side] = shiftRectangleSideGapsForInsert(rectangleState.sideGaps[side], splitIndex, rectangleState.sideSegments[side]);
+  rectangleState.autoSideGaps[side] = shiftRectangleSideGapsForInsert(rectangleState.autoSideGaps[side], splitIndex, rectangleState.sideSegments[side]);
   rectangleState.wallTypeBySegment = shiftRectangleWallTypesForInsert(rectangleState.wallTypeBySegment, side, splitIndex, rectangleState.sideSegments[side]);
   rectangleState.wallDataBySegment = shiftRectangleWallTypesForInsert(rectangleState.wallDataBySegment, side, splitIndex, rectangleState.sideSegments[side]);
   deps.drawRectanglePreview();
@@ -479,6 +636,7 @@ function restoreRectangleSegmentAt({side, ratio}, deps) {
   if (!gaps.includes(index)) return false;
 
   rectangleState.sideGaps[side] = gaps.filter((gap) => gap !== index);
+  rectangleState.autoSideGaps[side] = getRectangleAutoSideGaps(side).filter((gap) => gap !== index);
   deps.drawRectanglePreview();
   return true;
 }
@@ -493,6 +651,7 @@ export function removeRectangleVertex(vertex, deps) {
   rectangleState.sideSegments[side] -= 1;
   rectangleState.sideRatios[side] = reconcileRectangleSideRatios(ratios, rectangleState.sideSegments[side]);
   rectangleState.sideGaps[side] = shiftRectangleSideGapsForRemove(rectangleState.sideGaps[side], index, segmentCountBefore);
+  rectangleState.autoSideGaps[side] = shiftRectangleSideGapsForRemove(rectangleState.autoSideGaps[side], index, segmentCountBefore);
   rectangleState.wallTypeBySegment = shiftRectangleWallTypesForRemove(rectangleState.wallTypeBySegment, side, index, segmentCountBefore);
   rectangleState.wallDataBySegment = shiftRectangleWallTypesForRemove(rectangleState.wallDataBySegment, side, index, segmentCountBefore);
   rectangleState.hoveredVertex = null;
@@ -574,6 +733,7 @@ function disableRectangleSide(side, deps) {
   rectangleState.sideSegments[side] = DEFAULT_RECTANGLE_SEGMENTS;
   rectangleState.sideRatios[side] = [];
   rectangleState.sideGaps[side] = [];
+  rectangleState.autoSideGaps[side] = [];
   rectangleState.wallTypeBySegment = removeRectangleWallTypesForSide(rectangleState.wallTypeBySegment, side);
   rectangleState.wallDataBySegment = removeRectangleWallTypesForSide(rectangleState.wallDataBySegment, side);
   rectangleState.hoveredVertex = null;
@@ -726,6 +886,7 @@ export async function applyRectangleWalls(deps) {
             sideRatios: cloneRectangleSideRatios(rectangleState.sideRatios),
             sideEnabled: cloneRectangleSideEnabled(rectangleState.sideEnabled),
             sideGaps: cloneRectangleSideGaps(rectangleState.sideGaps),
+            autoSideGaps: cloneRectangleSideGaps(rectangleState.autoSideGaps),
             wallTypeBySegment: deps.cloneWallTypeBySegment(rectangleState.wallTypeBySegment),
             wallDataBySegment: deps.cloneWallDataBySegment(rectangleState.wallDataBySegment),
             wallTypeTool: rectangleState.wallTypeTool
@@ -771,6 +932,7 @@ export function clearRectanglePreview(deps) {
   rectangleState.sideRatios = getDefaultRectangleSideRatios();
   rectangleState.sideEnabled = getDefaultRectangleSideEnabled();
   rectangleState.sideGaps = getDefaultRectangleSideGaps();
+  rectangleState.autoSideGaps = getDefaultRectangleAutoSideGaps();
   deps.destroyRectanglePreviewGraphics();
   rectangleState.graphics = null;
   deps.setRectangleEditingState(false);
@@ -810,6 +972,7 @@ export function loadRectangleFromWall(wall, deps) {
   rectangleState.sideRatios = normalizeRectangleSideRatios(rectangleData.sideRatios, rectangleState.sideSegments);
   rectangleState.sideEnabled = normalizeRectangleSideEnabled(rectangleData.sideEnabled);
   rectangleState.sideGaps = normalizeRectangleSideGaps(rectangleData.sideGaps, rectangleState.sideSegments);
+  rectangleState.autoSideGaps = normalizeRectangleSideGaps(rectangleData.autoSideGaps, rectangleState.sideSegments);
   rectangleState.handles = rectangleData.handles.map((handle) => ({
     x: Number(handle.x) || 0,
     y: Number(handle.y) || 0

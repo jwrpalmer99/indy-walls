@@ -68,6 +68,7 @@ const CONVERSION_FIT_TOLERANCE_PIXEL_CAPS = {
   bezier: 32
 };
 const ELLIPSE_ROTATION_SWEEP_ERROR_MULTIPLIER = 10;
+const RECTANGLE_BRUTE_FORCE_BOUNDS_LIMIT = 100000;
 
 let convertingToIndyWalls = false;
 let conversionPreviewSession = null;
@@ -100,23 +101,34 @@ export async function commitConversionPreview() {
   const plan = conversionPreviewSession.plan;
   clearConversionPreview();
   const timing = createConversionTiming();
-  const metadataEntries = measureConversionTiming(timing, "metadata.extract", () => getShapeMetadataEntriesFromWallData(plan.updates, MODULE_ID));
+  const wallData = [...(plan.updates ?? []), ...(plan.creates ?? [])];
+  const metadataEntries = measureConversionTiming(timing, "metadata.extract", () => getShapeMetadataEntriesFromWallData(wallData, MODULE_ID));
   await measureConversionTimingAsync(timing, "metadata.mergeSceneFlag", () => mergeSceneShapeMetadata(canvas.scene, MODULE_ID, metadataEntries));
-  const updates = measureConversionTiming(timing, "metadata.compactWallFlags", () => plan.updates.map((update) => {
+  const updates = measureConversionTiming(timing, "metadata.compactWallFlags", () => (plan.updates ?? []).map((update) => {
     const data = foundry.utils.deepClone(update);
     compactWallShapeMetadata(data, MODULE_ID);
     return data;
   }));
-  await measureConversionTimingAsync(timing, "foundry.updateWalls", () => canvas.scene.updateEmbeddedDocuments("Wall", updates));
+  const creates = measureConversionTiming(timing, "metadata.compactNewWallFlags", () => (plan.creates ?? []).map((create) => {
+    const data = foundry.utils.deepClone(create);
+    compactWallShapeMetadata(data, MODULE_ID);
+    return data;
+  }));
+  const deletes = plan.deletes ?? [];
+  if (deletes.length) await measureConversionTimingAsync(timing, "foundry.deleteWalls", () => canvas.scene.deleteEmbeddedDocuments("Wall", deletes));
+  if (updates.length) await measureConversionTimingAsync(timing, "foundry.updateWalls", () => canvas.scene.updateEmbeddedDocuments("Wall", updates));
+  if (creates.length) await measureConversionTimingAsync(timing, "foundry.createWalls", () => canvas.scene.createEmbeddedDocuments("Wall", creates));
   logConversionTiming("commit", {
     ...timing,
     counts: {
       updates: plan.updates.length,
+      creates: plan.creates?.length ?? 0,
+      deletes: deletes.length,
       metadataEntries: Object.keys(metadataEntries ?? {}).length
     }
   });
   ui.notifications?.info(game.i18n.format("indy-walls.Notifications.WallsConvertedToIndy", {
-    count: plan.updates.length,
+    count: plan.updates.length + (plan.creates?.length ?? 0),
     rectangles: plan.rectangleGroups.length,
     ellipses: plan.ellipseGroups.length,
     polylines: plan.polylineGroups.length
@@ -212,6 +224,7 @@ function getSceneWallConversionPlan(baseCandidates=null) {
 
     const rectangleGroups = measureConversionTiming(timing, "rectangles.detect", () => detectRectangleConversionGroups(candidates));
     timing.counts.rectangles = rectangleGroups.length;
+    debugRectangleConversionGroups(rectangleGroups);
     const usedIds = new Set(rectangleGroups.flatMap((group) => group.records.map((record) => record.wall.id)));
     const remaining = measureConversionTiming(timing, "rectangles.filterRemaining", () => candidates.filter((candidate) => !usedIds.has(candidate.wall.id)));
     timing.counts.remaining = remaining.length;
@@ -220,15 +233,22 @@ function getSceneWallConversionPlan(baseCandidates=null) {
     const refinedPolylines = measureConversionTiming(timing, "polylines.refine", () => refineConvertedPolylineGroups(polylineBaseGroups));
     timing.counts.ellipses = refinedPolylines.ellipseGroups.length;
     timing.counts.polylines = refinedPolylines.polylineGroups.length;
+    const rectangleWallData = measureConversionTiming(timing, "rectangles.updates.build", () => rectangleGroups.flatMap((group) => buildRectangleConversionUpdates(group)));
     const updates = measureConversionTiming(timing, "updates.build", () => [
-      ...rectangleGroups.flatMap((group) => buildRectangleConversionUpdates(group)),
+      ...rectangleWallData.filter((data) => !data._create),
       ...refinedPolylines.ellipseGroups.flatMap((group) => buildEllipseConversionUpdates(group)),
       ...refinedPolylines.polylineGroups.flatMap((group) => buildPolylineConversionUpdates(group))
     ]);
+    const creates = rectangleWallData.filter((data) => data._create).map(({_create, ...data}) => data);
+    const deletes = [...new Set(rectangleGroups.flatMap((group) => group.deleteWallIds ?? []))];
     timing.counts.updates = updates.length;
+    timing.counts.creates = creates.length;
+    timing.counts.deletes = deletes.length;
 
     return {
       updates,
+      creates,
+      deletes,
       rectangleGroups,
       ellipseGroups: refinedPolylines.ellipseGroups,
       polylineGroups: refinedPolylines.polylineGroups,
@@ -236,6 +256,42 @@ function getSceneWallConversionPlan(baseCandidates=null) {
     };
   } finally {
     activeConversionTiming = previousTiming;
+  }
+}
+
+function debugRectangleConversionGroups(groups) {
+  if (!isConversionDebugEnabled()) return;
+  console.debug(`${MODULE_ID} | rectangle conversion groups`, groups.map((group, index) => ({
+    index,
+    bounds: getRectangleGroupBounds(group),
+    records: group.records.map((record) => ({
+      id: record.wall.id,
+      side: record.side,
+      index: record.index,
+      c: record.wall.c
+    })),
+    sideSegments: group.sideSegments,
+    sideRatios: group.sideRatios,
+    sideGaps: group.sideGaps
+  })));
+}
+
+function getRectangleGroupBounds(group) {
+  const [a, b] = group.handles ?? [];
+  if (!a || !b) return null;
+  return {
+    minX: Math.min(a.x, b.x),
+    minY: Math.min(a.y, b.y),
+    maxX: Math.max(a.x, b.x),
+    maxY: Math.max(a.y, b.y)
+  };
+}
+
+function isConversionDebugEnabled() {
+  try {
+    return game?.settings?.get?.(MODULE_ID, "debugShapeSelection") === true;
+  } catch (_error) {
+    return false;
   }
 }
 
@@ -839,12 +895,13 @@ function getRectangleConversionGroupsFromComponent(component) {
 
   const used = new Set();
   const groups = [];
-  for (const {group} of candidates.sort((a, b) => b.area - a.area)) {
-    if (group.records.some((record) => used.has(record.wall.id))) continue;
-    group.records.forEach((record) => used.add(record.wall.id));
-    groups.push(group);
+  for (const {group} of candidates.sort((a, b) => a.area - b.area)) {
+    const wallIds = new Set(group.records.map((record) => record.wall.id));
+    if (![...wallIds].some((id) => !used.has(id))) continue;
+    wallIds.forEach((id) => used.add(id));
+    groups.push({...group, allRecords: group.records});
   }
-  return groups;
+  return applySharedRectangleConversionGaps(groups);
 }
 
 function getRectangleCandidateBoundaryValues(component, axis) {
@@ -858,7 +915,8 @@ function getRectangleBoundsCandidates(component, xs, ys) {
   const xPairs = (xs.length * (xs.length - 1)) / 2;
   const yPairs = (ys.length * (ys.length - 1)) / 2;
   const bruteForceCount = xPairs * yPairs;
-  if (bruteForceCount <= 6000) {
+  if (bruteForceCount <= RECTANGLE_BRUTE_FORCE_BOUNDS_LIMIT) {
+    activeConversionTiming && (activeConversionTiming.counts.rectangleBruteForceBounds = (activeConversionTiming.counts.rectangleBruteForceBounds ?? 0) + bruteForceCount);
     const bounds = [];
     for (let xi = 0; xi < xs.length - 1; xi++) {
       for (let xj = xi + 1; xj < xs.length; xj++) {
@@ -972,11 +1030,19 @@ function getRectangleConversionGroupForBounds(component, {minX, minY, maxX, maxY
   const sideGaps = {top: [], right: [], bottom: [], left: []};
   const records = [];
   for (const side of ["top", "right", "bottom", "left"]) {
-    ordered[side].forEach((item, index) => records.push({wall: item.candidate.wall, side, index}));
+    ordered[side].forEach((item, index) => records.push({
+      wall: item.candidate.wall,
+      sourceWall: item.candidate.wall,
+      side,
+      index,
+      start: item.start,
+      end: item.end
+    }));
   }
 
   return {
     records,
+    allRecords: records,
     levelKey: component[0]?.levelKey ?? "",
     handles: [{x: minX, y: minY}, {x: maxX, y: maxY}],
     sideSegments,
@@ -986,6 +1052,212 @@ function getRectangleConversionGroupForBounds(component, {minX, minY, maxX, maxY
   };
 }
 
+function applySharedRectangleConversionGaps(groups) {
+  const ownerByWallId = new Map();
+  const recordsByWallId = new Map();
+  for (const group of groups) {
+    for (const record of group.allRecords ?? group.records ?? []) {
+      if (!ownerByWallId.has(record.wall.id)) ownerByWallId.set(record.wall.id, group);
+      if (!recordsByWallId.has(record.wall.id)) recordsByWallId.set(record.wall.id, []);
+      recordsByWallId.get(record.wall.id).push({group, record});
+    }
+  }
+
+  const groupOrder = new Map(groups.map((group, index) => [group, index]));
+  const hiddenIntervalsByRecord = getSharedRectangleHiddenIntervals(groups, groupOrder);
+  const originalWallAllocated = new Set();
+
+  return groups.map((group) => {
+    const hiddenIntervals = {top: [], right: [], bottom: [], left: []};
+    const deleteWallIds = [];
+    const records = [];
+    for (const record of group.allRecords ?? group.records ?? []) {
+      const recordHiddenIntervals = mergeRectangleConversionIntervals(hiddenIntervalsByRecord.get(record) ?? []);
+      hiddenIntervals[record.side].push(...recordHiddenIntervals);
+      const visibleIntervals = getRectangleRecordVisibleIntervals(record, recordHiddenIntervals);
+      if (!visibleIntervals.length && recordHiddenIntervals.length && ownerByWallId.get(record.wall.id) === group) {
+        deleteWallIds.push(record.wall.id);
+      }
+      const originalInterval = !originalWallAllocated.has(record.wall.id)
+        ? getLongestRectangleInterval(visibleIntervals)
+        : null;
+      for (const interval of visibleIntervals) {
+        const keepOriginal = interval === originalInterval;
+        if (keepOriginal) originalWallAllocated.add(record.wall.id);
+        records.push({
+          ...(keepOriginal ? record : getCreatedRectangleRecord(record)),
+          start: interval[0],
+          end: interval[1]
+        });
+      }
+    }
+    const sideState = getRectangleSideStateFromRecords(group, records, hiddenIntervals);
+    return {
+      ...group,
+      records: sideState.records,
+      deleteWallIds,
+      sideSegments: sideState.sideSegments,
+      sideRatios: sideState.sideRatios,
+      sideGaps: sideState.sideGaps
+    };
+  }).filter((group) => group.records.length);
+}
+
+function getSharedRectangleHiddenIntervals(groups, groupOrder) {
+  const result = new WeakMap();
+  const records = groups.flatMap((group) => (group.allRecords ?? group.records ?? []).map((record) => ({group, record})));
+  for (let i = 0; i < records.length - 1; i++) {
+    for (let j = i + 1; j < records.length; j++) {
+      const a = records[i];
+      const b = records[j];
+      if (a.group === b.group) continue;
+      const overlap = getRectangleSideRecordOverlap(a.group, a.record, b.group, b.record);
+      if (!overlap) continue;
+
+      const hide = (groupOrder.get(a.group) ?? 0) <= (groupOrder.get(b.group) ?? 0) ? b : a;
+      if (!result.has(hide.record)) result.set(hide.record, []);
+      result.get(hide.record).push(overlap);
+    }
+  }
+  return result;
+}
+
+function getRectangleSideRecordOverlap(aGroup, aRecord, bGroup, bRecord) {
+  const aLine = getRectangleSideRecordLine(aGroup, aRecord);
+  const bLine = getRectangleSideRecordLine(bGroup, bRecord);
+  if (!aLine || !bLine || aLine.axis !== bLine.axis) return null;
+  const tolerance = Math.max(aLine.tolerance, bLine.tolerance, 1);
+  if (Math.abs(aLine.line - bLine.line) > tolerance) return null;
+  return getRectangleRecordOverlapInterval(aRecord, bRecord, tolerance);
+}
+
+function getRectangleSideRecordLine(group, record) {
+  const bounds = getRectangleGroupBounds(group);
+  if (!bounds) return null;
+  const tolerance = getRectangleBoundsTolerance(bounds);
+  if (record.side === "top") return {axis: "x", line: bounds.minY, tolerance};
+  if (record.side === "bottom") return {axis: "x", line: bounds.maxY, tolerance};
+  if (record.side === "right") return {axis: "y", line: bounds.maxX, tolerance};
+  if (record.side === "left") return {axis: "y", line: bounds.minX, tolerance};
+  return null;
+}
+
+function getCreatedRectangleRecord(record) {
+  return {
+    ...record,
+    wallId: foundry.utils.randomID(),
+    create: true,
+    sourceWall: record.sourceWall ?? record.wall
+  };
+}
+
+function getRectangleRecordOverlapInterval(record, other, tolerance=0.0001) {
+  if (!record || !other) return null;
+  const start = Math.max(Math.min(record.start, record.end), Math.min(other.start, other.end));
+  const end = Math.min(Math.max(record.start, record.end), Math.max(other.start, other.end));
+  if (end <= start + tolerance) return null;
+  return [start, end];
+}
+
+function getRectangleRecordVisibleIntervals(record, hiddenIntervals) {
+  if (!record) return [];
+  let intervals = [[Math.min(record.start, record.end), Math.max(record.start, record.end)]];
+  for (const hidden of hiddenIntervals ?? []) {
+    intervals = intervals.flatMap((interval) => subtractRectangleInterval(interval, hidden));
+  }
+  return intervals.filter(([a, b]) => b > a + 0.0001);
+}
+
+function subtractRectangleInterval(interval, hidden) {
+  const start = interval[0];
+  const end = interval[1];
+  const hiddenStart = Math.max(start, Math.min(hidden[0], hidden[1]));
+  const hiddenEnd = Math.min(end, Math.max(hidden[0], hidden[1]));
+  if (hiddenEnd <= hiddenStart + 0.0001) return [interval];
+  return [
+    [start, hiddenStart],
+    [hiddenEnd, end]
+  ].filter(([a, b]) => b > a + 0.0001);
+}
+
+function getLongestRectangleInterval(intervals) {
+  return [...(intervals ?? [])].sort((a, b) => (b[1] - b[0]) - (a[1] - a[0]))[0] ?? null;
+}
+
+function mergeRectangleConversionIntervals(intervals) {
+  const ordered = (intervals ?? [])
+    .map(([start, end]) => [Math.min(start, end), Math.max(start, end)])
+    .filter(([start, end]) => end > start + 0.0001)
+    .sort((a, b) => a[0] - b[0]);
+  const merged = [];
+  for (const interval of ordered) {
+    const previous = merged.at(-1);
+    if (previous && interval[0] <= previous[1] + 0.0001) previous[1] = Math.max(previous[1], interval[1]);
+    else merged.push([...interval]);
+  }
+  return merged;
+}
+
+function getRectangleSideStateFromRecords(group, records, hiddenIntervals) {
+  const sideSegments = {...group.sideSegments};
+  const sideRatios = cloneRectangleSideRatios(group.sideRatios);
+  const sideGaps = cloneRectangleSideGaps(group.sideGaps);
+  const recordsBySide = {top: [], right: [], bottom: [], left: []};
+  for (const record of records) recordsBySide[record.side]?.push(record);
+
+  for (const side of ["top", "right", "bottom", "left"]) {
+    const intervals = [...(hiddenIntervals[side] ?? [])];
+    const sideRecords = recordsBySide[side];
+    if (!intervals.length) continue;
+
+    const points = new Set([0, 1]);
+    for (const ratio of sideRatios[side] ?? []) points.add(clamp(ratio, 0, 1));
+    for (const record of sideRecords) {
+      for (const ratio of getRectangleRecordIntervalRatios(group, side, [record.start, record.end])) {
+        points.add(ratio);
+      }
+    }
+    for (const interval of intervals) {
+      for (const ratio of getRectangleRecordIntervalRatios(group, side, interval)) {
+        points.add(ratio);
+      }
+    }
+
+    const ordered = [...points].filter((ratio) => Number.isFinite(ratio)).sort((a, b) => a - b);
+    sideRatios[side] = ordered.slice(1, -1);
+    sideSegments[side] = Math.max(ordered.length - 1, 1);
+    const hiddenRatioIntervals = intervals.map((interval) => getRectangleRecordIntervalRatios(group, side, interval));
+    sideGaps[side] = [];
+    for (let index = 0; index < ordered.length - 1; index++) {
+      const center = (ordered[index] + ordered[index + 1]) / 2;
+      if (hiddenRatioIntervals.some(([start, end]) => center >= Math.min(start, end) && center <= Math.max(start, end))) {
+        sideGaps[side].push(index);
+      }
+    }
+    for (const record of sideRecords) {
+      const [start, end] = getRectangleRecordIntervalRatios(group, side, [record.start, record.end]);
+      const center = (start + end) / 2;
+      record.index = Math.max(ordered.findIndex((ratio, index) => index < ordered.length - 1 && center >= ratio && center <= ordered[index + 1]), 0);
+    }
+  }
+
+  return {records, sideSegments, sideRatios, sideGaps};
+}
+
+function getRectangleRecordIntervalRatios(group, side, interval) {
+  const bounds = getRectangleGroupBounds(group);
+  if (!bounds || !interval) return [0, 1];
+  const [start, end] = interval;
+  const min = side === "top" || side === "bottom" ? bounds.minX : bounds.minY;
+  const max = side === "top" || side === "bottom" ? bounds.maxX : bounds.maxY;
+  const length = max - min;
+  if (length <= 0) return [0, 1];
+  const forward = side === "top" || side === "right";
+  const ratioA = forward ? (start - min) / length : (max - start) / length;
+  const ratioB = forward ? (end - min) / length : (max - end) / length;
+  return [clamp(ratioA, 0, 1), clamp(ratioB, 0, 1)].sort((a, b) => a - b);
+}
+
 function getRectangleSideConversionItem(candidate, bounds, tolerance) {
   const {minX, minY, maxX, maxY} = bounds;
   const lowX = Math.min(candidate.a.x, candidate.b.x);
@@ -993,19 +1265,35 @@ function getRectangleSideConversionItem(candidate, bounds, tolerance) {
   const lowY = Math.min(candidate.a.y, candidate.b.y);
   const highY = Math.max(candidate.a.y, candidate.b.y);
 
-  if (candidate.horizontal && Math.abs(candidate.a.y - minY) <= tolerance && lowX >= minX - tolerance && highX <= maxX + tolerance) {
-    return {candidate, side: "top", start: clamp(lowX, minX, maxX), end: clamp(highX, minX, maxX)};
+  if (candidate.horizontal && Math.abs(candidate.a.y - minY) <= tolerance) {
+    const item = getRectangleOverlappingSideItem(candidate, "top", lowX, highX, minX, maxX, tolerance);
+    if (item) return item;
   }
-  if (candidate.horizontal && Math.abs(candidate.a.y - maxY) <= tolerance && lowX >= minX - tolerance && highX <= maxX + tolerance) {
-    return {candidate, side: "bottom", start: clamp(lowX, minX, maxX), end: clamp(highX, minX, maxX)};
+  if (candidate.horizontal && Math.abs(candidate.a.y - maxY) <= tolerance) {
+    const item = getRectangleOverlappingSideItem(candidate, "bottom", lowX, highX, minX, maxX, tolerance);
+    if (item) return item;
   }
-  if (candidate.vertical && Math.abs(candidate.a.x - maxX) <= tolerance && lowY >= minY - tolerance && highY <= maxY + tolerance) {
-    return {candidate, side: "right", start: clamp(lowY, minY, maxY), end: clamp(highY, minY, maxY)};
+  if (candidate.vertical && Math.abs(candidate.a.x - maxX) <= tolerance) {
+    const item = getRectangleOverlappingSideItem(candidate, "right", lowY, highY, minY, maxY, tolerance);
+    if (item) return item;
   }
-  if (candidate.vertical && Math.abs(candidate.a.x - minX) <= tolerance && lowY >= minY - tolerance && highY <= maxY + tolerance) {
-    return {candidate, side: "left", start: clamp(lowY, minY, maxY), end: clamp(highY, minY, maxY)};
+  if (candidate.vertical && Math.abs(candidate.a.x - minX) <= tolerance) {
+    const item = getRectangleOverlappingSideItem(candidate, "left", lowY, highY, minY, maxY, tolerance);
+    if (item) return item;
   }
   return null;
+}
+
+function getRectangleOverlappingSideItem(candidate, side, low, high, min, max, tolerance) {
+  const start = Math.max(low, min);
+  const end = Math.min(high, max);
+  if (end <= start + tolerance) return null;
+  return {
+    candidate,
+    side,
+    start: clamp(start, min, max),
+    end: clamp(end, min, max)
+  };
 }
 
 function rectangleSideFullyCovered(items, min, max, tolerance) {
@@ -1035,17 +1323,18 @@ function buildRectangleConversionUpdates(group) {
   const wallDataBySegment = {};
   for (const record of group.records) {
     const key = getRectangleSegmentKey(record);
-    const tool = getWallTypeToolFromDocument(record.wall);
+    const sourceWall = record.sourceWall ?? record.wall;
+    const tool = getWallTypeToolFromDocument(sourceWall);
     if (tool) wallTypeBySegment[key] = tool;
-    const preserved = getPreservedWallDataFromDocument(record.wall, MODULE_ID);
+    const preserved = getPreservedWallDataFromDocument(sourceWall, MODULE_ID);
     if (preserved) wallDataBySegment[key] = preserved;
   }
   const wallTypeTool = getMostCommonWallTypeTool(Object.values(wallTypeBySegment));
 
-  return group.records.map((record, index) => ({
-    _id: record.wall.id,
-    c: coordinates[getRectangleSegmentKey(record)] ?? record.wall.c,
-    [`flags.${MODULE_ID}.${RECTANGLE_FLAG}`]: {
+  return group.records.map((record, index) => {
+    const sourceWall = record.sourceWall ?? record.wall;
+    const wallId = record.wallId ?? record.wall.id;
+    const rectangleFlag = {
       rectangleId,
       index,
       side: record.side,
@@ -1059,8 +1348,32 @@ function buildRectangleConversionUpdates(group) {
       wallTypeBySegment: index === 0 ? cloneWallTypeBySegment(wallTypeBySegment) : {},
       wallDataBySegment: index === 0 ? cloneWallDataBySegment(wallDataBySegment) : {},
       wallTypeTool
-    }
-  }));
+    };
+    const data = record.create
+      ? {
+        ...getWallSourceData(sourceWall),
+        _id: wallId,
+        _create: true,
+        c: coordinates[getRectangleSegmentKey(record)] ?? sourceWall.c,
+        flags: {
+          ...(getWallSourceData(sourceWall).flags ?? {}),
+          [MODULE_ID]: {
+            ...(getWallSourceData(sourceWall).flags?.[MODULE_ID] ?? {}),
+            [RECTANGLE_FLAG]: rectangleFlag
+          }
+        }
+      }
+      : {
+        _id: wallId,
+        c: coordinates[getRectangleSegmentKey(record)] ?? sourceWall.c,
+        [`flags.${MODULE_ID}.${RECTANGLE_FLAG}`]: rectangleFlag
+      };
+    return data;
+  });
+}
+
+function getWallSourceData(wall) {
+  return wall?.toObject ? wall.toObject(false) : foundry.utils.deepClone(wall ?? {});
 }
 
 function getConvertedRectangleWallCoordinates(group) {

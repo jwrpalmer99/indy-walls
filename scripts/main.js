@@ -4,6 +4,7 @@ import {
   ensureEditButtons,
   getEventPoint,
   getHandleAt as getHandleIndexAt,
+  getMonksClosestWallPoint,
   getScaledRadius,
   isEditableTarget,
   positionEditButtons,
@@ -112,6 +113,7 @@ import {
 } from "./shapes/ellipse.js";
 import {
   applyRectangleWalls as applyRectangleWallsImpl,
+  autoHideRectangleOverlappingIndyWalls as autoHideRectangleOverlappingIndyWallsImpl,
   cancelRectangleEditingForDeletedWall as cancelRectangleEditingForDeletedWallImpl,
   changeRectangleSegments as changeRectangleSegmentsImpl,
   cloneRectangleSideEnabled,
@@ -121,6 +123,7 @@ import {
   commitRectangleSideEdit as commitRectangleSideEditImpl,
   drawRectanglePreview as drawRectanglePreviewImpl,
   getExistingRectangleWallIds as getExistingRectangleWallIdsImpl,
+  getDefaultRectangleAutoSideGaps,
   getDefaultRectangleSideEnabled,
   getDefaultRectangleSideGaps,
   getDefaultRectangleSideRatios,
@@ -907,7 +910,7 @@ function patchWallsLayer() {
     event.interactionData.clearPreviewContainer = false;
     const origin = event.interactionData.origin;
     const hitPoint = getInteractionPoint(event) ?? origin;
-    const point = getEventPoint(this, origin, event);
+    const point = getSnappedEditorEventPoint(this, origin, event);
 
     if (isEllipseToolActive()) {
       ellipseState.draggingHandle = getEllipseHandleAt({x: hitPoint.x, y: hitPoint.y});
@@ -950,6 +953,7 @@ function patchWallsLayer() {
         ellipseState.rotation = 0;
         ellipseState.angleGaps = [];
         ellipseState.segmentGaps = [];
+        setInteractionPoint(event.interactionData.origin, point);
         setEllipseHandle(0, point);
         setEllipseHandle(1, point);
       } else {
@@ -1011,6 +1015,8 @@ function patchWallsLayer() {
         rectangleState.sideRatios = getDefaultRectangleSideRatios();
         rectangleState.sideEnabled = getDefaultRectangleSideEnabled();
         rectangleState.sideGaps = getDefaultRectangleSideGaps();
+        rectangleState.autoSideGaps = getDefaultRectangleAutoSideGaps();
+        setInteractionPoint(event.interactionData.origin, point);
         setRectangleHandle(0, point);
         setRectangleHandle(1, point);
       }
@@ -1037,6 +1043,7 @@ function patchWallsLayer() {
       cubicState.curveMode = getCubicInitialCurveMode();
       cubicState.curveModeMemory = {};
       cubicState.segmentGaps = [];
+      setInteractionPoint(event.interactionData.origin, point);
       setHandle(0, point);
       setHandle(1, point);
       setHandle(2, point);
@@ -1057,19 +1064,19 @@ function patchWallsLayer() {
 
     if (isEllipseToolActive()) {
       if (ellipseState.draggingGapHandle) {
-        const point = getEventPoint(this, event.interactionData.destination, event);
+        const point = getSnappedEditorEventPoint(this, event.interactionData.destination, event);
         setEllipseGapHandle(ellipseState.draggingGapHandle, point);
         drawEllipsePreview();
         return;
       }
       if (ellipseState.draggingVertex) {
-        const point = getEventPoint(this, event.interactionData.destination, event);
+        const point = getSnappedEditorEventPoint(this, event.interactionData.destination, event);
         setEllipseRotationFromVertex(ellipseState.draggingVertex, point);
         drawEllipsePreview();
         return;
       }
       if (ellipseState.draggingHandle === null) return;
-      const point = getEventPoint(this, event.interactionData.destination, event);
+      const point = getSnappedEditorEventPoint(this, event.interactionData.destination, event);
       setEllipseResizeHandle(ellipseState.draggingHandle, point, isAltInteraction(event));
       if (ellipseState.initializing) {
         updateEllipseInitialHandles({
@@ -1084,23 +1091,25 @@ function patchWallsLayer() {
 
     if (isRectangleToolActive()) {
       if (rectangleState.draggingVertex) {
-        const point = getEventPoint(this, event.interactionData.destination, event);
+        const point = getSnappedEditorEventPoint(this, event.interactionData.destination, event);
         setRectangleVertex(rectangleState.draggingVertex, point);
+        autoHideRectangleOverlappingIndyWalls();
         drawRectanglePreview();
         return;
       }
 
       if (rectangleState.draggingHandle === null) return;
-      const point = getEventPoint(this, event.interactionData.destination, event);
+      const point = getSnappedEditorEventPoint(this, event.interactionData.destination, event);
       setRectangleHandle(rectangleState.draggingHandle, point);
       rectangleState.placed = true;
+      autoHideRectangleOverlappingIndyWalls();
       drawRectanglePreview();
       return;
     }
 
     if (cubicState.draggingHandle === null) return;
 
-    const point = getEventPoint(this, event.interactionData.destination, event);
+    const point = getSnappedEditorEventPoint(this, event.interactionData.destination, event);
     setHandle(cubicState.draggingHandle, point);
 
     if (cubicState.initializing && cubicState.draggingHandle === 3) {
@@ -1152,6 +1161,7 @@ function patchWallsLayer() {
       rectangleState.draggingVertex = null;
       rectangleState.hoveredVertex = null;
       rectangleState.initializing = false;
+      autoHideRectangleOverlappingIndyWalls();
       event.interactionData.clearPreviewContainer = false;
       resetEditorCursor(event);
       commitEditorOperation(rectangleState);
@@ -1342,7 +1352,7 @@ function registerRectangleCanvasClickHandler() {
 
 function updateLastCanvasPointerPoint(event) {
   if (!isWallControlsActive()) return;
-  const point = getClientInteractionPoint(event);
+  const point = getSnappedClientInteractionPoint(event);
   if (point) lastCanvasPointerState.point = point;
   if (point && isPolylineToolActive() && polylineState.drawing) {
     polylineState.previewPoint = point;
@@ -1696,7 +1706,7 @@ function handlePolylineCanvasContextMenu(event) {
 
 function shouldClosePolylineAtEvent(event) {
   if (polylineState.points.length < 3) return false;
-  const point = getClientInteractionPoint(event);
+  const point = getSnappedClientInteractionPoint(event);
   return isPolylineClosePoint(point) || isPolylineClosePoint(polylineState.points.at(-1));
 }
 
@@ -2058,6 +2068,7 @@ function handleEditorDomPointerMove(event) {
 
   if (editorDomDragState.move) {
     moveEditorShapeToCenter(editorDomDragState.tool, point);
+    if (editorDomDragState.tool === RECTANGLE_TOOL) autoHideRectangleOverlappingIndyWalls();
     drawEditorPreview(editorDomDragState.tool);
   } else if (editorDomDragState.tool === CUBIC_TOOL) {
     setHandle(editorDomDragState.handle, point);
@@ -2089,9 +2100,11 @@ function handleEditorDomPointerMove(event) {
   } else if (editorDomDragState.handle !== null) {
     setRectangleHandle(editorDomDragState.handle, point);
     rectangleState.placed = true;
+    autoHideRectangleOverlappingIndyWalls();
     drawRectanglePreview();
   } else if (editorDomDragState.vertex) {
     setRectangleVertex(editorDomDragState.vertex, point);
+    autoHideRectangleOverlappingIndyWalls();
     drawRectanglePreview();
   }
 }
@@ -2154,6 +2167,7 @@ function finalizeEditorDomDrag(event=null, cancelled=false) {
     rectangleState.draggingVertex = null;
     rectangleState.hoveredVertex = null;
     rectangleState.initializing = false;
+    if (!cancelled) autoHideRectangleOverlappingIndyWalls();
     if (cancelled) cancelEditorOperation(rectangleState);
     else commitEditorOperation(rectangleState);
     drawRectanglePreview();
@@ -2501,34 +2515,54 @@ function initializeRectangleDomPlacement(point) {
   rectangleState.sideRatios = getDefaultRectangleSideRatios();
   rectangleState.sideEnabled = getDefaultRectangleSideEnabled();
   rectangleState.sideGaps = getDefaultRectangleSideGaps();
+  rectangleState.autoSideGaps = getDefaultRectangleAutoSideGaps();
   setRectangleHandle(0, point);
   setRectangleHandle(1, point);
   drawRectanglePreview();
 }
 
 function withDomPointerDragData(event, hit) {
+  const editorPoint = hit.initialPlacement && canvas?.walls?._getWallEndpointCoordinates
+    ? getSnappedEditorEventPoint(canvas.walls, hit.editorPoint, event)
+    : hit.editorPoint;
   const pointer = {
     label: hit.coordinateLabel,
     point: hit.hitPoint
   };
-  if (!pointer.point || !hit.editorPoint) return null;
+  if (!pointer.point || !editorPoint) return null;
 
   return {
     ...hit,
+    editorPoint,
     pointerCoordinateLabel: pointer.label,
     pointerOffset: {
-      x: hit.editorPoint.x - pointer.point.x,
-      y: hit.editorPoint.y - pointer.point.y
+      x: editorPoint.x - pointer.point.x,
+      y: editorPoint.y - pointer.point.y
     },
     startPointerPoint: {x: pointer.point.x, y: pointer.point.y},
-    startEditorPoint: {x: hit.editorPoint.x, y: hit.editorPoint.y}
+    startEditorPoint: {x: editorPoint.x, y: editorPoint.y}
   };
 }
 
 function getSnappedDomEditorPoint(event) {
   const point = getDomEditorDragPoint(event);
   if (!point || !canvas?.walls?._getWallEndpointCoordinates) return point ?? null;
-  return getEventPoint(canvas.walls, point, event);
+  return getSnappedEditorEventPoint(canvas.walls, point, event);
+}
+
+function getSnappedEditorEventPoint(layer, point, event) {
+  return getEventPoint(layer, point, event, {snapToClosestWallPoint: true});
+}
+
+function getSnappedClientInteractionPoint(event) {
+  const point = getClientInteractionPoint(event);
+  return getMonksClosestWallPoint(point) ?? point;
+}
+
+function setInteractionPoint(target, point) {
+  if (!target || !point) return;
+  target.x = point.x;
+  target.y = point.y;
 }
 
 function getDomEditorDragPoint(event) {
@@ -2622,6 +2656,7 @@ function finalizeActiveEditorDrag(event=null, cancelled=false) {
     rectangleState.draggingVertex = null;
     rectangleState.hoveredVertex = null;
     rectangleState.initializing = false;
+    if (!cancelled) autoHideRectangleOverlappingIndyWalls();
     if (cancelled) cancelEditorOperation(rectangleState);
     else commitEditorOperation(rectangleState);
     drawRectanglePreview();
@@ -3404,6 +3439,7 @@ function getEditorSnapshot(state) {
     sideRatios: cloneRectangleSideRatios(rectangleState.sideRatios),
     sideEnabled: cloneRectangleSideEnabled(rectangleState.sideEnabled),
     sideGaps: cloneRectangleSideGaps(rectangleState.sideGaps),
+    autoSideGaps: cloneRectangleSideGaps(rectangleState.autoSideGaps),
     wallTypeBySegment: cloneWallTypeBySegment(rectangleState.wallTypeBySegment),
     wallDataBySegment: cloneWallDataBySegment(rectangleState.wallDataBySegment),
     wallTypeTool: rectangleState.wallTypeTool,
@@ -3484,6 +3520,7 @@ function restoreEditorSnapshot(state, snapshot) {
   rectangleState.sideRatios = cloneRectangleSideRatios(snapshot.sideRatios);
   rectangleState.sideEnabled = cloneRectangleSideEnabled(snapshot.sideEnabled);
   rectangleState.sideGaps = cloneRectangleSideGaps(snapshot.sideGaps);
+  rectangleState.autoSideGaps = cloneRectangleSideGaps(snapshot.autoSideGaps);
   rectangleState.wallTypeBySegment = cloneWallTypeBySegment(snapshot.wallTypeBySegment);
   rectangleState.wallDataBySegment = cloneWallDataBySegment(snapshot.wallDataBySegment);
   rectangleState.wallTypeTool = snapshot.wallTypeTool;
@@ -4474,7 +4511,7 @@ function getPolylineDeps() {
     drawSegmentDoorIcon,
     drawPolylinePreview,
     drawPreviewVertex,
-    getClientInteractionPoint,
+    getClientInteractionPoint: getSnappedClientInteractionPoint,
     getEditorShapeCenter,
     getEditorSnapshot,
     getPointSegmentDistance,
@@ -4613,7 +4650,9 @@ function getRectangleDeps() {
     getSegmentWallData,
     getSplitVertexHitRadius,
     getShapeFlagSourceData,
+    getSceneWallDocuments,
     getWallTypeToolFromDocument,
+    hasIndyShapeFlag,
     hideEditSessionWalls,
     isAltInteraction,
     isRectangleToolActive,
@@ -4689,6 +4728,10 @@ async function applyPolylineWalls() {
 
 async function applyRectangleWalls() {
   return applyRectangleWallsImpl(getRectangleDeps());
+}
+
+function autoHideRectangleOverlappingIndyWalls() {
+  return autoHideRectangleOverlappingIndyWallsImpl(getRectangleDeps());
 }
 
 async function applyEllipseWalls() {

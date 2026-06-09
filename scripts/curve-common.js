@@ -14,9 +14,136 @@ export function getHandleHitRadius(radius=HANDLE_RADIUS, outlineWidth=2) {
   return getScaledRadius(radius + outlineWidth + 8);
 }
 
-export function getEventPoint(layer, point, event) {
+export function getEventPoint(layer, point, event, {snapToClosestWallPoint=false}={}) {
+  const monkSnapPoint = snapToClosestWallPoint ? getMonksClosestWallPoint(point) : null;
+  if (monkSnapPoint) return monkSnapPoint;
+
   const [x, y] = layer._getWallEndpointCoordinates(point, {snap: !event.shiftKey});
   return {x, y};
+}
+
+export function getMonksClosestWallPoint(point, excludeWallId=null) {
+  if (!point) return null;
+
+  const activeState = getMonksSnapActiveState();
+  if (!activeState.active) return null;
+
+  const tolerance = getMonksSnapTolerance();
+  if (!(tolerance > 0)) return null;
+
+  let closestEndpoint = null;
+  let closestEndpointDistance = Infinity;
+  let closestSegment = null;
+  let closestSegmentDistance = Infinity;
+  for (const wall of getSceneWallDocuments()) {
+    const document = wall?.document ?? wall;
+    if (!document || document.id === excludeWallId) continue;
+    const c = document.c;
+    if (!Array.isArray(c) || c.length < 4) continue;
+
+    for (const endpoint of getWallSegmentEndpoints(c)) {
+      const distance = Math.hypot(endpoint.x - point.x, endpoint.y - point.y);
+      if (distance < closestEndpointDistance) {
+        closestEndpointDistance = distance;
+        closestEndpoint = endpoint;
+      }
+    }
+
+    const segmentPoint = getClosestWallSegmentPoint(point, c);
+    if (!segmentPoint) continue;
+    if (segmentPoint.distance < closestSegmentDistance) {
+      closestSegmentDistance = segmentPoint.distance;
+      closestSegment = segmentPoint.point;
+    }
+  }
+
+  if (closestEndpointDistance < tolerance) return closestEndpoint;
+  return closestSegmentDistance < tolerance ? closestSegment : null;
+}
+
+function getWallSegmentEndpoints(coordinates) {
+  const endpoints = [
+    {x: Number(coordinates[0]), y: Number(coordinates[1])},
+    {x: Number(coordinates[2]), y: Number(coordinates[3])}
+  ];
+  return endpoints.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+}
+
+function getClosestWallSegmentPoint(point, coordinates) {
+  const start = {
+    x: Number(coordinates[0]),
+    y: Number(coordinates[1])
+  };
+  const end = {
+    x: Number(coordinates[2]),
+    y: Number(coordinates[3])
+  };
+  if (!Number.isFinite(start.x) || !Number.isFinite(start.y) || !Number.isFinite(end.x) || !Number.isFinite(end.y)) return null;
+
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = (dx * dx) + (dy * dy);
+  if (!lengthSquared) {
+    return {
+      point: start,
+      distance: Math.hypot(start.x - point.x, start.y - point.y)
+    };
+  }
+
+  const t = clamp((((point.x - start.x) * dx) + ((point.y - start.y) * dy)) / lengthSquared, 0, 1);
+  const closest = {
+    x: start.x + (dx * t),
+    y: start.y + (dy * t)
+  };
+  return {
+    point: closest,
+    distance: Math.hypot(closest.x - point.x, closest.y - point.y)
+  };
+}
+
+function getMonksSnapActiveState() {
+  const moduleActive = game?.modules?.get?.("monks-wall-enhancement")?.active === true;
+  const tool = ui?.controls?.control?.tools?.snaptowall
+    ?? ui?.controls?.controls?.walls?.tools?.snaptowall
+    ?? ui?.controls?.tools?.snaptowall;
+  const button = getMonksSnapButton();
+  const toolFound = !!tool;
+  const toolActive = tool?.active === true
+    || button?.classList?.contains("active")
+    || button?.getAttribute?.("aria-pressed") === "true";
+  return {
+    active: moduleActive && toolActive,
+    moduleActive,
+    toolActive,
+    toolFound,
+    buttonFound: !!button,
+    buttonActiveClass: button?.classList?.contains("active") ?? false,
+    buttonAriaPressed: button?.getAttribute?.("aria-pressed") ?? null
+  };
+}
+
+function getMonksSnapButton() {
+  return document.querySelector('[data-tool="snaptowall"]')
+    ?? document.querySelector('[data-action="snaptowall"]')
+    ?? document.querySelector('[name="snaptowall"]');
+}
+
+function getMonksSnapTolerance() {
+  try {
+    const value = Number(game.settings.get("monks-wall-enhancement", "snap-tolerance"));
+    return Number.isFinite(value) ? value : 0;
+  } catch (_error) {
+    return 0;
+  }
+}
+
+function getSceneWallDocuments() {
+  const walls = canvas?.scene?.walls;
+  if (!walls) return [];
+  if (Array.isArray(walls.contents)) return walls.contents;
+  if (typeof walls.values === "function") return Array.from(walls.values());
+  if (typeof walls[Symbol.iterator] === "function") return Array.from(walls);
+  return [];
 }
 
 export function getHandleAt(handles, point, radius=HANDLE_RADIUS, outlineWidth=2) {
