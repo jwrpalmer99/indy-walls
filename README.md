@@ -15,6 +15,7 @@ Required dependencies:
 Optional dependencies:
 
 - [lib - ColorSettings](https://github.com/ardittristan/VTTColorSettings) (`colorsettings`) is recommended for color picker controls in the module settings. Indy Walls still works without it and falls back to plain hex text fields.
+- [Monk's Wall Enhancement](https://github.com/ironmonk88/monks-wall-enhancement) (`monks-wall-enhancement`) is supported when its Snap to Closest Wall Point tool is active. Indy Walls respects Monk's snap tolerance while drawing and editing Indy wall shapes.
 
 
 <img width="400" height="225" alt="bezier_curve" src="https://github.com/user-attachments/assets/4c8295a9-1e42-4efa-97ee-6d15f98051c8" />
@@ -76,6 +77,8 @@ The Wall Controls include a Convert to Indy Walls button for GMs. It scans plain
 On Foundry v14, conversion only joins walls into the same Indy shape when those walls share the same `levels` list. Original wall data, including v14 level assignment, is preserved on converted segments.
 
 The inline tolerance sliders and matching stored settings control how aggressively rectangle, ellipse, arc, and Bezier fits are accepted. The default value of `1` keeps the automatic scene-size-derived tolerance; lower values are stricter, and higher values, up to `10`, allow looser fits. Arc and Bezier conversion also use fixed pixel caps and curve-shape checks, so long straight wall runs, sharp L-shapes, and S-bends are less likely to be incorrectly compressed into curves. When several arc or Bezier run lengths are possible, conversion scores all acceptable candidates and chooses the best fit, with only a small bias toward longer runs when quality is similar.
+
+Adjacent rectangle conversion is enabled by default. When enabled, conversion can detect multiple rectangles that share full or partial sides. Shared side spans are hidden on the later rectangle so the same physical wall segment is not shown twice, and conversion may split or create wall documents where a source wall has both shared and visible portions. The `Convert adjacent rectangles with shared sides` module setting disables this behavior and restores the older exclusive-wall rectangle detection, where a wall already used by one rectangle rules out other rectangle candidates that need that wall.
 
 Shared Indy shape metadata is stored on the Scene rather than duplicated on every generated wall. Wall segments keep compact per-shape and per-segment references so shape editors can reopen quickly and the exported wall data stays smaller.
 
@@ -165,6 +168,10 @@ Basic workflow:
 10. Left-click a removed side to restore it.
 11. Use Ctrl-scrollwheel to change all four side segment counts together.
 12. Use the check button or Enter to create wall segments, or Escape to cancel.
+
+When Monk's Wall Enhancement snapping is active, rectangle placement and editing snap to nearby wall endpoints, vertices, and wall lines using Monk's configured snap tolerance. While drawing or resizing a rectangle corner, Indy Walls also checks the two adjacent rectangle corners: for example, when dragging the bottom-right corner, the top-right corner can supply an x-coordinate snap and the bottom-left corner can supply a y-coordinate snap.
+
+When `Convert adjacent rectangles with shared sides` is enabled, rectangles also automatically hide side segments that overlap existing Indy shape walls while drawing, resizing, moving, or editing vertices. Automatically hidden overlap gaps are tracked separately from manually hidden gaps so they can update as the rectangle changes. Disabling that setting also disables this automatic rectangle overlap hiding.
 
 Rectangle metadata is stored as shared Scene metadata with compact references on each generated wall segment. Ctrl-left-click any generated segment to reopen the rectangle editor, including per-side vertices, segment gaps, and removed sides, so it can be adjusted and re-applied.
 
