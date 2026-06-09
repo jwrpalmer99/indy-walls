@@ -484,6 +484,14 @@ function registerSegmentWallTypeKeybindings() {
       onDown: () => changeHoveredSegmentWallType(toolName)
     });
   }
+
+  game.keybindings.register(MODULE_ID, "cycleHoveredSegmentCurve", {
+    name: "indy-walls.Keybindings.CycleHoveredSegmentCurve.Name",
+    hint: "indy-walls.Keybindings.CycleHoveredSegmentCurve.Hint",
+    editable: [{key: "KeyC"}],
+    restricted: true,
+    onDown: () => cycleHoveredSegmentCurveMode()
+  });
 }
 
 function registerConversionPreviewCancelHandlers() {
@@ -913,6 +921,27 @@ function patchWallsLayer() {
       editorActive: true
     });
     if (isPolylineToolActive()) {
+      const point = getSnappedEditorEventPoint(this, event.interactionData.origin, event);
+      if (!polylineState.placed) {
+        beginEditorOperation(polylineState, true);
+        polylineState.placed = true;
+        polylineState.drawing = true;
+        polylineState.closed = false;
+        polylineState.polylineId = null;
+        polylineState.wallIds = [];
+        polylineState.wallTypeBySegment = {};
+        polylineState.wallDataBySegment = {};
+        polylineState.segmentGaps = [];
+        polylineState.segmentCurves = {};
+        polylineState.curveSegments = DEFAULT_POLYLINE_CURVE_SEGMENTS;
+        polylineState.curveSegmentsBySegment = {};
+        polylineState.segmentModeMemory = {};
+        polylineState.previewPoint = null;
+        polylineState.points = [point, point];
+        polylineState.draggingVertex = {index: 1, point};
+        setInteractionPoint(event.interactionData.origin, point);
+        drawPolylinePreview();
+      }
       consumeCanvasInteraction(event);
       resetEditorCursor(event);
       return;
@@ -1071,7 +1100,15 @@ function patchWallsLayer() {
     if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive() && !isPolylineToolActive()) {
       return wrapped(event);
     }
-    if (isPolylineToolActive()) return;
+    if (isPolylineToolActive()) {
+      if (polylineState.draggingVertex) {
+        const point = getSnappedEditorEventPoint(this, event.interactionData.destination, event);
+        setPolylineVertex(polylineState.draggingVertex.index, point);
+        polylineState.previewPoint = null;
+        drawPolylinePreview();
+      }
+      return;
+    }
 
     if (isEllipseToolActive()) {
       if (ellipseState.draggingGapHandle) {
@@ -1147,6 +1184,21 @@ function patchWallsLayer() {
       polylineDraggingCurveHandle: polylineState.draggingCurveHandle
     });
     if (isPolylineToolActive()) {
+      if (polylineState.draggingVertex) {
+        const sourcePoint = event.interactionData.destination ?? getInteractionPoint(event);
+        const point = sourcePoint
+          ? getSnappedEditorEventPoint(this, sourcePoint, event)
+          : polylineState.points.at(polylineState.draggingVertex.index);
+        if (point) setPolylineVertex(polylineState.draggingVertex.index, point);
+        polylineState.draggingVertex = null;
+        polylineState.draggingCurveHandle = null;
+        polylineState.hoveredVertex = null;
+        polylineState.drawing = true;
+        polylineState.previewPoint = polylineState.points.at(-1) ?? null;
+        canvasSegmentEditState.ignoreClickUntil = Date.now() + 500;
+        commitEditorOperation(polylineState);
+        drawPolylinePreview();
+      }
       event.interactionData.clearPreviewContainer = false;
       resetEditorCursor(event);
       return;
@@ -1203,6 +1255,12 @@ function patchWallsLayer() {
       polylineDraggingVertex: polylineState.draggingVertex
     });
     if (isPolylineToolActive()) {
+      if (polylineState.draggingVertex) {
+        polylineState.draggingVertex = null;
+        polylineState.draggingCurveHandle = null;
+        cancelEditorOperation(polylineState);
+        drawPolylinePreview();
+      }
       event.interactionData.clearPreviewContainer = false;
       resetEditorCursor(event);
       return;
@@ -1350,7 +1408,6 @@ function registerRectangleCanvasClickHandler() {
   view.addEventListener("pointercancel", handleCanvasSegmentEditPointerCancel, {capture: true});
   view.addEventListener("click", handleRectangleCanvasClick, {capture: true});
   view.addEventListener("dblclick", handlePolylineCanvasDoubleClick, {capture: true});
-  view.addEventListener("contextmenu", handleEditorCanvasContextMenu, {capture: true});
   rectangleCanvasClickViews.add(view);
   debugShapeSelection("registered rectangle canvas click handler", {
     tagName: view.tagName,
@@ -1662,57 +1719,6 @@ function handlePolylineCanvasDoubleClick(event) {
   drawPolylinePreview();
   pushEditorUndoSnapshot(polylineState, snapshot);
   scheduleEditorInteractionReset(event);
-}
-
-function handleEditorCanvasContextMenu(event) {
-  if (!isWallControlsActive()) return;
-  if (handleCubicCanvasContextMenu(event)) return;
-  handlePolylineCanvasContextMenu(event);
-}
-
-function handleCubicCanvasContextMenu(event) {
-  if (!isCubicToolActive() || !cubicState.placed) return false;
-
-  for (const point of getCanvasClickCandidatePoints(event)) {
-    const segment = getCubicSegmentAt({x: point.x, y: point.y});
-    if (!segment) continue;
-
-    debugShapeSelection("cubic canvas contextmenu toggle curve mode", {
-      clientX: event.clientX,
-      clientY: event.clientY,
-      segment,
-      curveMode: cubicState.curveMode
-    });
-    consumeCanvasInteraction(event);
-    event.preventDefault();
-    event.stopPropagation();
-    toggleCubicCurveModeWithUndo();
-    scheduleEditorInteractionReset(event);
-    return true;
-  }
-
-  return false;
-}
-
-function handlePolylineCanvasContextMenu(event) {
-  if (!isPolylineToolActive() || !polylineState.placed) return;
-
-  for (const point of getCanvasClickCandidatePoints(event)) {
-    const segment = getPolylineSegmentAt({x: point.x, y: point.y});
-    if (!segment) continue;
-
-    debugShapeSelection("polyline canvas contextmenu cycle segment curve", {
-      clientX: event.clientX,
-      clientY: event.clientY,
-      segment
-    });
-    consumeCanvasInteraction(event);
-    event.preventDefault();
-    event.stopPropagation();
-    cyclePolylineSegmentCurveWithUndo(segment.sourceIndex ?? segment.index);
-    scheduleEditorInteractionReset(event);
-    return;
-  }
 }
 
 function shouldClosePolylineAtEvent(event) {
@@ -3031,7 +3037,8 @@ function registerCurveEditorShortcuts() {
 
   window.addEventListener("keydown", (event) => {
     if (!game.user.isGM || isEditableTarget(event.target)) return;
-    if (!isAnyEditorToolActive() && !copiedEditorShape) return;
+    const wallControlsActive = isWallControlsActive();
+    if (!isAnyEditorToolActive() && !(copiedEditorShape && wallControlsActive)) return;
 
     if (event.key === "Escape" && isAnyEditorToolActive()) {
       consumeEditorEscape(event);
@@ -3054,6 +3061,7 @@ function registerCurveEditorShortcuts() {
     }
 
     if (event.ctrlKey && key === "v") {
+      if (!wallControlsActive) return;
       event.preventDefault();
       event.stopPropagation();
       pasteCopiedEditorShape();
@@ -3239,6 +3247,41 @@ async function changeHoveredSegmentWallType(toolName) {
   }
 
   return changeHoveredFoundryWallType(toolName, point);
+}
+
+function cycleHoveredSegmentCurveMode() {
+  if (isEditableTarget(document.activeElement)) return false;
+  const point = getLastCanvasPointerPoint();
+  if (!point) return false;
+
+  if (isPolylineToolActive() && polylineState.placed) {
+    const segment = getPolylineSegmentAt(point);
+    if (!segment) return false;
+    const edited = cyclePolylineSegmentCurveWithUndo(segment.sourceIndex ?? segment.index);
+    if (edited) {
+      debugShapeSelection("cycled hovered polyline segment curve", {
+        segment,
+        point
+      });
+      scheduleEditorInteractionReset();
+    }
+    return edited;
+  }
+
+  if (isCubicToolActive() && cubicState.placed) {
+    const segment = getCubicSegmentAt(point);
+    if (!segment) return false;
+    toggleCubicCurveModeWithUndo();
+    debugShapeSelection("toggled hovered cubic curve mode", {
+      segment,
+      point,
+      curveMode: cubicState.curveMode
+    });
+    scheduleEditorInteractionReset();
+    return true;
+  }
+
+  return false;
 }
 
 async function changeHoveredFoundryWallType(toolName, point=null) {
@@ -4403,7 +4446,7 @@ function getShortcutHelpItems(tool) {
   ];
   if (tool === CUBIC_TOOL) return [
     {key: "Drag endpoints/handles", label: "indy-walls.Shortcuts.CubicDrag"},
-    {key: "Right-click curve", label: "indy-walls.Shortcuts.CubicToggleMode"},
+    {key: "C over curve", label: "indy-walls.Shortcuts.CubicToggleMode"},
     {key: "Ctrl+wheel", label: "indy-walls.Shortcuts.CurveSegments"},
     {key: "Click / Alt-click segment", label: "indy-walls.Shortcuts.SegmentShowHide"},
     ...common
@@ -4426,7 +4469,7 @@ function getShortcutHelpItems(tool) {
   if (tool === POLYLINE_TOOL) return [
     {key: "Click canvas", label: "indy-walls.Shortcuts.PolylineAddPoint"},
     {key: "Left-click segment", label: "indy-walls.Shortcuts.PolylineAddRestore"},
-    {key: "Right-click segment", label: "indy-walls.Shortcuts.PolylineCycleCurve"},
+    {key: "C over segment", label: "indy-walls.Shortcuts.PolylineCycleCurve"},
     {key: "Alt-click point/segment", label: "indy-walls.Shortcuts.PolylineRemoveHide"},
     {key: "Ctrl+wheel", label: "indy-walls.Shortcuts.PolylineCurveSegments"},
     {key: "Drag points/handles", label: "indy-walls.Shortcuts.PolylineDrag"},

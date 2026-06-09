@@ -124,7 +124,7 @@ Basic workflow:
 2. Select the Cubic Bezier Wall tool.
 3. Click-drag on the canvas to place the initial curve.
 4. Drag the red endpoint handles or green Bezier handles to adjust the curve.
-5. Right-click the curve to toggle between one-handle arc mode and two-handle Bezier mode.
+5. Press `C` while hovering the curve to toggle between one-handle arc mode and two-handle Bezier mode. This keybinding is configurable in Foundry's keybindings UI.
 6. Use `+` and `-`, or Ctrl-scrollwheel, to change the number of generated wall segments.
 7. Use the check button or Enter to create wall segments, or Escape to cancel.
 
@@ -188,7 +188,7 @@ Basic workflow:
 5. Double-click back on the first point to stop drawing as a closed polygon.
 6. Drag points to reposition them.
 7. Left-click a segment to add a point, or to restore a hidden segment.
-8. Right-click a segment to cycle it between a straight line, an arc, and a Bezier curve.
+8. Press `C` while hovering a segment to cycle it between a straight line, an arc, and a Bezier curve. This keybinding is configurable in Foundry's keybindings UI.
 9. Drag the curve handles on arc and Bezier segments to adjust their shape.
 10. Use Ctrl-scrollwheel over a curved segment to change that segment's generated point count.
 11. Alt-click a point to remove it.

@@ -201,6 +201,10 @@
       "SetHoveredSegmentTerrain": {
         "Name": "Set hovered Indy wall segment to Terrain",
         "Hint": "While editing an Indy wall shape, changes the segment under the mouse to terrain. If enabled in settings, also changes hovered Foundry walls."
+      },
+      "CycleHoveredSegmentCurve": {
+        "Name": "Cycle hovered Indy wall segment curve mode",
+        "Hint": "While editing a cubic or polyline Indy wall shape, cycles the curve mode for the segment under the mouse."
       }
     },
     "Shortcuts": {
@@ -231,10 +235,10 @@
       "PolylineDrag": "Move points or curve handles."
     },
     "Tooltips": {
-      "CubicBezier": "Click-drag to place the curve, then drag the red endpoints or green handles. Right-click the curve to toggle between arc and Bezier modes. Use plus/minus or Ctrl-wheel to adjust segment count, Enter to create walls, or Escape to cancel.",
+      "CubicBezier": "Click-drag to place the curve, then drag the red endpoints or green handles. Press C while hovering the curve to toggle between arc and Bezier modes. Use plus/minus or Ctrl-wheel to adjust segment count, Enter to create walls, or Escape to cancel.",
       "Ellipse": "Click-drag to place the ellipse, hold Alt for a circle, or hold Ctrl to grow from the center. Use plus/minus or Ctrl-wheel to adjust segment count, Enter to create walls, or Escape to cancel.",
       "Rectangle": "Click-drag to place the rectangle. Left-click a side to add a vertex, restore a gapped segment, or restore a removed side. Alt-click a segment to create a gap, Alt-click a vertex to remove it, drag vertices to reposition them, Enter creates walls, and Escape cancels.",
-      "Polyline": "Click to place each vertex. Left-click a segment to add a point or restore a hidden segment, right-click a segment to cycle line/arc/Bezier modes, drag curve handles to shape arcs and Beziers, Ctrl-scroll changes curved segment detail, Alt-click hides segments or removes points, Enter creates walls, and Escape cancels.",
+      "Polyline": "Click to place each vertex. Left-click a segment to add a point or restore a hidden segment, press C while hovering a segment to cycle line/arc/Bezier modes, drag curve handles to shape arcs and Beziers, Ctrl-scroll changes curved segment detail, Alt-click hides segments or removes points, Enter creates walls, and Escape cancels.",
       "ConvertToIndyWalls": "Scans plain Foundry walls in the current scene and previews Indy shape metadata. Adjust tolerance, then Save to convert or Cancel to discard. Axis-aligned closed rectangles are converted to Indy rectangles first; remaining connected wall paths are converted to Indy polylines.",
       "RegionsToIndyWalls": "Creates Indy wall shapes from selected Region shapes. If no Regions are selected, every Region in the scene is used. Region rectangles become Indy rectangles, ellipses and circles become Indy ellipses, and polygons become closed Indy polylines.",
       "RegionConversionDetail": "Number of generated wall segments used for circles and ellipses in Region conversion previews.",
