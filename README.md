@@ -43,6 +43,10 @@ Supported type buttons:
 
 This setting is client-side and is enabled by default. You can also change by hotkeys (see below), which is disabled by default.
 
+### Wall Length Labels
+
+Optional client-side settings can show wall lengths while drawing or editing wall previews, and when hovering existing walls in Wall Controls. Lengths use the scene grid distance and units, and work with both Foundry walls and wall segments created by Indy Walls.
+
 ### Indy Shape Editing
 
 Indy Walls adds shape-based wall tools to Foundry's Wall Controls. Generated wall segments store metadata so the shape can be reopened later.

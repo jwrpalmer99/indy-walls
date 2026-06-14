@@ -798,6 +798,7 @@ export function drawRectanglePreview(deps) {
     deps.drawEndpoint(graphics, handle.point, style);
   }
   deps.drawMoveHandle(graphics, deps.getEditorShapeCenter(RECTANGLE_TOOL), style);
+  deps.drawWallLengthLabels(graphics, segments);
 }
 
 function drawRectangleInteractionHits(graphics, style, deps) {

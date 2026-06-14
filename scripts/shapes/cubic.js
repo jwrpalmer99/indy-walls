@@ -192,6 +192,7 @@ export function drawCubicPreview(deps) {
   deps.drawBezierHandle(graphics, controlA, style);
   if (cubicState.curveMode === CUBIC_CURVE_BEZIER) deps.drawBezierHandle(graphics, controlB, style);
   deps.drawMoveHandle(graphics, deps.getEditorShapeCenter(CUBIC_TOOL), style);
+  deps.drawWallLengthLabels(graphics, segments, {combine: true});
 }
 
 export function getCubicSegmentAt(point, deps) {

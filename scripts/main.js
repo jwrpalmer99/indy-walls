@@ -63,6 +63,12 @@ import {
   preparePreviewGraphics
 } from "./preview-graphics.js";
 import {
+  clearWallLengthLabels,
+  drawWallLengthLabels as drawWallLengthLabelsImpl,
+  getCombinedWallLengthLabelSegment,
+  normalizeWallLengthSegment
+} from "./wall-length-labels.js";
+import {
   applyCubicWalls as applyCubicWallsImpl,
   cancelCubicEditingForDeletedWall as cancelCubicEditingForDeletedWallImpl,
   changeCubicSegments as changeCubicSegmentsImpl,
@@ -197,6 +203,8 @@ const MODULE_ID = "indy-walls";
 const QUICK_WALL_TYPE_SETTING = "quickWallTypeChange";
 const HOVERED_WALL_HOTKEY_TYPE_SETTING = "hoveredWallHotkeyTypeChange";
 const DEBUG_SETTING = "debugShapeSelection";
+const SHOW_WALL_LENGTHS_WHILE_DRAWING_SETTING = "showWallLengthsWhileDrawing";
+const SHOW_WALL_LENGTHS_ON_HOVER_SETTING = "showWallLengthsOnHover";
 const ACTIVE_TOOL_HIGHLIGHT_COLOR_SETTING = "activeShapeToolHighlightColor";
 const ACTIVE_TOOL_HIGHLIGHT_GLOW_SETTING = "activeShapeToolHighlightGlow";
 const ACTIVE_TOOL_HIGHLIGHT_BORDER_WIDTH_SETTING = "activeShapeToolHighlightBorderWidth";
@@ -264,6 +272,15 @@ const lastCanvasPointerState = {
 const lastHoveredWallState = {
   id: null
 };
+const nativeWallDragLengthLabelState = {
+  container: null,
+  segment: null
+};
+const hoveredWallLengthLabelState = {
+  container: null,
+  wallId: null,
+  segment: null
+};
 let shapeMetadataPruneTimeout = null;
 const pendingShapeMetadataPruneWallIds = new Set();
 let shortcutHelpDragState = null;
@@ -296,6 +313,7 @@ Hooks.once("init", () => {
     type: Boolean,
     default: false
   });
+  registerWallLengthSettings();
   game.settings.register(MODULE_ID, DEBUG_SETTING, {
     name: game.i18n.localize("indy-walls.Settings.DebugShapeSelection.Name"),
     hint: game.i18n.localize("indy-walls.Settings.DebugShapeSelection.Hint"),
@@ -365,16 +383,50 @@ Hooks.on("canvasReady", () => {
   patchAvailableWallObjectInteractions();
   registerRectangleCanvasClickHandler();
   registerEditorDomDragHandler();
+  clearNativeWallDragLengthLabel();
+  clearHoveredWallLengthLabel();
 });
 
 Hooks.on("canvasPan", () => {
   scheduleActivePreviewRedraw();
+  redrawNativeWallDragLengthLabel();
+  refreshHoveredWallLengthLabel();
 });
 
 Hooks.on("canvasTearDown", () => {
   cancelConversionPreview();
   clearEditorStateForCanvasChange("canvasTearDown");
+  clearNativeWallDragLengthLabel();
+  clearHoveredWallLengthLabel();
 });
+
+function registerWallLengthSettings() {
+  game.settings.register(MODULE_ID, SHOW_WALL_LENGTHS_WHILE_DRAWING_SETTING, {
+    name: game.i18n.localize("indy-walls.Settings.ShowWallLengthsWhileDrawing.Name"),
+    hint: game.i18n.localize("indy-walls.Settings.ShowWallLengthsWhileDrawing.Hint"),
+    scope: "client",
+    config: true,
+    type: Boolean,
+    default: false,
+    onChange: () => {
+      if (!isWallLengthDrawingEnabled()) clearNativeWallDragLengthLabel();
+      redrawActivePreview();
+    }
+  });
+
+  game.settings.register(MODULE_ID, SHOW_WALL_LENGTHS_ON_HOVER_SETTING, {
+    name: game.i18n.localize("indy-walls.Settings.ShowWallLengthsOnHover.Name"),
+    hint: game.i18n.localize("indy-walls.Settings.ShowWallLengthsOnHover.Hint"),
+    scope: "client",
+    config: true,
+    type: Boolean,
+    default: false,
+    onChange: () => {
+      if (isWallLengthHoverEnabled()) refreshHoveredWallLengthLabel();
+      else clearHoveredWallLengthLabel();
+    }
+  });
+}
 
 function registerConversionToleranceSetting(setting, label) {
   game.settings.register(MODULE_ID, setting, {
@@ -450,12 +502,18 @@ Hooks.on("controlWall", (wall, controlled) => {
 });
 
 Hooks.on("hoverWall", (wall, hovered) => {
-  if (hovered) lastHoveredWallState.id = wall?.document?.id ?? wall?.id ?? null;
-  else if (lastHoveredWallState.id === (wall?.document?.id ?? wall?.id)) lastHoveredWallState.id = null;
+  if (hovered) {
+    lastHoveredWallState.id = wall?.document?.id ?? wall?.id ?? null;
+    drawHoveredWallLengthLabel(wall);
+  } else if (lastHoveredWallState.id === (wall?.document?.id ?? wall?.id)) {
+    lastHoveredWallState.id = null;
+    clearHoveredWallLengthLabel();
+  }
 });
 
 Hooks.on("deleteWall", (wallDocument) => {
   if (lastHoveredWallState.id === wallDocument.id) lastHoveredWallState.id = null;
+  if (hoveredWallLengthLabelState.wallId === wallDocument.id) clearHoveredWallLengthLabel();
   cancelCubicEditingForDeletedWall(wallDocument);
   cancelEllipseEditingForDeletedWall(wallDocument);
   cancelRectangleEditingForDeletedWall(wallDocument);
@@ -470,6 +528,7 @@ Hooks.on("drawWall", (wall) => {
 
 Hooks.on("refreshWall", (wall) => {
   applyHiddenEditWallState(wall);
+  if ((wall?.document?.id ?? wall?.id) === hoveredWallLengthLabelState.wallId) drawHoveredWallLengthLabel(wall);
 });
 
 function registerSegmentWallTypeKeybindings() {
@@ -791,7 +850,11 @@ function addRegionControlTool(controls, tool) {
 }
 
 Hooks.on("renderSceneControls", () => {
-  if (!isWallControlsActive()) cancelConversionPreview();
+  if (!isWallControlsActive()) {
+    cancelConversionPreview();
+    clearNativeWallDragLengthLabel();
+    clearHoveredWallLengthLabel();
+  }
   updateIndyToolButtonHighlights();
   positionCubicEditButtons();
   positionEllipseEditButtons();
@@ -913,8 +976,11 @@ function patchWallsLayer() {
 
   libWrapper.register(MODULE_ID, "CONFIG.Canvas.layers.walls.layerClass.prototype._onDragLeftStart", function(wrapped, event) {
     if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive() && !isPolylineToolActive()) {
-      return wrapped(event);
+      const result = wrapped(event);
+      drawNativeWallDragLengthLabel(event, this);
+      return result;
     }
+    clearNativeWallDragLengthLabel();
     debugShapeSelection("walls layer drag left start", {
       ctrl: isControlInteraction(event),
       activeTool: game.activeTool,
@@ -1098,8 +1164,11 @@ function patchWallsLayer() {
 
   libWrapper.register(MODULE_ID, "CONFIG.Canvas.layers.walls.layerClass.prototype._onDragLeftMove", function(wrapped, event) {
     if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive() && !isPolylineToolActive()) {
-      return wrapped(event);
+      const result = wrapped(event);
+      drawNativeWallDragLengthLabel(event, this);
+      return result;
     }
+    clearNativeWallDragLengthLabel();
     if (isPolylineToolActive()) {
       if (polylineState.draggingVertex) {
         const point = getSnappedEditorEventPoint(this, event.interactionData.destination, event);
@@ -1170,7 +1239,9 @@ function patchWallsLayer() {
 
   libWrapper.register(MODULE_ID, "CONFIG.Canvas.layers.walls.layerClass.prototype._onDragLeftDrop", function(wrapped, event) {
     if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive() && !isPolylineToolActive()) {
-      return wrapped(event);
+      const result = wrapped(event);
+      clearNativeWallDragLengthLabel();
+      return result;
     }
     debugShapeSelection("walls layer drag left drop", {
       activeTool: game.activeTool,
@@ -1242,7 +1313,9 @@ function patchWallsLayer() {
 
   libWrapper.register(MODULE_ID, "CONFIG.Canvas.layers.walls.layerClass.prototype._onDragLeftCancel", function(wrapped, event) {
     if (!isCubicToolActive() && !isEllipseToolActive() && !isRectangleToolActive() && !isPolylineToolActive()) {
-      return wrapped(event);
+      const result = wrapped(event);
+      clearNativeWallDragLengthLabel();
+      return result;
     }
     debugShapeSelection("walls layer drag left cancel", {
       activeTool: game.activeTool,
@@ -3865,6 +3938,190 @@ function getSegmentKeyFromWallCoordinates(segments, coords) {
   return null;
 }
 
+function isWallLengthDrawingEnabled() {
+  return getBooleanSetting(SHOW_WALL_LENGTHS_WHILE_DRAWING_SETTING);
+}
+
+function isWallLengthHoverEnabled() {
+  return getBooleanSetting(SHOW_WALL_LENGTHS_ON_HOVER_SETTING);
+}
+
+function getBooleanSetting(setting) {
+  try {
+    return game.settings.get(MODULE_ID, setting) === true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function drawPreviewWallLengthLabels(parent, segments, options={}) {
+  return drawWallLengthLabelsImpl(parent, segments, {
+    ...options,
+    enabled: isWallLengthDrawingEnabled() && options.enabled !== false
+  });
+}
+
+function drawNativeWallDragLengthLabel(event=null, layer=canvas?.walls) {
+  if (!isWallLengthDrawingEnabled() || !isNativeWallCreationDrag(event)) {
+    clearNativeWallDragLengthLabel();
+    return;
+  }
+
+  const segment = getNativeWallDragSegment(event, layer);
+  if (!segment) {
+    clearNativeWallDragLengthLabel();
+    return;
+  }
+
+  nativeWallDragLengthLabelState.segment = segment;
+  drawWallLengthOverlay(nativeWallDragLengthLabelState, segment);
+}
+
+function redrawNativeWallDragLengthLabel() {
+  if (!nativeWallDragLengthLabelState.segment) return;
+  if (!isWallLengthDrawingEnabled()) {
+    clearNativeWallDragLengthLabel();
+    return;
+  }
+  drawWallLengthOverlay(nativeWallDragLengthLabelState, nativeWallDragLengthLabelState.segment);
+}
+
+function clearNativeWallDragLengthLabel() {
+  clearWallLengthOverlayState(nativeWallDragLengthLabelState);
+}
+
+function isNativeWallCreationDrag(event=null) {
+  if (!isWallControlsActive() || isAnyEditorToolActive()) return false;
+
+  const previewDocument = event?.interactionData?.preview?.document;
+  if (Array.isArray(previewDocument?.c)) return true;
+
+  const activeTool = game?.activeTool ?? ui?.controls?.tool?.name;
+  if (getWallTypeToolName(activeTool)) return true;
+
+  return ui?.controls?.tool?.creation === true;
+}
+
+function getNativeWallDragSegment(event=null, layer=canvas?.walls) {
+  const previewSegment = getWallLengthSegmentFromCoordinates(event?.interactionData?.preview?.document?.c);
+  if (previewSegment) return previewSegment;
+
+  const origin = event?.interactionData?.origin;
+  const destination = event?.interactionData?.destination;
+  if (!origin || !destination) return null;
+
+  const a = getNativeWallEndpointPoint(layer, origin, event);
+  const b = getNativeWallEndpointPoint(layer, destination, event);
+  if (!a || !b) return null;
+  return {a, b};
+}
+
+function getNativeWallEndpointPoint(layer, point, event) {
+  try {
+    const coords = layer?._getWallEndpointCoordinates?.(point, {snap: !isShiftInteraction(event)});
+    if (Array.isArray(coords) && coords.length >= 2) return {x: Number(coords[0]) || 0, y: Number(coords[1]) || 0};
+  } catch (_error) {
+    // Fall back to the raw interaction point for Foundry versions or modules that alter snapping.
+  }
+  const x = Number(point?.x);
+  const y = Number(point?.y);
+  return Number.isFinite(x) && Number.isFinite(y) ? {x, y} : null;
+}
+
+function drawHoveredWallLengthLabel(wall) {
+  if (!isWallLengthHoverEnabled() || !isWallControlsActive() || !wall?.document) {
+    clearHoveredWallLengthLabel();
+    return;
+  }
+
+  const segment = getWallLengthSegmentFromCoordinates(wall.document.c);
+  if (!segment) {
+    clearHoveredWallLengthLabel();
+    return;
+  }
+
+  hoveredWallLengthLabelState.wallId = wall.document.id;
+  hoveredWallLengthLabelState.segment = segment;
+  drawWallLengthOverlay(hoveredWallLengthLabelState, segment);
+}
+
+function refreshHoveredWallLengthLabel() {
+  if (!isWallLengthHoverEnabled() || !isWallControlsActive()) {
+    clearHoveredWallLengthLabel();
+    return;
+  }
+
+  const wall = getHoveredFoundryWall(lastCanvasPointerState.point)
+    ?? getWallPlaceable(lastHoveredWallState.id);
+  if (!wall?.document) {
+    clearHoveredWallLengthLabel();
+    return;
+  }
+
+  drawHoveredWallLengthLabel(wall);
+}
+
+function clearHoveredWallLengthLabel() {
+  clearWallLengthOverlayState(hoveredWallLengthLabelState);
+}
+
+function drawWallLengthOverlay(state, segment) {
+  const normalized = normalizeWallLengthSegment(segment);
+  if (!normalized) {
+    clearWallLengthOverlayState(state);
+    return;
+  }
+
+  const container = ensureWallLengthOverlayContainer(state);
+  if (!container) return;
+
+  const labels = drawWallLengthLabelsImpl(container, [normalized], {enabled: true, maxLabels: 1});
+  if (!labels.length) clearWallLengthOverlayState(state);
+}
+
+function ensureWallLengthOverlayContainer(state) {
+  if (state.container && !state.container._destroyed && state.container.parent) return state.container;
+  if (!canvas?.walls || !PIXI?.Container) return null;
+
+  const container = new PIXI.Container();
+  container.eventMode = "none";
+  container.interactiveChildren = false;
+  container.zIndex = 10000;
+  canvas.walls.addChild(container);
+  state.container = container;
+  return container;
+}
+
+function clearWallLengthOverlayState(state) {
+  if (state.container) {
+    clearWallLengthLabels(state.container);
+    try {
+      state.container.parent?.removeChild(state.container);
+    } catch (_error) {
+      // Ignore invalidated PIXI parent links during canvas teardown.
+    }
+    try {
+      state.container.destroy({children: true});
+    } catch (_error) {
+      try {
+        state.container.destroy?.(true);
+      } catch (_recoveryError) {
+        // The overlay may already be destroyed.
+      }
+    }
+  }
+  state.container = null;
+  state.segment = null;
+  if ("wallId" in state) state.wallId = null;
+}
+
+function getWallLengthSegmentFromCoordinates(coords) {
+  const segment = normalizeWallLengthSegment(coords);
+  if (!segment) return null;
+  if (Math.hypot(segment.b.x - segment.a.x, segment.b.y - segment.a.y) <= 0.1) return null;
+  return segment;
+}
+
 function redrawActivePreview() {
   if (cubicState.placed) drawCubicPreview();
   if (ellipseState.placed) drawEllipsePreview();
@@ -4613,12 +4870,14 @@ function getPolylineDeps() {
     deactivateOtherShapeStates,
     drawBezierHandle,
     drawMoveHandle,
+    drawWallLengthLabels: drawPreviewWallLengthLabels,
     drawSegmentDoorIcon,
     drawPolylinePreview,
     drawPreviewVertex,
     getClientInteractionPoint: getSnappedClientInteractionPoint,
     getEditorShapeCenter,
     getEditorSnapshot,
+    getCombinedWallLengthLabelSegment,
     getPointSegmentDistance,
     getPreviewStyle,
     getScaledRadius,
@@ -4663,6 +4922,7 @@ function getCubicDeps() {
     drawCubicPreview,
     drawEndpoint,
     drawMoveHandle,
+    drawWallLengthLabels: drawPreviewWallLengthLabels,
     drawSegmentDoorIcon,
     drawPreviewVertex,
     getEditorShapeCenter,
@@ -4701,6 +4961,7 @@ function getEllipseDeps() {
     drawEndpoint,
     drawEllipsePreview,
     drawMoveHandle,
+    drawWallLengthLabels: drawPreviewWallLengthLabels,
     drawSegmentDoorIcon,
     getEditorShapeCenter,
     getEditorSnapshot,
@@ -4742,6 +5003,7 @@ function getRectangleDeps() {
     drawMoveHandle,
     drawPreviewVertex,
     drawRectanglePreview,
+    drawWallLengthLabels: drawPreviewWallLengthLabels,
     drawSegmentDoorIcon,
     getCanvasClickCandidatePoints,
     getEditorShapeCenter,

@@ -14,6 +14,7 @@ export function preparePreviewGraphics(state, layer, {configure=null}={}) {
   }
 
   try {
+    clearManagedPreviewChildren(state.graphics);
     state.graphics.clear();
   } catch (_error) {
     try {
@@ -44,8 +45,30 @@ export function configurePreviewGraphicsForFoundry(graphics) {
   graphics._indyWallsPreviewCompatible = true;
 }
 
+function clearManagedPreviewChildren(container) {
+  if (!container?.children?.length) return;
+  for (const child of [...container.children]) {
+    if (!child?._indyWallsPreviewManaged) continue;
+    try {
+      container.removeChild(child);
+    } catch (_error) {
+      // Canvas teardown can invalidate parent-child links before this cleanup runs.
+    }
+    try {
+      child.destroy({children: true});
+    } catch (_error) {
+      try {
+        child.destroy?.(true);
+      } catch (_recoveryError) {
+        // The child may already be destroyed.
+      }
+    }
+  }
+}
+
 export function destroyPreviewGraphics(state) {
   try {
+    clearManagedPreviewChildren(state?.graphics);
     state?.graphics?.destroy();
   } catch (_error) {
     // The canvas may already have invalidated the PIXI object during scene teardown.

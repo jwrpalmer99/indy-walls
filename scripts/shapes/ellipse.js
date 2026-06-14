@@ -363,6 +363,7 @@ export function drawEllipsePreview(deps) {
   deps.drawEndpoint(graphics, b, style);
   deps.drawMoveHandle(graphics, deps.getEditorShapeCenter(ELLIPSE_TOOL), style);
   drawEllipseGapHandles(graphics, style, deps);
+  deps.drawWallLengthLabels(graphics, segments, {combine: true});
 }
 
 function drawEllipseGapHandles(graphics, style, deps) {

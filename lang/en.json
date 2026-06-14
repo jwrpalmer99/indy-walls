@@ -44,6 +44,14 @@
         "Name": "Wall type hotkeys update hovered Foundry walls",
         "Hint": "When enabled, wall type hotkeys can change the Foundry wall under the mouse while Wall Controls are active. Indy shape segment hotkeys still work while editing shapes."
       },
+      "ShowWallLengthsWhileDrawing": {
+        "Name": "Show wall lengths while drawing",
+        "Hint": "When enabled, wall previews show their current length while drawing or editing normal and Indy walls. Lengths use the scene grid distance and units."
+      },
+      "ShowWallLengthsOnHover": {
+        "Name": "Show wall lengths on hover",
+        "Hint": "When enabled, hovering a Foundry wall in Wall Controls shows its length, including wall segments created by Indy Walls."
+      },
       "DebugShapeSelection": {
         "Name": "Debug Indy shape selection",
         "Hint": "When enabled, Ctrl-click shape selection diagnostics are written to the browser console."

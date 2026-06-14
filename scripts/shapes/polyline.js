@@ -671,20 +671,34 @@ export function drawPolylinePreview(deps) {
     drawPolylineCurveIntermediatePoints(graphics, segment, curve, style, deps, isPolylineBaseSegmentFullyHidden(segment.index, gaps));
   }
 
+  const lengthLabelSegments = getPolylineLengthLabelSegments(gaps, deps);
   const last = polylineState.points.at(-1);
   const preview = polylineState.previewPoint;
+  let previewSegment = null;
   if (polylineState.drawing && last && preview && Math.hypot(last.x - preview.x, last.y - preview.y) > 0.1) {
-    const previewSegment = {index: getPolylineSegmentCount(), a: last, b: preview};
+    previewSegment = {index: getPolylineSegmentCount(), a: last, b: preview};
     graphics.lineStyle(deps.getScaledRadius(style.wallWidth), deps.getSegmentPreviewColor(polylineState, previewSegment, style), 0.55);
     graphics.moveTo(last.x, last.y);
     graphics.lineTo(preview.x, preview.y);
     deps.drawPreviewVertex(graphics, preview, style);
   }
+  if (previewSegment) lengthLabelSegments.push(previewSegment);
 
   for (const vertex of getPolylineVertices()) {
     drawPolylineVertex(graphics, vertex, style, deps);
   }
   if (polylineState.points.length > 1) deps.drawMoveHandle(graphics, deps.getEditorShapeCenter(POLYLINE_TOOL), style);
+  deps.drawWallLengthLabels(graphics, lengthLabelSegments);
+}
+
+function getPolylineLengthLabelSegments(gaps, deps) {
+  const labels = [];
+  for (const segment of getPolylineBaseSegments()) {
+    const visibleSegments = getPolylineWallSegmentsForBaseSegment(segment).filter((piece) => !isPolylineSegmentHidden(piece, gaps));
+    if (!visibleSegments.length) continue;
+    labels.push(deps.getCombinedWallLengthLabelSegment(visibleSegments) ?? visibleSegments[0]);
+  }
+  return labels;
 }
 
 function getPolylineDoorIconSegments(gaps) {
