@@ -363,7 +363,70 @@ export function drawEllipsePreview(deps) {
   deps.drawEndpoint(graphics, b, style);
   deps.drawMoveHandle(graphics, deps.getEditorShapeCenter(ELLIPSE_TOOL), style);
   drawEllipseGapHandles(graphics, style, deps);
-  deps.drawWallLengthLabels(graphics, segments, {combine: true});
+  drawEllipseAxisLengthGuides(graphics, style, deps);
+}
+
+function drawEllipseAxisLengthGuides(graphics, style, deps) {
+  if (!deps.isWallLengthDrawingEnabled?.()) return;
+
+  const axisSegments = getEllipseAxisLengthSegments();
+  if (!axisSegments.length) return;
+
+  graphics.lineStyle(deps.getScaledRadius(Math.max(style.guideWidth, 1)), style.moveHandleColor, 0.68);
+  for (const segment of axisSegments) {
+    graphics.moveTo(segment.a.x, segment.a.y);
+    graphics.lineTo(segment.b.x, segment.b.y);
+    drawEllipseAxisCap(graphics, segment, style, deps);
+  }
+
+  deps.drawWallLengthLabels(graphics, axisSegments);
+}
+
+function getEllipseAxisLengthSegments() {
+  const {cx, cy, rx, ry} = getEllipseGeometry();
+  const center = {x: cx, y: cy};
+  const rotation = Number(ellipseState.rotation) || 0;
+  const cosRotation = Math.cos(rotation);
+  const sinRotation = Math.sin(rotation);
+  const xAxis = getRotatedEllipseAxisSegment(center, rx, 0, cosRotation, sinRotation);
+  const yAxis = getRotatedEllipseAxisSegment(center, 0, ry, cosRotation, sinRotation);
+
+  if (!xAxis && !yAxis) return [];
+  if (!xAxis) return [yAxis];
+  if (!yAxis) return [xAxis];
+  if (Math.abs(rx - ry) <= 0.5) return [xAxis];
+  return rx >= ry ? [xAxis, yAxis] : [yAxis, xAxis];
+}
+
+function getRotatedEllipseAxisSegment(center, localX, localY, cosRotation, sinRotation) {
+  const length = Math.hypot(localX, localY);
+  if (!(length > 0.1)) return null;
+
+  const end = {
+    x: center.x + (localX * cosRotation) - (localY * sinRotation),
+    y: center.y + (localX * sinRotation) + (localY * cosRotation)
+  };
+  return {
+    a: center,
+    b: end,
+    labelDirection: {
+      x: end.x - center.x,
+      y: end.y - center.y
+    }
+  };
+}
+
+function drawEllipseAxisCap(graphics, segment, style, deps) {
+  const dx = segment.b.x - segment.a.x;
+  const dy = segment.b.y - segment.a.y;
+  const length = Math.hypot(dx, dy);
+  if (!(length > 0.1)) return;
+
+  const cap = deps.getScaledRadius(Math.max(style.vertexSize + 2, 6));
+  const nx = -(dy / length);
+  const ny = dx / length;
+  graphics.moveTo(segment.b.x - (nx * cap), segment.b.y - (ny * cap));
+  graphics.lineTo(segment.b.x + (nx * cap), segment.b.y + (ny * cap));
 }
 
 function drawEllipseGapHandles(graphics, style, deps) {

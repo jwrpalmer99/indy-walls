@@ -1003,6 +1003,7 @@ function patchWallsLayer() {
         polylineState.curveSegmentsBySegment = {};
         polylineState.segmentModeMemory = {};
         polylineState.previewPoint = null;
+        polylineState.suppressDragPreviewLengthLabel = true;
         polylineState.points = [point, point];
         polylineState.draggingVertex = {index: 1, point};
         setInteractionPoint(event.interactionData.origin, point);
@@ -1493,10 +1494,12 @@ function registerRectangleCanvasClickHandler() {
 
 function updateLastCanvasPointerPoint(event) {
   if (!isWallControlsActive()) return;
-  const point = getSnappedClientInteractionPoint(event);
+  const point = getClientInteractionPoint(event);
   if (point) lastCanvasPointerState.point = point;
-  if (point && isPolylineToolActive() && polylineState.drawing) {
-    polylineState.previewPoint = point;
+  if (isPolylineToolActive() && polylineState.drawing) {
+    const snappedPoint = getSnappedClientInteractionPoint(event);
+    if (!snappedPoint) return;
+    polylineState.previewPoint = snappedPoint;
     drawPolylinePreview();
   }
 }
@@ -2697,7 +2700,9 @@ function getSnappedEditorEventPoint(layer, point, event) {
 
 function getSnappedClientInteractionPoint(event) {
   const point = getClientInteractionPoint(event);
-  return getMonksClosestWallPoint(point) ?? point;
+  if (!point) return null;
+  if (!canvas?.walls?._getWallEndpointCoordinates) return getMonksClosestWallPoint(point) ?? point;
+  return getSnappedEditorEventPoint(canvas.walls, point, event);
 }
 
 function setInteractionPoint(target, point) {
@@ -3033,6 +3038,8 @@ function loadShapeFromExistingWall(wall) {
   });
   if (!cubicData && !ellipseData && !rectangleData && !polylineData) return false;
 
+  clearNativeWallDragLengthLabel();
+  clearHoveredWallLengthLabel();
   clearCubicPreview();
   clearEllipsePreview();
   clearRectanglePreview();
@@ -4029,7 +4036,7 @@ function getNativeWallEndpointPoint(layer, point, event) {
 }
 
 function drawHoveredWallLengthLabel(wall) {
-  if (!isWallLengthHoverEnabled() || !isWallControlsActive() || !wall?.document) {
+  if (!isWallLengthHoverEnabled() || !isWallControlsActive() || isPlacedEditorActive() || !wall?.document) {
     clearHoveredWallLengthLabel();
     return;
   }
@@ -4046,7 +4053,7 @@ function drawHoveredWallLengthLabel(wall) {
 }
 
 function refreshHoveredWallLengthLabel() {
-  if (!isWallLengthHoverEnabled() || !isWallControlsActive()) {
+  if (!isWallLengthHoverEnabled() || !isWallControlsActive() || isPlacedEditorActive()) {
     clearHoveredWallLengthLabel();
     return;
   }
@@ -4979,6 +4986,7 @@ function getEllipseDeps() {
     hideEditSessionWalls,
     isEllipseToolActive,
     isPointNearSegmentBounds,
+    isWallLengthDrawingEnabled,
     pushEditorUndoSnapshot,
     replaceShapeWalls,
     resolveShapeWallIds,

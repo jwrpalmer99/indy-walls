@@ -39,6 +39,7 @@ export const polylineState = {
   segmentModeMemory: {},
   graphics: null,
   previewPoint: null,
+  suppressDragPreviewLengthLabel: false,
   points: []
 };
 
@@ -588,12 +589,14 @@ export function handlePolylineCanvasClick(event, deps) {
     polylineState.closed = false;
     polylineState.points = [point];
     polylineState.previewPoint = point;
+    polylineState.suppressDragPreviewLengthLabel = false;
     deps.clearEditorHistory(polylineState);
     deps.drawPolylinePreview();
     return true;
   }
 
   if (!polylineState.drawing) return false;
+  polylineState.suppressDragPreviewLengthLabel = false;
   if (polylineState.points.length >= 3 && isPolylineClosePoint(point, deps)) {
     polylineState.previewPoint = polylineState.points[0];
     deps.drawPolylinePreview();
@@ -626,6 +629,7 @@ export function closePolyline(deps) {
   polylineState.closed = true;
   polylineState.drawing = false;
   polylineState.previewPoint = null;
+  polylineState.suppressDragPreviewLengthLabel = false;
   polylineState.segmentGaps = reconcilePolylineSegmentGaps(polylineState.segmentGaps, getPolylineSegmentCount());
   deps.drawPolylinePreview();
   return true;
@@ -675,20 +679,34 @@ export function drawPolylinePreview(deps) {
   const last = polylineState.points.at(-1);
   const preview = polylineState.previewPoint;
   let previewSegment = null;
-  if (polylineState.drawing && last && preview && Math.hypot(last.x - preview.x, last.y - preview.y) > 0.1) {
+  let previewLength = 0;
+  if (polylineState.drawing && last && preview) previewLength = Math.hypot(last.x - preview.x, last.y - preview.y);
+  if (previewLength > 0.1) {
     previewSegment = {index: getPolylineSegmentCount(), a: last, b: preview};
     graphics.lineStyle(deps.getScaledRadius(style.wallWidth), deps.getSegmentPreviewColor(polylineState, previewSegment, style), 0.55);
     graphics.moveTo(last.x, last.y);
     graphics.lineTo(preview.x, preview.y);
     deps.drawPreviewVertex(graphics, preview, style);
   }
-  if (previewSegment) lengthLabelSegments.push(previewSegment);
+  if (previewLength >= getPolylineDragPreviewLabelSuppressionLength(deps)) {
+    polylineState.suppressDragPreviewLengthLabel = false;
+  }
+  const suppressPreviewLabel = polylineState.suppressDragPreviewLengthLabel
+    && getPolylineSegmentCount() === 1
+    && previewLength < getPolylineDragPreviewLabelSuppressionLength(deps);
+  if (previewSegment && !suppressPreviewLabel) {
+    lengthLabelSegments.push(previewSegment);
+  }
 
   for (const vertex of getPolylineVertices()) {
     drawPolylineVertex(graphics, vertex, style, deps);
   }
   if (polylineState.points.length > 1) deps.drawMoveHandle(graphics, deps.getEditorShapeCenter(POLYLINE_TOOL), style);
   deps.drawWallLengthLabels(graphics, lengthLabelSegments);
+}
+
+function getPolylineDragPreviewLabelSuppressionLength(deps) {
+  return deps.getScaledRadius(16);
 }
 
 function getPolylineLengthLabelSegments(gaps, deps) {
@@ -1128,6 +1146,7 @@ function addPolylineVertexAtSegment(index, point, deps) {
   polylineState.curveSegmentsBySegment = shiftPolylineCurveSegmentsForInsert(polylineState.curveSegmentsBySegment, index);
   polylineState.segmentModeMemory = shiftPolylineSegmentModeMemoryForInsert(polylineState.segmentModeMemory, index);
   polylineState.previewPoint = null;
+  polylineState.suppressDragPreviewLengthLabel = false;
   deps.drawPolylinePreview();
   return true;
 }
@@ -1146,6 +1165,7 @@ export function removePolylineVertex(index, deps) {
   polylineState.curveSegmentsBySegment = shiftPolylineCurveSegmentsForRemove(polylineState.curveSegmentsBySegment, index, pointCountBefore, closed);
   polylineState.segmentModeMemory = shiftPolylineSegmentModeMemoryForRemove(polylineState.segmentModeMemory, index, pointCountBefore, closed);
   polylineState.previewPoint = null;
+  polylineState.suppressDragPreviewLengthLabel = false;
   deps.drawPolylinePreview();
   return true;
 }
@@ -1230,6 +1250,7 @@ export function clearPolylinePreview(deps) {
   polylineState.segmentModeMemory = {};
   polylineState.closed = false;
   polylineState.previewPoint = null;
+  polylineState.suppressDragPreviewLengthLabel = false;
   polylineState.points = [];
   destroyPreviewGraphics(polylineState);
   polylineState.graphics = null;
@@ -1282,6 +1303,7 @@ export function loadPolylineFromWall(wall, deps) {
   );
   polylineState.segmentModeMemory = {};
   polylineState.previewPoint = null;
+  polylineState.suppressDragPreviewLengthLabel = false;
   polylineState.wallTypeBySegment = {
     ...deps.cloneWallTypeBySegment(polylineData.wallTypeBySegment),
     ...deps.getShapeWallTypeByIndexedFlag(polylineState.wallIds, POLYLINE_FLAG)
